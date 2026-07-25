@@ -2182,6 +2182,64 @@ def test_honorific_quality_check_accepts_first_person_status_rendering():
     assert not any(issue["type"] == "honorific_rendering_review" for issue in issues)
 
 
+@pytest.mark.parametrize(
+    ("source", "translation"),
+    [
+        ("\u8cb4\u69d8\u306f\u4f55\u8005\u3060", "\u4f60\u8fd9\u5bb6\u4f19\u662f\u4ec0\u4e48\u4eba"),
+        ("\u8d64\u3061\u3083\u3093\u3092\u80b2\u3066\u308b", "\u629a\u517b\u5b9d\u5b9d"),
+        ("\u524d\u56de\u3068\u540c\u69d8\u306b", "\u548c\u4e0a\u6b21\u4e00\u6837"),
+        ("\u5909\u306a\u7d0b\u69d8\u304c\u51fa\u3066\u304d\u305f", "\u51fa\u73b0\u4e86\u5947\u602a\u7684\u7eb9\u8def"),
+        ("\u3054\u6101\u50b7\u3055\u307e", "\u771f\u66ff\u4f60\u611f\u5230\u9057\u61be"),
+        ("\u4eca\u3061\u3083\u3093\u3068\u5c65\u3044\u3066\u3044\u308b", "\u73b0\u5728\u6b63\u597d\u597d\u7a7f\u7740"),
+        ("\u79c1\u3061\u3083\u3093\u3068\u98f2\u3093\u3060", "\u6211\u786e\u5b9e\u597d\u597d\u559d\u4e86"),
+        ("\u6298\u89d2\u541b\u306e\u305f\u3081\u306b", "\u6211\u597d\u4e0d\u5bb9\u6613\u624d\u4e3a\u4e86\u4f60"),
+        ("\u624b\u3092\u51fa\u3055\u3093\u3068\u7d04\u675f\u3057\u305f", "\u7b54\u5e94\u4e86\u4e0d\u51fa\u624b"),
+        ("\u304a\u7236\u3055\u3093\u304c\u6765\u305f", "\u7238\u7238\u6765\u4e86"),
+        ("\u304a\u6bcd\u3055\u3093\u304c\u6765\u305f", "\u6bcd\u4eb2\u6765\u4e86"),
+        ("\u7686\u69d8\u3001\u3042\u308a\u304c\u3068\u3046", "\u611f\u8c22\u5404\u4f4d"),
+        ("\u304a\u5ba2\u69d8\u304c\u6765\u305f", "\u5ba2\u4eba\u6765\u4e86"),
+        ("\u304a\u5ba2\u3055\u3093\u3082\u5165\u308c\u308b", "\u60a8\u4e5f\u80fd\u8fdb\u6765"),
+        ("\u65e6\u90a3\u69d8\u304c\u547c\u3093\u3067\u3044\u308b", "\u8001\u7237\u5728\u53eb\u4f60"),
+        ("\u304a\u5ac1\u3055\u3093\u306b\u306a\u308b", "\u6210\u4e3a\u59bb\u5b50"),
+        ("\u304a\u59c9\u3061\u3083\u3093\u304c\u6765\u305f", "\u59d0\u59d0\u6765\u4e86"),
+    ],
+)
+def test_honorific_quality_check_ignores_lexicalized_words_and_accepts_natural_roles(
+    source,
+    translation,
+):
+    from translation.quality import translation_issues
+
+    issues = translation_issues(source, translation)
+
+    assert not any(
+        issue["type"] == "honorific_rendering_review"
+        for issue in issues
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "translation"),
+    [
+        ("\u5fa1\u5b50\u69d8\u304c\u6765\u305f", "\u5fa1\u5b50\u6765\u4e86"),
+        ("\u30d5\u30a3\u30fc\u30cd\u3061\u3083\u3093\u304c\u6765\u305f", "\u83f2\u59ae\u6765\u4e86"),
+        ("\u4ffa\u69d8\u306f\u5f37\u3044", "\u6211\u5f88\u5f3a"),
+    ],
+)
+def test_honorific_quality_check_keeps_true_title_and_intimacy_losses(
+    source,
+    translation,
+):
+    from translation.quality import translation_issues
+
+    issues = translation_issues(source, translation)
+
+    assert any(
+        issue["type"] == "honorific_rendering_review"
+        for issue in issues
+    )
+
+
 def test_dialogue_brackets_are_protected_and_restored_exactly():
     from translation.protection import protect_symbols, restore_symbols
 

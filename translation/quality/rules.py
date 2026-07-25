@@ -13,6 +13,7 @@ from translation.protection.runtime import (
 )
 
 
+QUALITY_RULES_VERSION = "quality-rules-v2-source-aware-honorifics"
 FIXED_TRANSLATIONS: dict[str, str] = {
     "continue": "继续",
     "new game": "新游戏",
@@ -122,8 +123,81 @@ CHINESE_HONORIFIC_MARKER_RE = re.compile(
     "\u5927\u4eba|\u9601\u4e0b|\u6bbf\u4e0b|\u965b\u4e0b|\u5148\u751f|\u5973\u58eb|\u5c0f\u59d0|\u540c\u5b66|"
     "\u524d\u8f88|\u8001\u5e08|\u4e3b\u4eba|\u5c11\u7237|\u5c0f\u59d0|\u54e5|\u59d0|\u5f1f|\u59b9|\u53d4|\u59e8|"
     "\u7237\u7237|\u5976\u5976|\u5927\u5bb6|\u672c\u5927\u7237|\u56fd\u738b|\u5973\u738b|"
-    "\u5c0f[\u4e00-\u9fff]|[\u4e00-\u9fff]\u541b|[\u4e00-\u9fff]\u9171"
+    "\u5c0f[\u4e00-\u9fff]|[\u4e00-\u9fff]\u541b|[\u4e00-\u9fff]\u9171|"
+    "(?:\u8fd9|\u90a3|\u4e00)\u4f4d"
 )
+LEXICALIZED_HONORIFIC_ENDINGS = (
+    "\u8cb4\u69d8",
+    "\u8d64\u3061\u3083\u3093",
+    "\u540c\u69d8",
+    "\u7121\u69d8",
+    "\u6709\u69d8",
+    "\u4e00\u69d8",
+    "\u82e6\u52b4\u3055\u307e",
+    "\u82e6\u52b4\u69d8",
+    "\u6101\u50b7\u3055\u307e",
+    "\u6101\u50b7\u69d8",
+    "\u7d0b\u69d8",
+    "\u6587\u69d8",
+    "\u6a21\u69d8",
+    "\u4ed5\u69d8",
+    "\u591a\u69d8",
+    "\u7570\u69d8",
+    "\u6298\u89d2\u541b",
+    "\u51fa\u3055\u3093",
+    "\u4eca\u3061\u3083\u3093",
+    "\u79c1\u3061\u3083\u3093",
+)
+NATURAL_HONORIFIC_EQUIVALENTS = (
+    (
+        ("\u7236\u3055\u3093",),
+        re.compile("\u7238\u7238|\u8001\u7238|\u7236\u4eb2|\u8001\u7239|\u7239"),
+    ),
+    (
+        ("\u6bcd\u3055\u3093",),
+        re.compile("\u5988\u5988|\u8001\u5988|\u6bcd\u4eb2|\u5a18"),
+    ),
+    (
+        ("\u7686\u69d8", "\u7686\u3055\u3093"),
+        re.compile("\u5404\u4f4d|\u5927\u5bb6|\u8bf8\u4f4d"),
+    ),
+    (
+        ("\u5ba2\u69d8", "\u5ba2\u3055\u3093"),
+        re.compile("\u5ba2\u4eba|\u987e\u5ba2|\u8d35\u5ba2|\u5ba2\u5b98|\u60a8"),
+    ),
+    (
+        ("\u65e6\u90a3\u69d8",),
+        re.compile("\u8001\u7237|\u4e3b\u4eba|\u4e08\u592b|\u8001\u516c|\u5148\u751f|\u5927\u4eba"),
+    ),
+    (
+        ("\u5ac1\u3055\u3093",),
+        re.compile("\u59bb\u5b50|\u8001\u5a46|\u5ab3\u5987|\u59bb"),
+    ),
+    (
+        ("\u59c9\u3061\u3083\u3093", "\u59c9\u3055\u3093"),
+        re.compile("\u59d0\u59d0|\u59ca\u59ca|\u5927\u59d0|\u59d0|\u59ca"),
+    ),
+)
+
+
+def _honorific_rendering_needs_review(original: str, translated: str) -> bool:
+    matches = [
+        match.group(0)
+        for match in HONORIFIC_SUFFIX_RE.finditer(original)
+    ]
+    if not matches or CHINESE_HONORIFIC_MARKER_RE.search(translated):
+        return False
+
+    for token in matches:
+        if token.endswith(LEXICALIZED_HONORIFIC_ENDINGS):
+            continue
+        naturally_rendered = any(
+            token.endswith(source_endings) and target_re.search(translated)
+            for source_endings, target_re in NATURAL_HONORIFIC_EQUIVALENTS
+        )
+        if not naturally_rendered:
+            return True
+    return False
 
 
 def exact_fixed_translation(text: str) -> str:
@@ -294,7 +368,7 @@ def translation_issues(original: str, translated: str, short_label: bool = False
             + ", ".join(sorted(set(leaked_term_placeholders))[:5]),
         })
 
-    if HONORIFIC_SUFFIX_RE.search(original) and not CHINESE_HONORIFIC_MARKER_RE.search(translated):
+    if _honorific_rendering_needs_review(original, translated):
         issues.append({
             "type": "honorific_rendering_review",
             "message": "A Japanese honorific appears to have lost its respect, intimacy, or hierarchy in Chinese.",

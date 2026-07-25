@@ -3,6 +3,7 @@
 from translation.quality.constraints_core import auto_wrap, get_violations, validate
 from translation.quality.rules import (
     FIXED_TRANSLATIONS,
+    QUALITY_RULES_VERSION,
     apply_fixed_translations,
     apply_source_conditioned_fixes,
     english_residue,
@@ -26,6 +27,7 @@ __all__ = [
     "is_refusal",
     "new_issues",
     "FIXED_TRANSLATIONS",
+    "QUALITY_RULES_VERSION",
     "ProtectedToken",
     "apply_fixed_translations",
     "apply_output_constraints",

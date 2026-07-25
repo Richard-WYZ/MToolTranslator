@@ -32,7 +32,7 @@ from translation.protection import (
     PROTECTED_RESTORATION_VERSION,
     SYMBOL_PROTECTION_VERSION,
 )
-from translation.quality import quality_prompt_rules
+from translation.quality import QUALITY_RULES_VERSION, quality_prompt_rules
 from translation.terminology.candidate_policy import CANDIDATE_POLICY_VERSION
 
 
@@ -119,6 +119,7 @@ def translate_json_workflow(
         "batch_line_prompt": build_line_batch_system_prompt(),
         "batch_parent_prompt": build_parent_batch_system_prompt(),
         "quality_rules": quality_prompt_rules(),
+        "quality_rules_version": QUALITY_RULES_VERSION,
         "classification_version": CLASSIFICATION_VERSION,
         "candidate_policy_version": CANDIDATE_POLICY_VERSION,
         "sensitivity_classifier_version": SENSITIVITY_CLASSIFIER_VERSION,
