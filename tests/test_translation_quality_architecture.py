@@ -3354,7 +3354,12 @@ def test_mtool_json_uses_key_as_source_and_records_final_statuses(monkeypatch):
                 payload = json.loads(text)
                 translations = {"\u6255\u3046": "\u652f\u4ed8"}
                 return json.dumps(
-                    [{"i": item["i"], "t": translations[item["text"]]} for item in payload],
+                    [
+                        [item[0], translations[item[1]]]
+                        if isinstance(item, list)
+                        else {"i": item["i"], "t": translations[item["text"]]}
+                        for item in payload
+                    ],
                     ensure_ascii=False,
                 )
 
