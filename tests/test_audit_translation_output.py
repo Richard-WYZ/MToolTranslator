@@ -48,6 +48,21 @@ def test_offline_audit_does_not_flag_explicitly_preserved_empty_or_code_entries(
     assert report["issue_counts"] == {}
 
 
+def test_offline_audit_accepts_identical_han_text_as_usable_chinese(tmp_path):
+    from tools.audit_translation_output import audit_translation_output
+
+    source_path = tmp_path / "source.json"
+    output_path = tmp_path / "output.json"
+    payload = {"女神": "女神", "武器": "武器"}
+    source_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    output_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    report = audit_translation_output(source_path, output_path)
+
+    assert report["statuses"] == {"preserved": 2}
+    assert report["issue_counts"] == {}
+
+
 def test_offline_audit_deduplicates_punctuation_only_refusal_issue(tmp_path):
     from tools.audit_translation_output import audit_translation_output
 

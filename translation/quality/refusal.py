@@ -85,6 +85,9 @@ def is_refusal(text: str, original: str = "") -> bool:
     if has_japanese(stripped):
         return True
 
+    if re.search(r"[\u3400-\u4dbf\u4e00-\u9fff]", stripped):
+        return False
+
     if original and has_japanese(original) and _english_ratio_ignoring_source_tokens(stripped, original) > 0.5:
         return True
 

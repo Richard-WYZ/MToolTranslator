@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from translation.protection.runtime import (
     AMBIGUOUS_KEY_NAMES,
     CODE_EXPRESSION_RE,
     CODE_IDENTIFIER_RE,
     KEY_NAMES,
-    NUMERIC_TOKEN_RE,
     VARIABLE_RE,
     normalize_fixed_key,
 )
 
 
-QUALITY_RULES_VERSION = "quality-rules-v2-source-aware-honorifics"
+QUALITY_RULES_VERSION = "quality-rules-v4-actionable-review-semantics"
 FIXED_TRANSLATIONS: dict[str, str] = {
     "continue": "继续",
     "new game": "新游戏",
@@ -110,6 +110,8 @@ NUMERIC_ASSIGNMENT_RE = re.compile(
     r"^\s*[^=\r\n]{1,80}\s*=\s*[-+]?[0-9\uff10-\uff19]+(?:\.[0-9\uff10-\uff19]+)?\s*$"
 )
 KANA_RE = re.compile("[\\u3041-\\u309f\\u30a1-\\u30fa\\u30fd-\\u30ff]")
+HAN_RE = re.compile("[\u3400-\u4dbf\u4e00-\u9fff]")
+NORMALIZED_NUMERIC_VALUE_RE = re.compile(r"\d+(?:[.,]\d+)*")
 LEAKED_TERM_PLACEHOLDER_RE = re.compile(
     r"__(?:PERSON|TERM|KEEP|SYM)_\d+__",
     re.IGNORECASE,
@@ -240,7 +242,11 @@ def exact_japanese_menu_translation(text: str) -> str:
 def exact_nonlinguistic_translation(text: str) -> str:
     if not text:
         return ""
-    if NUMERIC_ONLY_RE.fullmatch(text) or CODE_LIKE_RE.fullmatch(text):
+    if (
+        NUMERIC_ONLY_RE.fullmatch(text)
+        or CODE_LIKE_RE.fullmatch(text)
+        or _is_nonlexical_vocalization(text)
+    ):
         return text
     if (
         RESOURCE_FILE_RE.fullmatch(text)
@@ -251,6 +257,21 @@ def exact_nonlinguistic_translation(text: str) -> str:
     if _looks_like_non_japanese_resource(text):
         return text
     return ""
+
+
+def _is_nonlexical_vocalization(text: str) -> bool:
+    """Recognize punctuation/symbol runs whose only kana are sound markers."""
+    meaningful = False
+    for char in str(text or ""):
+        if char.isspace():
+            continue
+        meaningful = True
+        if char in {"\u3063", "\u30c3", "\u30fc"}:
+            continue
+        if unicodedata.category(char)[:1] in {"P", "S"}:
+            continue
+        return False
+    return meaningful
 
 
 def apply_fixed_translations(text: str) -> str:
@@ -331,6 +352,24 @@ def suspicious_artifacts(text: str) -> list[str]:
     return artifacts
 
 
+def is_valid_identical_han_translation(text: str) -> bool:
+    """Allow unchanged Han-only text that is already usable as Chinese."""
+    normalized = unicodedata.normalize("NFKC", str(text or "")).strip()
+    return bool(
+        normalized
+        and HAN_RE.search(normalized)
+        and not KANA_RE.search(normalized)
+    )
+
+
+def _normalized_numeric_values(text: str) -> list[str]:
+    normalized = unicodedata.normalize("NFKC", str(text or ""))
+    return [
+        match.group(0).replace(",", "")
+        for match in NORMALIZED_NUMERIC_VALUE_RE.finditer(normalized)
+    ]
+
+
 def translation_issues(original: str, translated: str, short_label: bool = False) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
     original = original or ""
@@ -339,7 +378,12 @@ def translation_issues(original: str, translated: str, short_label: bool = False
         issues.append({"type": "empty_translation", "message": "Translated text is empty."})
         return issues
 
-    if translated == original and TARGET_SCRIPT_RE.search(original):
+    if (
+        translated == original
+        and TARGET_SCRIPT_RE.search(original)
+        and not is_valid_identical_han_translation(original)
+        and not exact_nonlinguistic_translation(original)
+    ):
         issues.append({
             "type": "identical_japanese_source",
             "message": "Model output is identical to eligible Japanese source text.",
@@ -348,13 +392,14 @@ def translation_issues(original: str, translated: str, short_label: bool = False
     if (
         TARGET_SCRIPT_RE.search(original)
         and not re.search(r"[A-Za-z0-9\u3400-\u9fff]", translated)
+        and not exact_nonlinguistic_translation(original)
     ):
         issues.append({
             "type": "model_refusal",
             "message": "Translation contains no lexical content for a linguistic source.",
         })
 
-    if KANA_RE.search(translated):
+    if KANA_RE.search(translated) and not exact_nonlinguistic_translation(translated):
         issues.append({
             "type": "untranslated_japanese",
             "message": "Japanese kana remain in the translated text.",
@@ -374,8 +419,8 @@ def translation_issues(original: str, translated: str, short_label: bool = False
             "message": "A Japanese honorific appears to have lost its respect, intimacy, or hierarchy in Chinese.",
         })
 
-    source_numbers = [match.group(0) for match in NUMERIC_TOKEN_RE.finditer(original)]
-    target_numbers = [match.group(0) for match in NUMERIC_TOKEN_RE.finditer(translated)]
+    source_numbers = _normalized_numeric_values(original)
+    target_numbers = _normalized_numeric_values(translated)
     if source_numbers != target_numbers:
         issues.append({
             "type": "numeric_preservation",

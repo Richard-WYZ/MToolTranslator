@@ -1501,16 +1501,16 @@ def test_identical_eligible_output_with_issues_stays_review_required():
     ) == "review_required"
 
 
-def test_model_bound_identical_kanji_output_is_review_required_and_quality_retried():
+def test_model_bound_identical_han_output_is_accepted_without_quality_retry():
     from translation.batching import needs_quality_model_retry
     from translation.quality import status_for_output, translation_issues
 
     issues = translation_issues("少年", "少年", short_label=True)
     status = status_for_output("少年", "少年", issues)
 
-    assert {issue["type"] for issue in issues} == {"identical_japanese_source"}
-    assert status == "review_required"
-    assert needs_quality_model_retry(
+    assert issues == []
+    assert status == "preserved"
+    assert not needs_quality_model_retry(
         status,
         issues,
         {"api_quality_retry_issue_types": ["identical_japanese_source"]},
@@ -2034,12 +2034,21 @@ def test_review_report_contains_only_explicit_review_queue(monkeypatch, tmp_path
                 "status": "review_required",
                 "issues": [{"type": "untranslated_japanese"}],
             },
+            "3_0": {
+                "row": 3,
+                "col": 0,
+                "original": "注意\n",
+                "translated": "注意\n",
+                "status": "review_required",
+                "entry_classification": "composed_multiline",
+                "issues": [{"type": "composed_dependency_review_required"}],
+            },
         },
     })
     monkeypatch.setattr(
         report,
         "build_review_summary",
-        lambda _file_path: type("Summary", (), {"as_dict": lambda self: {"review_queue_size": 2}})(),
+        lambda _file_path: type("Summary", (), {"as_dict": lambda self: {"review_queue_size": 3}})(),
     )
     output = tmp_path / "game.translated.json"
 
@@ -2048,6 +2057,8 @@ def test_review_report_contains_only_explicit_review_queue(monkeypatch, tmp_path
 
     assert report_path == str(tmp_path / "game.translated.review.json")
     assert payload["summary"]["review_queue_size"] == 2
+    assert payload["summary"]["raw_review_queue_size"] == 3
+    assert payload["summary"]["derived_review_entries"] == 1
     assert [item["entry_id"] for item in payload["items"]] == ["1_0", "2_0"]
     assert payload["items"][0]["issues"][0]["type"] == "term_preservation"
 
@@ -2283,7 +2294,7 @@ def test_symbol_restore_discards_model_added_protected_symbols():
     )
 
     assert rebuilt == "\u300c\u554a\u2661\u2661\u300d"
-    assert [issue["type"] for issue in rebuild_issues] == ["symbol_preservation"]
+    assert rebuild_issues == []
 
     duplicated = "".join(token.token for token in tokens) * 2
     deduplicated, duplicate_issues = restore_symbols(
@@ -2295,7 +2306,7 @@ def test_symbol_restore_discards_model_added_protected_symbols():
 
     assert deduplicated == "\u300c\u554a\u2661\u2661\u300d"
     assert "__SYM_" not in deduplicated
-    assert [issue["type"] for issue in duplicate_issues] == ["symbol_preservation"]
+    assert duplicate_issues == []
 
 
 def test_symbol_restore_discards_foreign_placeholders_when_source_has_no_symbols():
@@ -2491,15 +2502,22 @@ def test_glossary_mapping_cache_rebuilds_only_after_mapping_change():
 
 
 def test_quality_checks_numeric_and_line_break_sequences():
-    from translation.quality import translation_issues
+    from translation.quality import status_for_output, translation_issues
 
     clean = translation_issues("120\u304b\u3089150%\r\n\u6b21", "\u4ece120\u5230150%\r\n\u4e0b\u4e00\u9879")
+    normalized_floor = translation_issues("宿屋２Ｆ", "旅馆２F")
+    normalized_currency = translation_issues("10000Ｇ", "10000G")
     changed_number = translation_issues("120\u304b\u3089150%", "\u4ece120\u5230160%")
     changed_break = translation_issues("\u4e00\r\n\u4e8c", "\u4e00\n\u4e8c")
 
     assert not any(issue["type"] == "numeric_preservation" for issue in clean)
+    assert not any(issue["type"] == "numeric_preservation" for issue in normalized_floor)
+    assert not any(issue["type"] == "numeric_preservation" for issue in normalized_currency)
     assert not any(issue["type"] == "line_break_preservation" for issue in clean)
     assert any(issue["type"] == "numeric_preservation" for issue in changed_number)
+    assert status_for_output("120\u304b\u3089150%", "\u4ece120\u5230160%", changed_number) == (
+        "translated_needs_review"
+    )
     assert any(issue["type"] == "line_break_preservation" for issue in changed_break)
 
 
@@ -2508,6 +2526,24 @@ def test_quality_rejects_punctuation_only_translation():
 
     issues = translation_issues("手に入れてください」", "」")
     assert "model_refusal" in {issue["type"] for issue in issues}
+
+
+def test_quality_preserves_nonlexical_small_kana_vocalizations():
+    from translation.classification import deterministic_translation
+    from translation.quality import translation_issues
+
+    source = "\u300c\uff5e\uff5e\uff5e\uff5e\uff5e\uff5e\uff5e\u3063\uff01\u300d"
+
+    assert deterministic_translation(source) == source
+    assert translation_issues(source, source) == []
+    assert translation_issues(source, "\u300c\uff5e\uff5e\uff5e\uff5e\uff5e\uff5e\uff5e\uff01\u300d") == []
+    assert translation_issues("\u300c\uff5e\uff5e\uff5e\u3063\u203c\u300d", "\u300c\uff5e\uff5e\uff5e\uff01\uff01\u300d") == []
+
+
+def test_refusal_check_accepts_short_chinese_label_with_source_latin_token():
+    from translation.quality import is_refusal
+
+    assert not is_refusal("\u3010Ctrl\u952e\u3011", original="\u3010Ctrl\u30ad\u30fc\u3011")
 
 
 def test_quality_allows_source_resource_identifiers_in_mixed_text():

@@ -1134,7 +1134,7 @@ def test_translation_status_contract_is_shared_by_quality_and_pipeline():
     assert status_for_output("", "", None) == "preserved"
     assert status_for_output("白奴奈生", "白奴奈生") == "preserved"
     assert status_for_output("こんにちは", "你好") == "translated"
-    assert status_for_output("こんにちは", "你好", issues) == "review_required"
+    assert status_for_output("こんにちは", "你好", issues) == "translated_needs_review"
     assert status_for_output("こんにちは", "你好", soft_issues) == "translated_needs_review"
 
     assert TranslationPipeline._status_for_output("こんにちは", "你好", issues) == status_for_output("こんにちは", "你好", issues)
@@ -3050,6 +3050,35 @@ def test_pollution_validator_flags_unsupported_proper_name_in_translation():
         "unsupported_proper_name",
         "contextual_term_pollution",
     }
+
+
+def test_pollution_validator_accepts_honorific_names_supported_by_source():
+    from translation.pollution import translation_pollution_issues
+
+    supported_pairs = [
+        ("すらいむさん、お待たせ", "史莱姆先生，让您久等了"),
+        ("お姉ちゃん", "姐姐大人"),
+        ("その方をお通しして", "请让那位大人通过"),
+    ]
+
+    for source, translated in supported_pairs:
+        issue_types = {
+            issue["type"]
+            for issue in translation_pollution_issues(source, translated)
+        }
+        assert "unsupported_proper_name" not in issue_types
+
+
+def test_pollution_validator_keeps_clear_context_contamination_actionable():
+    from translation.pollution import translation_pollution_issues
+    from translation.quality import status_for_output
+
+    source = "そ、それは……それだけは許して……！"
+    translated = "咦！？中、中出！？请、请等一下王子大人！"
+    issues = translation_pollution_issues(source, translated)
+
+    assert "unsupported_proper_name" in {issue["type"] for issue in issues}
+    assert status_for_output(source, translated, issues) == "review_required"
 
 
 def test_quality_accepts_fullwidth_parentheses_for_source_parentheses():

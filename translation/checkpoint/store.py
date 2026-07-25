@@ -50,8 +50,10 @@ def normalize_status(
     normalized = LEGACY_STATUS_MAP.get(status, status)
     if normalized not in FINAL_STATUSES:
         normalized = "review_required" if status else "translated"
-    if normalized == "translated" and original and translated == original:
-        return "review_required"
+    if normalized == "translated" and (original or translated):
+        from translation.quality.status import status_for_output
+
+        return status_for_output(original, translated, issues)
     if normalized == "translated" and issues:
         return "translated_needs_review"
     return normalized

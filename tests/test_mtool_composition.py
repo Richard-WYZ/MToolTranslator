@@ -66,6 +66,41 @@ def test_composition_plan_preserves_layout_and_records_dependency_hashes():
     assert len(records[0]["dependency_fingerprint"]) == 64
 
 
+def test_composition_accepts_identical_han_parent_without_duplicate_review():
+    from translation.analysis import apply_mtool_compositions, build_mtool_composition_plan
+
+    items = [
+        ("注意", "注意"),
+        ("女神", "女神"),
+        ("注意\n女神", "注意\n女神"),
+    ]
+    plan = build_mtool_composition_plan(items)
+    records: list[dict] = []
+
+    processed = apply_mtool_compositions(
+        plan,
+        translated_items=items,
+        checkpoint_entries={
+            (0, 0): {"status": "preserved"},
+            (1, 0): {"status": "preserved"},
+        },
+        file_path="game.json",
+        progress_records=records,
+        processed_targets=2,
+        total_targets=3,
+        progress_callback=None,
+        save_record=lambda _path, target, **record: target.append(record),
+        mark_dirty=lambda: None,
+        emit_progress=lambda *args, **kwargs: None,
+        progress_status=lambda status: status,
+    )
+
+    assert processed == 3
+    assert items[2][1] == "注意\n女神"
+    assert records[0]["status"] == "preserved"
+    assert records[0]["issues"] == []
+
+
 def test_composition_plan_rejects_ambiguous_normalized_standalone_keys():
     from translation.analysis import build_mtool_composition_plan
 
@@ -637,11 +672,9 @@ def test_sensitive_route_repairs_failed_child_through_full_parent(
         config.DEFAULT_CONFIG["batch_translation"].update(old_batch)
 
 
-@pytest.mark.parametrize("terminal_failure", ["line_break", "symbol"])
-def test_sensitive_parent_failure_gets_one_isolated_quality_terminal_retry(
+def test_sensitive_parent_line_break_failure_stays_soft_without_terminal_retry(
     monkeypatch,
     tmp_path,
-    terminal_failure,
 ):
     import config
     from parser.json_parser import parse_json
@@ -735,14 +768,8 @@ def test_sensitive_parent_failure_gets_one_isolated_quality_terminal_retry(
                 elif model == "api:quality" and issues:
                     output = source.replace(
                         "\u4e2d\u51fa\u3057\u3057\u3066\u3084\u308b",
-                        (
-                            "\u6211\u8981\u5185\u5c04\u4e86\n\u4e32\u5165"
-                            if terminal_failure == "line_break"
-                            else "\u6211\u8981\u5185\u5c04\u4e86"
-                        ),
+                        "\u6211\u8981\u5185\u5c04\u4e86\n\u4e32\u5165",
                     )
-                    if terminal_failure == "symbol":
-                        output = output.replace("__SYM_0__", "")
                 else:
                     output = source
                 translated.append([item_id, output])
@@ -758,39 +785,21 @@ def test_sensitive_parent_failure_gets_one_isolated_quality_terminal_retry(
             "api:minimax-m3",
             "api:minimax-m3",
             "api:quality",
-            "api:quality",
-            "api:quality",
         ]
-        terminal_payload = calls[-1][1]
-        assert not isinstance(terminal_payload, dict) or (
-            "contexts" not in terminal_payload
-        )
-        terminal_items = (
-            terminal_payload["items"]
-            if isinstance(terminal_payload, dict)
-            else terminal_payload
-        )
-        assert "sensitive_parent_repair_failed" in (
-            terminal_items[0][3]["issues"]
-        )
 
         child_entry = checkpoint.get_entry(str(path), 0, 0)
-        assert child_entry["translated"] == (
-            "\u300c\u6211\u8981\u5185\u5c04\u4e86\u300d"
-        )
-        assert child_entry["status"] == "translated"
+        assert child_entry["translated"] == "\u300c\u6211\u8981\u5185\u5c04\u4e86\n\u4e32\u5165\u300d"
+        assert child_entry["status"] == "translated_needs_review"
         assert child_entry["model_identifier"] == "api:quality"
-        assert child_entry["sensitive_repair_round"] == 4
-        assert child_entry["retry_count"] == 4
-        assert child_entry["batch_id"].startswith(
-            "api_event_sensitive_terminal_"
+        assert any(
+            issue["type"] == "line_break_preservation"
+            for issue in child_entry["issues"]
         )
+        assert not child_entry["batch_id"].startswith("api_event_sensitive_terminal_")
 
         translated = dict(parse_json(str(output_path)))
-        assert translated[child] == "\u300c\u6211\u8981\u5185\u5c04\u4e86\u300d"
-        assert translated[parent] == (
-            "\u300c\u6211\u8981\u5185\u5c04\u4e86\u300d\n"
-        )
+        assert translated[child] == child_entry["translated"]
+        assert translated[parent] == child_entry["translated"] + "\n"
     finally:
         checkpoint.CHECKPOINT_DIR = old_dir
         config.DEFAULT_CONFIG["model_provider"] = old_provider

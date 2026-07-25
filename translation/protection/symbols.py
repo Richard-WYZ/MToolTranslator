@@ -42,7 +42,7 @@ def restore_symbols(
     translated_text: str,
     tokens: list[SymbolToken],
 ) -> tuple[str, list[dict]]:
-    """Restore protected symbols and report placeholder movement/loss."""
+    """Restore authoritative source symbols, rebuilding them when necessary."""
     if not tokens:
         # Parent/neighbor context can contain protected symbols that do not
         # belong to this source item. A model may copy those internal
@@ -68,11 +68,6 @@ def restore_symbols(
         for token in tokens:
             restored = restored.replace(token.token, token.symbol, 1)
         return SYMBOL_PLACEHOLDER_RE.sub("", restored), warnings
-
-    warnings.append({
-        "type": "symbol_preservation",
-        "message": "Protected symbol placeholder was moved or missing; symbols were rebuilt from source order.",
-    })
 
     cleaned = sanitized_text
     cleaned = SYMBOL_PLACEHOLDER_RE.sub("", cleaned)

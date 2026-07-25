@@ -14,7 +14,12 @@ if str(ROOT) not in sys.path:
 
 from translation.classification import deterministic_translation, has_source_japanese, looks_like_short_label
 from translation.pollution import glossary_term_pollution_issues, translation_pollution_issues
-from translation.quality import is_refusal, new_issues, translation_issues
+from translation.quality import (
+    is_refusal,
+    new_issues,
+    status_for_output,
+    translation_issues,
+)
 from translation.terminology import Glossary
 
 
@@ -98,12 +103,8 @@ def audit_translation_output(
             status = "preserved" if translated == source_text else "translated_needs_review"
         elif deterministic == source_text and translated == source_text:
             status = "preserved"
-        elif translated == source_text:
-            status = "review_required"
-        elif issues:
-            status = "translated_needs_review"
         else:
-            status = "translated"
+            status = status_for_output(source_text, translated, issues)
         statuses[status] += 1
         issue_counts.update(str(issue.get("type", "translation_issue")) for issue in issues)
         if issues:

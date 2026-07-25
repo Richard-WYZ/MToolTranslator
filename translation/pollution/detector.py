@@ -4,6 +4,10 @@ import re
 
 
 JP_NAME_RE = re.compile("[\u30a1-\u30fa\u30fc]{2,20}|[\u3400-\u4dbf\u4e00-\u9fff]{2,8}")
+JP_HONORIFIC_EVIDENCE_RE = re.compile(
+    r"(?:\u3055\u3093|\u3061\u3083\u3093|\u304f\u3093|\u69d8|\u3055\u307e|"
+    r"\u305d\u306e\u65b9|\u3042\u306e\u65b9|\u3053\u306e\u65b9)"
+)
 JP_PARTICLE_RE = re.compile("(\u306f|\u304c|\u3092|\u306b|\u3078|\u3068|\u3067|\u306e|\u3082|\u3084|\u304b|\u304b\u3089|\u307e\u3067|\u3088\u308a)")
 CN_HAN_RE = re.compile("[\u4e00-\u9fff]")
 
@@ -198,6 +202,8 @@ def _source_can_support_target_names(
 
 
 def _source_has_name_evidence(source: str) -> bool:
+    if JP_HONORIFIC_EVIDENCE_RE.search(source):
+        return True
     if not JP_NAME_RE.search(source):
         return False
     if source.strip() in COMMON_SOURCE_TERMS:

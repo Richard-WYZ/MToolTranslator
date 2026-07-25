@@ -10,6 +10,7 @@ from translation.quality.rules import (
     exact_fixed_translation,
     exact_japanese_menu_translation,
     exact_nonlinguistic_translation,
+    is_valid_identical_han_translation,
     suspicious_artifacts,
     translation_issues,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "exact_fixed_translation",
     "exact_japanese_menu_translation",
     "exact_nonlinguistic_translation",
+    "is_valid_identical_han_translation",
     "progress_status",
     "protect_runtime_tokens",
     "quality_prompt_rules",

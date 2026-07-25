@@ -11,6 +11,10 @@ from translation.review.summary import build_review_summary
 
 
 REVIEW_STATUSES = {"translated_needs_review", "review_required"}
+DERIVED_COMPOSITION_ISSUES = {
+    "composed_dependency_review_required",
+    "composed_dependency_needs_review",
+}
 
 
 def review_report_path(file_path: str, output_path: str | None = None) -> str:
@@ -21,6 +25,7 @@ def review_report_path(file_path: str, output_path: str | None = None) -> str:
 def build_review_report(file_path: str, output_path: str | None = None) -> dict[str, Any]:
     data = checkpoint.load_checkpoint(file_path)
     review_entries: list[dict[str, Any]] = []
+    derived_review_entries = 0
     for entry_key, entry in (data.get("entries", {}) or {}).items():
         if not isinstance(entry, dict):
             continue
@@ -33,6 +38,18 @@ def build_review_report(file_path: str, output_path: str | None = None) -> dict[
         if status not in REVIEW_STATUSES:
             continue
         issues = entry.get("issues", []) or []
+        issue_types = {
+            str(issue.get("type", ""))
+            for issue in issues
+            if isinstance(issue, dict)
+        }
+        if (
+            str(entry.get("entry_classification", "")) == "composed_multiline"
+            and issue_types
+            and issue_types.issubset(DERIVED_COMPOSITION_ISSUES)
+        ):
+            derived_review_entries += 1
+            continue
         review_reasons = entry.get("review_reasons", []) or [
             str(issue.get("type", "translation_issue"))
             for issue in issues
@@ -59,11 +76,15 @@ def build_review_report(file_path: str, output_path: str | None = None) -> dict[
             "review_reasons": review_reasons,
             "updated_at": entry.get("updated_at", ""),
         })
+    summary = build_review_summary(file_path).as_dict()
+    summary["raw_review_queue_size"] = summary["review_queue_size"]
+    summary["derived_review_entries"] = derived_review_entries
+    summary["review_queue_size"] = len(review_entries)
     return {
         "source_file": str(Path(file_path).resolve()),
         "translated_file": str(Path(output_path or default_output_path(file_path)).resolve()),
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "summary": build_review_summary(file_path).as_dict(),
+        "summary": summary,
         "items": review_entries,
     }
 

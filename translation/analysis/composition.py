@@ -294,16 +294,8 @@ def apply_mtool_compositions(
                 }
             )
             status = "translated_needs_review"
-        elif translated == entry.source:
-            issues.append(
-                {
-                    "type": "identical_composed_japanese_source",
-                    "message": "Composed translation is identical to its Japanese source.",
-                }
-            )
-            status = "review_required"
         else:
-            status = "translated"
+            status = "preserved" if translated == entry.source else "translated"
 
         key, _value = translated_items[parent_index]
         translated_items[parent_index] = (key, translated)
