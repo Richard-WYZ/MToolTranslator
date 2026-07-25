@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.pytest_cache/
+dist/
+dist_pkg/
+build_pkg/
+build/*
+!build/README.md
+
+# Environment
+.env
+.env.*
+!.env.example
+.model-status.json
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+secrets.*
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Project specific
+*.log
+*.sqlite3
+.checkpoints/
+.agents/
+.omo/
+output/
+tmp/
+tmp_uploads/
+test_work/*
+!test_work/README.md
+*.translated.*
+glossary.json
+
+# Local development notes and private benchmark material
+AGENTS.md
+test_nsfw_translation.py
+docs/benchmark-results.md
+docs/local-ai-translation-research-notes.md
+translation-speed-quality-proposal.md

@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#111827">
+    <title>MTool 汉化工具</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22><rect width=%2264%22 height=%2264%22 rx=%2216%22 fill=%22%23111827%22/><path d=%22M17 20h30v7H35v20h-7V27H17z%22 fill=%22%23fff%22/></svg>">
+    <link rel="stylesheet" href="/static/css/base.css">
+    <link rel="stylesheet" href="/static/css/translate.css">
+    <link rel="stylesheet" href="/static/css/workspaces.css">
+    <link rel="stylesheet" href="/static/css/responsive.css">
+</head>
+<body>
+<div class="app-shell">
+    <aside class="sidebar">
+        <div class="brand">
+            <span class="brand-mark">译</span>
+            <div>
+                <strong>MTool 汉化工具</strong>
+                <span>MTool 日文游戏汉化与复核</span>
+            </div>
+        </div>
+        <nav class="nav-list" aria-label="主导航">
+            <a href="#translate" data-page="translate"><span class="nav-glyph">T</span><span>翻译任务</span></a>
+            <a href="#review" data-page="review"><span class="nav-glyph">Q</span><span>质量复核</span><b id="nav-review-count" class="nav-count" hidden>0</b></a>
+            <a href="#glossary" data-page="glossary"><span class="nav-glyph">G</span><span>术语库</span></a>
+            <a href="#history" data-page="history"><span class="nav-glyph">H</span><span>历史与恢复</span></a>
+            <a href="#settings" data-page="settings"><span class="nav-glyph">S</span><span>设置</span></a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="server-state">
+                <i class="status-dot" id="server-dot"></i>
+                <div>
+                    <span id="server-status">正在连接服务</span>
+                    <small id="server-detail">本机 127.0.0.1</small>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <main class="main">
+        <header class="topbar">
+            <div>
+                <p class="eyebrow" id="page-eyebrow">TRANSLATION WORKSPACE</p>
+                <h1 id="page-title">翻译任务</h1>
+            </div>
+            <div class="topbar-actions">
+                <span class="provider-pill" id="top-provider">配置读取中</span>
+                <button class="icon-button" id="btn-refresh-all" title="刷新当前页面" aria-label="刷新当前页面">↻</button>
+            </div>
+        </header>
+
+        <div id="recovery-banner" class="recovery-banner" hidden>
+            <div>
+                <strong>发现未完成任务</strong>
+                <span id="recovery-banner-text"></span>
+            </div>
+            <button class="btn btn-secondary btn-sm" data-nav="history">查看并恢复</button>
+        </div>
+
+        <section id="page-translate" class="page">
+            <div class="workspace-grid">
+                <div class="workspace-main">
+                    <section class="panel step-panel" id="file-panel">
+                        <div class="panel-heading">
+                            <div><span class="step-number">1</span><div><h2>选择源文件</h2><p>导入一个平铺的 MTool JSON 映射</p></div></div>
+                            <span class="step-state" id="file-step-state">等待文件</span>
+                        </div>
+                        <div id="upload-zone" class="upload-zone" tabindex="0" role="button">
+                            <div class="upload-icon">JSON</div>
+                            <strong>拖入 ManualTransFile.json</strong>
+                            <span>或点击选择文件 · 原始键、顺序与空键都会原样保留</span>
+                            <input id="file-input" type="file" accept=".json" hidden>
+                        </div>
+                        <div id="file-card" class="file-card" hidden>
+                            <div class="file-type">JSON</div>
+                            <div class="file-card-body">
+                                <strong id="file-name">—</strong>
+                                <span><b id="file-entry-count">0</b> 条 · <span id="file-size">0 KB</span> · UTF-8</span>
+                            </div>
+                            <button id="btn-preview-toggle" class="btn btn-ghost btn-sm">预览</button>
+                            <button id="btn-remove-file" class="btn btn-ghost btn-sm">移除</button>
+                        </div>
+                        <div id="preview-wrap" class="preview-wrap" hidden>
+                            <table class="data-table">
+                                <thead><tr><th>#</th><th>源键</th><th>当前值</th></tr></thead>
+                                <tbody id="preview-body"></tbody>
+                            </table>
+                        </div>
+                    </section>
+
+                    <section class="panel step-panel" id="profile-panel">
+                        <div class="panel-heading">
+                            <div><span class="step-number">2</span><div><h2>选择执行方案</h2><p>方案决定数据流向、模型路由与批处理方式</p></div></div>
+                            <span class="step-state" id="profile-step-state">质量优先</span>
+                        </div>
+                        <div id="profile-options" class="profile-options">
+                            <label class="profile-card selected" data-profile-card="quality_first">
+                                <input type="radio" name="execution-profile" value="quality_first" checked>
+                                <span class="profile-top"><b>联网 · 质量优先</b><em>推荐</em></span>
+                                <span>Qwen 负责长文本和修复，MiniMax 负责短标签与敏感文本。</span>
+                                <small>经过完整文件验证</small>
+                            </label>
+                            <label class="profile-card" data-profile-card="single_model">
+                                <input type="radio" name="execution-profile" value="single_model">
+                                <span class="profile-top"><b>联网 · 单模型</b><i>在线</i></span>
+                                <span>全部文本只使用一个 API 模型，不启用跨模型路由。</span>
+                                <small>适合模型对比</small>
+                            </label>
+                            <label class="profile-card" data-profile-card="local">
+                                <input type="radio" name="execution-profile" value="local">
+                                <span class="profile-top"><b>本地 · Ollama</b><i>本机</i></span>
+                                <span>文本不离开本机，质量和速度取决于本地模型与硬件。</span>
+                                <small id="local-profile-note">正在检测 Ollama</small>
+                            </label>
+                            <label class="profile-card" data-profile-card="custom">
+                                <input type="radio" name="execution-profile" value="custom">
+                                <span class="profile-top"><b>高级 · 自定义路由</b><i>高级</i></span>
+                                <span>显式选择 API 路由和经过边界校验的批处理参数。</span>
+                                <small>建议先用样本验证</small>
+                            </label>
+                        </div>
+
+                        <div class="model-config">
+                            <div class="field" id="primary-model-field">
+                                <label for="model-select">主模型</label>
+                                <select id="model-select"></select>
+                                <small id="model-help">质量优先方案使用固定的已验证路由。</small>
+                            </div>
+                            <button id="btn-refresh-models" class="btn btn-secondary btn-sm">刷新模型</button>
+                        </div>
+
+                        <div id="route-map" class="route-map"></div>
+
+                        <details id="advanced-config" class="advanced-config">
+                            <summary>自定义路由与批处理参数</summary>
+                            <div class="advanced-grid">
+                                <div class="field"><label for="fast-model">短标签模型</label><select id="fast-model"></select></div>
+                                <div class="field"><label for="sensitive-model">敏感文本模型</label><select id="sensitive-model"></select></div>
+                                <div class="field"><label for="quality-model">质量修复模型</label><select id="quality-model"></select></div>
+                                <div class="field"><label for="custom-concurrency">并发请求</label><input id="custom-concurrency" type="number" min="1" max="30" value="10"></div>
+                                <div class="field"><label for="custom-batch-size">批大小</label><input id="custom-batch-size" type="number" min="1" max="100" value="40"></div>
+                                <div class="field"><label for="custom-max-chars">批字符上限</label><input id="custom-max-chars" type="number" min="500" max="20000" value="4000"></div>
+                                <div class="field"><label for="custom-protocol">短文本协议</label><select id="custom-protocol"><option value="line">Line</option><option value="json">JSON</option></select></div>
+                            </div>
+                            <p class="warning-note">自定义参数会写入任务检查点，但不代表已经通过完整文件基准。</p>
+                        </details>
+                    </section>
+
+                    <section class="panel step-panel" id="preflight-panel">
+                        <div class="panel-heading">
+                            <div><span class="step-number">3</span><div><h2>预检</h2><p>不调用模型，不产生 API 用量</p></div></div>
+                            <button id="btn-preflight" class="btn btn-secondary" disabled>运行预检</button>
+                        </div>
+                        <div id="preflight-empty" class="empty-state compact">选择文件和执行方案后运行预检</div>
+                        <div id="preflight-result" hidden>
+                            <div class="metric-row">
+                                <div class="metric"><span>文件条目</span><strong id="pf-total">0</strong></div>
+                                <div class="metric"><span>需要模型</span><strong id="pf-model">0</strong></div>
+                                <div class="metric"><span>规则处理 / 保留</span><strong id="pf-preserved">0</strong></div>
+                                <div class="metric"><span>已有断点</span><strong id="pf-checkpoint">0</strong></div>
+                            </div>
+                            <div id="preflight-routes" class="preflight-routes"></div>
+                            <div id="preflight-warnings"></div>
+                        </div>
+                    </section>
+
+                    <section class="panel step-panel task-panel" id="task-panel">
+                        <div class="panel-heading">
+                            <div><span class="step-number">4</span><div><h2>翻译与质量处理</h2><p id="task-subtitle">预检通过后即可启动</p></div></div>
+                            <span id="task-status-badge" class="status-badge neutral">未开始</span>
+                        </div>
+                        <div class="phase-track" id="phase-track">
+                            <div data-phase="analysis"><i></i><span>分析与保留</span></div>
+                            <div data-phase="translation"><i></i><span>主体翻译</span></div>
+                            <div data-phase="validation"><i></i><span>质量修复</span></div>
+                            <div data-phase="completed"><i></i><span>合成与报告</span></div>
+                        </div>
+                        <div class="progress-shell">
+                            <div class="progress-bar"><div id="task-progress-fill" class="progress-fill"></div></div>
+                            <div class="progress-labels"><strong id="task-progress-text">0 / 0</strong><span id="task-progress-percent">0%</span></div>
+                        </div>
+                        <div class="metric-row task-metrics">
+                            <div class="metric"><span>已用时间</span><strong id="metric-elapsed">—</strong></div>
+                            <div class="metric"><span>预计剩余</span><strong id="metric-eta">—</strong></div>
+                            <div class="metric"><span>处理速度</span><strong id="metric-rate">—</strong></div>
+                            <div class="metric"><span>Token</span><strong id="metric-tokens">—</strong></div>
+                        </div>
+                        <div id="current-item" class="current-item" hidden>
+                            <div><span>当前原文</span><p id="current-original">—</p></div>
+                            <div><span>最新译文</span><p id="current-translated">等待模型返回</p></div>
+                        </div>
+                        <p id="control-note" class="control-note" hidden></p>
+                        <div class="task-actions">
+                            <div class="button-row">
+                                <button id="btn-start" class="btn btn-primary" disabled>开始质量优先翻译</button>
+                                <button id="btn-pause" class="btn btn-secondary" disabled>暂停新请求</button>
+                                <button id="btn-resume" class="btn btn-secondary" disabled>继续任务</button>
+                                <button id="btn-stop" class="btn btn-danger-ghost" disabled>停止并写盘</button>
+                            </div>
+                            <button id="btn-export" class="btn btn-success" disabled>导出完整结果</button>
+                        </div>
+                        <div id="result-summary" class="result-summary" hidden>
+                            <div class="result-copy"><span class="result-icon">✓</span><div><strong id="result-title">处理完成</strong><p id="result-description"></p></div></div>
+                            <div id="result-metrics" class="result-metrics"></div>
+                            <button class="btn btn-secondary btn-sm" data-nav="review">打开质量复核</button>
+                        </div>
+                    </section>
+                </div>
+
+                <aside class="workspace-aside">
+                    <section class="panel sticky-panel">
+                        <div class="aside-heading"><h3>任务摘要</h3><span id="privacy-badge" class="privacy-badge online">联网</span></div>
+                        <dl class="summary-list">
+                            <div><dt>源文件</dt><dd id="summary-file">尚未选择</dd></div>
+                            <div><dt>执行方案</dt><dd id="summary-profile">质量优先</dd></div>
+                            <div><dt>主模型</dt><dd id="summary-model">Qwen 3.7 Plus</dd></div>
+                            <div><dt>并发 / 批大小</dt><dd id="summary-batch">10 / 40</dd></div>
+                            <div><dt>断点续传</dt><dd id="summary-checkpoint">预检后确认</dd></div>
+                        </dl>
+                        <div class="aside-callout">
+                            <strong>数据流向</strong>
+                            <p id="privacy-copy">文本会通过已配置的 OpenCode Go API 发送给路由模型。</p>
+                        </div>
+                    </section>
+                </aside>
+            </div>
+        </section>
+
+        <section id="page-review" class="page">
+            <div id="review-empty" class="panel empty-state">
+                <span class="empty-icon">Q</span>
+                <h2>还没有可复核的翻译</h2>
+                <p>完成翻译或从历史中打开一个任务后，这里会显示质量检查结果。</p>
+                <button class="btn btn-primary" data-nav="translate">返回翻译任务</button>
+            </div>
+            <div id="review-workspace" hidden>
+                <div class="stat-grid">
+                    <div class="stat-card"><span>有效条目</span><strong id="review-stat-total">0</strong><small>有语言内容</small></div>
+                    <div class="stat-card attention"><span>需要复核</span><strong id="review-stat-needs">0</strong><small>译文已保留</small></div>
+                    <div class="stat-card danger"><span>约束问题</span><strong id="review-stat-issues">0</strong><small>自动检查发现</small></div>
+                    <div class="stat-card success"><span>已确认 / 保留</span><strong id="review-stat-done">0</strong><small>可直接导出</small></div>
+                </div>
+                <div class="review-toolbar panel">
+                    <div class="filter-tabs" id="review-filters">
+                        <button data-filter="issues" class="active">优先问题</button>
+                        <button data-filter="all">全部</button>
+                        <button data-filter="refusal">拒答</button>
+                        <button data-filter="term">术语</button>
+                        <button data-filter="english">英文残留</button>
+                        <button data-filter="symbol">符号</button>
+                        <button data-filter="length">长度</button>
+                        <button data-filter="pending">未处理</button>
+                    </div>
+                    <div class="jump-control"><label for="review-jump">跳至行</label><input id="review-jump" type="number" min="1"><button id="btn-review-jump" class="btn btn-secondary btn-sm">跳转</button></div>
+                </div>
+                <div class="review-layout">
+                    <section class="panel review-queue-panel">
+                        <div class="queue-header">
+                            <div><h2>复核队列</h2><span id="review-queue-count">0 项</span></div>
+                            <button id="btn-accept-selected" class="btn btn-secondary btn-sm" disabled>确认所选</button>
+                        </div>
+                        <div id="review-queue" class="review-queue"></div>
+                        <div class="pagination">
+                            <button id="btn-review-prev" class="btn btn-ghost btn-sm">上一页</button>
+                            <span id="review-page-label">1 / 1</span>
+                            <button id="btn-review-next" class="btn btn-ghost btn-sm">下一页</button>
+                        </div>
+                    </section>
+                    <section class="panel review-editor-panel">
+                        <div id="review-editor-empty" class="empty-state compact">从左侧选择一个条目</div>
+                        <div id="review-editor" hidden>
+                            <div class="editor-title"><div><span id="editor-row">第 0 行</span><h2 id="editor-status">待复核</h2></div><span id="editor-risk" class="status-badge warning">需要复核</span></div>
+                            <div class="text-block source"><label>日文原文</label><p id="editor-source"></p></div>
+                            <div class="text-block target"><label for="editor-target">简体中文译文</label><textarea id="editor-target" rows="8"></textarea></div>
+                            <div class="editor-actions">
+                                <button id="btn-review-accept" class="btn btn-primary">保存并确认</button>
+                                <button id="btn-review-draft" class="btn btn-secondary">保存为待复核</button>
+                                <button id="btn-review-preserve" class="btn btn-ghost">保留原文</button>
+                            </div>
+                            <p id="editor-save-note" class="hint"></p>
+                        </div>
+                    </section>
+                    <aside class="panel review-meta-panel">
+                        <h2>上下文与质量依据</h2>
+                        <div class="meta-section"><h3>相邻文本</h3><div id="editor-neighbors" class="neighbor-list"><p class="hint">选择条目后显示</p></div></div>
+                        <div class="meta-section"><h3>检查问题</h3><div id="editor-issues" class="issue-list"><p class="hint">没有数据</p></div></div>
+                        <div class="meta-section"><h3>命中术语</h3><div id="editor-terms" class="term-list"><p class="hint">没有数据</p></div></div>
+                        <div class="meta-section"><h3>生成信息</h3><dl id="editor-generation" class="mini-dl"></dl></div>
+                    </aside>
+                </div>
+            </div>
+        </section>
+
+        <section id="page-glossary" class="page">
+            <div id="glossary-empty-file" class="panel empty-state">
+                <span class="empty-icon">G</span><h2>选择任务后查看动态术语</h2>
+                <p>术语来自当前文件的证据分析；只有 confirmed 和 official 会被强制应用。</p>
+            </div>
+            <div id="glossary-workspace" hidden>
+                <div class="section-intro">
+                    <div><h2>当前文件术语</h2><p id="glossary-file-label">—</p></div>
+                    <div class="search-box"><input id="glossary-search" type="search" placeholder="搜索日文或中文术语"></div>
+                </div>
+                <div class="glossary-tabs" id="glossary-tabs">
+                    <button data-glossary-filter="all" class="active">全部 <b id="glossary-count-all">0</b></button>
+                    <button data-glossary-filter="confirmed">已确认 <b id="glossary-count-confirmed">0</b></button>
+                    <button data-glossary-filter="candidate">候选 <b id="glossary-count-candidate">0</b></button>
+                    <button data-glossary-filter="needs_review">需复核 <b id="glossary-count-review">0</b></button>
+                </div>
+                <div class="panel table-panel">
+                    <table class="data-table glossary-table">
+                        <thead><tr><th>日文术语</th><th>当前译法 / 候选</th><th>状态</th><th>证据</th><th>操作</th></tr></thead>
+                        <tbody id="glossary-body"></tbody>
+                    </table>
+                    <div id="glossary-empty" class="empty-state compact" hidden>当前筛选下没有术语</div>
+                </div>
+            </div>
+        </section>
+
+        <section id="page-history" class="page">
+            <div class="history-grid">
+                <section class="panel">
+                    <div class="panel-heading simple"><div><h2>可恢复任务</h2><p>从同一模型配置和断点继续，不重复已验证条目</p></div><span id="recovery-count" class="count-pill">0</span></div>
+                    <div id="recovery-list" class="history-list"><div class="empty-state compact">正在检查断点</div></div>
+                </section>
+                <section class="panel">
+                    <div class="panel-heading simple"><div><h2>翻译历史</h2><p>本机检查点和当前应用会话</p></div><button id="btn-refresh-history" class="btn btn-secondary btn-sm">刷新</button></div>
+                    <div id="history-list" class="history-list"><div class="empty-state compact">正在加载历史</div></div>
+                </section>
+            </div>
+        </section>
+
+        <section id="page-settings" class="page">
+            <div class="settings-grid">
+                <section class="panel settings-wide">
+                    <div class="panel-heading simple">
+                        <div><h2>连接与模型配置</h2><p>保存到软件根目录的 .env；修改仅影响之后新建或恢复的任务</p></div>
+                        <span id="settings-dirty-badge" class="status-badge neutral">尚未修改</span>
+                    </div>
+                    <form id="settings-form" class="settings-form">
+                        <fieldset id="settings-fieldset" disabled>
+                            <div class="settings-form-grid">
+                                <div class="field">
+                                    <label for="settings-provider">默认提供方</label>
+                                    <select id="settings-provider">
+                                        <option value="api">联网 API</option>
+                                        <option value="ollama">本地 Ollama</option>
+                                    </select>
+                                </div>
+                                <div class="field" id="settings-key-field">
+                                    <label for="settings-api-key">API 密钥</label>
+                                    <input id="settings-api-key" type="password" autocomplete="new-password" placeholder="留空表示保留现有密钥">
+                                    <small id="settings-key-state">尚未读取状态</small>
+                                </div>
+                                <div class="field settings-span-2">
+                                    <label for="settings-default-model">默认模型（必须已勾选）</label>
+                                    <input id="settings-default-model" type="text" list="settings-model-options" autocomplete="off" placeholder="api:qwen3.7-plus">
+                                    <datalist id="settings-model-options"></datalist>
+                                </div>
+                            </div>
+
+                            <section class="model-picker">
+                                <div class="model-picker-heading">
+                                    <div>
+                                        <h3>可用于翻译的模型</h3>
+                                        <p id="settings-model-summary">正在读取模型目录</p>
+                                    </div>
+                                    <div class="model-picker-actions">
+                                        <button id="btn-settings-discover" type="button" class="btn btn-secondary btn-sm">获取模型</button>
+                                        <button id="btn-test-enabled-models" type="button" class="btn btn-secondary btn-sm">测试已勾选</button>
+                                        <button id="btn-test-enabled-nsfw" type="button" class="btn btn-secondary btn-sm">成人内容测试</button>
+                                    </div>
+                                </div>
+                                <div class="model-picker-toolbar">
+                                    <input id="settings-model-search" type="search" placeholder="搜索当前提供方模型">
+                                    <button id="btn-model-select-all" type="button" class="btn btn-ghost btn-sm">全选</button>
+                                    <button id="btn-model-select-none" type="button" class="btn btn-ghost btn-sm">全不选</button>
+                                </div>
+                                <div id="settings-model-list" class="settings-model-list"></div>
+                                <p class="model-usage-note">获取模型目录不发送推理请求；普通与成人内容测试都会逐模型发送一条极短翻译请求，可能消耗 Token。成人测试通过后标记为“NSFW 可用”。</p>
+                            </section>
+
+                            <details id="settings-advanced" class="settings-advanced">
+                                <summary>高级连接设置</summary>
+                                <div class="settings-form-grid advanced-settings-grid">
+                                    <div class="field">
+                                        <label for="settings-api-style">API 协议</label>
+                                        <select id="settings-api-style">
+                                            <option value="opencode_go">OpenCode Go</option>
+                                            <option value="openai">OpenAI 兼容</option>
+                                            <option value="anthropic">Anthropic Messages</option>
+                                        </select>
+                                    </div>
+                                    <div class="field">
+                                        <label for="settings-base-url">API Base URL</label>
+                                        <input id="settings-base-url" type="url" autocomplete="off" placeholder="OpenCode Go 可留空使用内置地址">
+                                    </div>
+                                    <div class="field settings-span-2">
+                                        <label for="settings-ollama-host">Ollama 地址</label>
+                                        <input id="settings-ollama-host" type="url" autocomplete="off" placeholder="http://localhost:11434">
+                                    </div>
+                                    <label class="check-row">
+                                        <input id="settings-disable-thinking" type="checkbox" checked>
+                                        <span><b>翻译请求禁用思考输出</b><small>OpenCode Go 会按端点发送对应参数。</small></span>
+                                    </label>
+                                    <label class="check-row danger-check">
+                                        <input id="settings-clear-key" type="checkbox">
+                                        <span><b>清除 .env 密钥</b><small>保存后生效；进程环境变量不受影响。</small></span>
+                                    </label>
+                                </div>
+                            </details>
+                        </fieldset>
+                        <div id="settings-file-state" class="settings-file-state"></div>
+                        <div class="settings-actions">
+                            <span id="settings-save-note" class="hint">密钥不会通过设置读取接口返回到界面。</span>
+                            <div class="button-row">
+                                <button id="btn-settings-refresh" type="button" class="btn btn-secondary">放弃修改并重载</button>
+                                <button id="btn-settings-save" type="submit" class="btn btn-primary">保存设置</button>
+                            </div>
+                        </div>
+                    </form>
+                </section>
+                <section class="panel">
+                    <div class="panel-heading simple"><div><h2>提供方状态</h2><p>API 为配置检查；Ollama 模型列表为实时检测</p></div></div>
+                    <div id="provider-status-list" class="provider-status-list"></div>
+                </section>
+                <section class="panel">
+                    <div class="panel-heading simple"><div><h2>执行方案说明</h2><p>每个任务的实际配置会写入断点</p></div></div>
+                    <div id="settings-profile-list" class="settings-profile-list"></div>
+                </section>
+                <section class="panel settings-wide">
+                    <div class="panel-heading simple"><div><h2>配置来源</h2><p>密钥和默认连接由可执行文件目录或项目目录的 .env 管理</p></div></div>
+                    <div class="config-notice">
+                        <div><strong>密钥安全</strong><span>读取接口只返回“已配置 / 未配置”和来源；密钥正文永不回显。</span></div>
+                        <div><strong>配置优先级</strong><span>操作系统进程环境变量高于 .env，界面保存无法覆盖进程环境变量。</span></div>
+                        <div><strong>模型健康</strong><span>Ollama 列表是实时检测；API 列表来自配置，只有连接测试或翻译时才会发送请求。</span></div>
+                        <div><strong>任务参数</strong><span>质量优先方案使用经过验证的固定路由；自定义批量参数仍是任务级覆盖。</span></div>
+                    </div>
+                </section>
+            </div>
+        </section>
+    </main>
+</div>
+
+<div id="toast-region" class="toast-region" aria-live="polite"></div>
+<script defer src="/static/js/core.js"></script>
+<script defer src="/static/js/profiles.js"></script>
+<script defer src="/static/js/translate.js"></script>
+<script defer src="/static/js/review.js"></script>
+<script defer src="/static/js/glossary.js"></script>
+<script defer src="/static/js/history.js"></script>
+<script defer src="/static/js/model-testing.js"></script>
+<script defer src="/static/js/settings.js"></script>
+<script defer src="/static/js/main.js"></script>
+</body>
+</html>

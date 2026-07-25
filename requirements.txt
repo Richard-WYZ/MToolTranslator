@@ -1,0 +1,6 @@
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pywebview>=4.4.0
+python-multipart>=0.0.6
+aiohttp>=3.9.0
+requests>=2.31.0

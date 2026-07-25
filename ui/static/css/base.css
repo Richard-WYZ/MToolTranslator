@@ -1,0 +1,64 @@
+:root {
+    --ink: #172033;
+    --muted: #687187;
+    --soft: #f4f6fa;
+    --line: #e3e7ef;
+    --panel: #ffffff;
+    --sidebar: #111827;
+    --sidebar-soft: #1c2638;
+    --primary: #4f46e5;
+    --primary-dark: #4338ca;
+    --primary-soft: #eef2ff;
+    --cyan: #0891b2;
+    --success: #15803d;
+    --success-soft: #ecfdf3;
+    --warning: #b45309;
+    --warning-soft: #fff8e6;
+    --danger: #c2414b;
+    --danger-soft: #fff1f2;
+    --shadow: 0 12px 30px rgba(20, 31, 55, .07);
+    --radius: 16px;
+    --font: "Segoe UI", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; font-family: var(--font); color: var(--ink); background: #f7f8fb; }
+body { font-size: 14px; line-height: 1.55; }
+button, input, select, textarea { font: inherit; }
+button { color: inherit; }
+[hidden] { display: none !important; }
+
+.app-shell { min-height: 100vh; display: grid; grid-template-columns: 236px minmax(0, 1fr); }
+.sidebar { position: fixed; inset: 0 auto 0 0; width: 236px; z-index: 20; display: flex; flex-direction: column; color: #dce2ee; background: linear-gradient(180deg, #111827 0%, #121b2c 100%); }
+.brand { display: flex; align-items: center; gap: 12px; padding: 25px 20px 22px; border-bottom: 1px solid rgba(255,255,255,.08); }
+.brand-mark { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 12px; font-weight: 800; color: white; background: linear-gradient(135deg, #6366f1, #06b6d4); box-shadow: 0 8px 20px rgba(79,70,229,.35); }
+.brand div { min-width: 0; display: flex; flex-direction: column; }
+.brand strong { overflow: hidden; font-size: 13px; color: #fff; text-overflow: ellipsis; }
+.brand span:last-child { color: #8792a8; font-size: 11px; }
+.nav-list { display: flex; flex-direction: column; gap: 5px; padding: 18px 12px; }
+.nav-list a { display: flex; align-items: center; gap: 11px; min-height: 43px; padding: 0 12px; border-radius: 11px; color: #aeb8ca; text-decoration: none; transition: .16s ease; }
+.nav-list a:hover { color: white; background: rgba(255,255,255,.055); }
+.nav-list a.active { color: white; background: var(--sidebar-soft); box-shadow: inset 3px 0 #818cf8; }
+.nav-glyph { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 7px; color: #a5b4fc; background: rgba(129,140,248,.12); font-size: 11px; font-weight: 800; }
+.nav-list a.active .nav-glyph { color: white; background: #4f46e5; }
+.nav-count { margin-left: auto; min-width: 23px; padding: 1px 7px; border-radius: 999px; color: #fecaca; background: rgba(225,29,72,.18); font-size: 11px; text-align: center; }
+.sidebar-footer { margin-top: auto; padding: 16px; border-top: 1px solid rgba(255,255,255,.08); }
+.server-state { display: flex; align-items: center; gap: 10px; padding: 11px; border-radius: 12px; background: rgba(255,255,255,.04); }
+.server-state div { display: flex; flex-direction: column; }
+.server-state span { color: #e5e7eb; font-size: 12px; }
+.server-state small { color: #7f8ba0; font-size: 10px; }
+.status-dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b; box-shadow: 0 0 0 4px rgba(100,116,139,.12); }
+.status-dot.online { background: #22c55e; box-shadow: 0 0 0 4px rgba(34,197,94,.12); }
+.status-dot.offline { background: #ef4444; box-shadow: 0 0 0 4px rgba(239,68,68,.12); }
+
+.main { grid-column: 2; min-width: 0; padding: 0 34px 50px; }
+.topbar { min-height: 104px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.eyebrow { margin: 0 0 3px; color: #8c95a8; font-size: 10px; font-weight: 800; letter-spacing: .14em; }
+.topbar h1 { margin: 0; font-size: 27px; letter-spacing: -.035em; }
+.topbar-actions { display: flex; align-items: center; gap: 9px; }
+.provider-pill, .count-pill { padding: 7px 11px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: white; font-size: 11px; font-weight: 700; }
+.icon-button { width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 10px; background: white; cursor: pointer; font-size: 19px; }
+.icon-button:hover { border-color: #c7cce0; background: var(--soft); }
+.page { display: none; }
+.page.active { display: block; animation: page-in .2s ease; }
+@keyframes page-in { from { opacity: 0; transform: translateY(4px); } }
