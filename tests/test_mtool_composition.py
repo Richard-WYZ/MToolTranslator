@@ -637,9 +637,11 @@ def test_sensitive_route_repairs_failed_child_through_full_parent(
         config.DEFAULT_CONFIG["batch_translation"].update(old_batch)
 
 
+@pytest.mark.parametrize("terminal_failure", ["line_break", "symbol"])
 def test_sensitive_parent_failure_gets_one_isolated_quality_terminal_retry(
     monkeypatch,
     tmp_path,
+    terminal_failure,
 ):
     import config
     from parser.json_parser import parse_json
@@ -673,9 +675,13 @@ def test_sensitive_parent_failure_gets_one_isolated_quality_terminal_retry(
         "api_sensitive_repair_issue_types": [
             "untranslated_japanese",
             "line_break_preservation",
+            "symbol_preservation",
         ],
         "api_fast_categories": ["short_label"],
-        "api_quality_retry_issue_types": ["line_break_preservation"],
+        "api_quality_retry_issue_types": [
+            "line_break_preservation",
+            "symbol_preservation",
+        ],
         "json_batch_size": 40,
         "max_batch_chars": 4000,
         "protocol": "line",
@@ -729,8 +735,14 @@ def test_sensitive_parent_failure_gets_one_isolated_quality_terminal_retry(
                 elif model == "api:quality" and issues:
                     output = source.replace(
                         "\u4e2d\u51fa\u3057\u3057\u3066\u3084\u308b",
-                        "\u6211\u8981\u5185\u5c04\u4e86\n\u4e32\u5165",
+                        (
+                            "\u6211\u8981\u5185\u5c04\u4e86\n\u4e32\u5165"
+                            if terminal_failure == "line_break"
+                            else "\u6211\u8981\u5185\u5c04\u4e86"
+                        ),
                     )
+                    if terminal_failure == "symbol":
+                        output = output.replace("__SYM_0__", "")
                 else:
                     output = source
                 translated.append([item_id, output])

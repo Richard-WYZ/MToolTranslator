@@ -28,6 +28,12 @@ _STRUCTURAL_QUALITY_ISSUE_TYPES = frozenset({
     "line_break_preservation",
     "length_expansion",
     "short_label_expansion",
+    "symbol_preservation",
+    "runtime_token_preservation",
+    "numeric_preservation",
+    "marker_lost",
+    "version_marker_lost",
+    "term_placeholder_leak",
 })
 
 
