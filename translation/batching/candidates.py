@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from translation.classification import looks_like_short_label, normalize_model_source
-from translation.protection import protect_runtime_tokens, protect_symbols
+from translation.protection import protect_runtime_tokens, protect_symbols, runtime_token_kind
 
 
 def prepare_model_candidate(
@@ -54,7 +54,7 @@ def candidate_template_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
         for hit in candidate.get("term_hits", candidate.get("terms", [])) or []
         if isinstance(hit, dict)
     ))
-    token_kinds = tuple(_runtime_token_kind(str(token.value)) for token in candidate.get("runtime_tokens", []) or [])
+    token_kinds = tuple(runtime_token_kind(str(token.value)) for token in candidate.get("runtime_tokens", []) or [])
     contexts = tuple(
         (
             str(context.get("text", "")),
@@ -83,16 +83,5 @@ def candidate_template_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
         contexts,
         scene_lines,
     )
-
-
-def _runtime_token_kind(value: str) -> str:
-    if value in ("\n", "\r", "\r\n"):
-        return "line_break"
-    if any(character.isdigit() for character in value):
-        return "numeric"
-    if value.startswith(("http://", "https://")):
-        return "url"
-    return "runtime"
-
 
 __all__ = ["candidate_template_key", "prepare_model_candidate", "reindex_candidates"]

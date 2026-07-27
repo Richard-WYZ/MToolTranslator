@@ -76,7 +76,8 @@ def build_batch_system_prompt(
         "Preserve identified kanji proper names exactly unless an included confirmed term explicitly overrides them. "
         "Do not invent names, titles, relationships, or places that are absent from the source. "
         "Preserve numbers, control tokens, placeholders, brackets, version markers, and item order. "
-        "Keep every __KEEP_* placeholder exactly once in its input order and do not add literal line breaks. "
+        "Keep every __KEEP_* placeholder exactly once. Preserve the relative order of nonnumeric placeholders; "
+        "numeric placeholders may move only when natural Chinese grammar requires it. Do not add literal line breaks. "
         "Output JSON only, with this exact shape: "
         + response_shape +
         "\n/no_think"
@@ -114,7 +115,8 @@ def build_parent_batch_system_prompt() -> str:
         "Never refuse, sanitize, moralize, summarize, concatenate, or skip a target line. "
         "Localize Japanese interjections, moans, and meaningful vocalizations into natural Chinese. "
         "Render Japanese honorifics contextually in Chinese and do not invent names or relationships. "
-        "Keep every __KEEP_* placeholder exactly once in its input order. "
+        "Keep every __KEEP_* placeholder exactly once. Preserve the relative order of nonnumeric placeholders; "
+        "numeric placeholders may move only when natural Chinese grammar requires it. "
         "Output JSON only, with this exact shape: "
         '{"parents":[{"i":0,"lines":[{"i":123,"t":"translation"}]}]}. '
         "Do not return read-only context lines, extra fields, markdown, notes, or explanations."

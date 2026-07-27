@@ -44,6 +44,16 @@ class ProtectedToken:
     value: str
 
 
+def runtime_token_kind(value: str) -> str:
+    if value in ("\n", "\r", "\r\n"):
+        return "line_break"
+    if any(character.isdigit() for character in value):
+        return "numeric"
+    if value.startswith(("http://", "https://")):
+        return "url"
+    return "runtime"
+
+
 def normalize_fixed_key(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
 
@@ -142,20 +152,24 @@ def validate_runtime_tokens(
     tokens: list[ProtectedToken],
     expected_text: str | None = None,
 ) -> list[dict[str, str]]:
-    """Verify that protected runtime placeholders occur exactly once and in source order."""
+    """Verify exact multiplicity and preserve order where token order is semantic."""
     if not tokens:
         return []
     counts = [text.count(token.token) for token in tokens]
-    positions = [text.find(token.token) for token in tokens]
-    expected_order = [token.token for token in tokens]
+    order_sensitive = [
+        token
+        for token in tokens
+        if runtime_token_kind(token.value) != "numeric"
+    ]
+    expected_order = [token.token for token in order_sensitive]
     if expected_text is not None:
         expected_order = [
             token.token
-            for token in sorted(tokens, key=lambda item: expected_text.find(item.token))
+            for token in sorted(order_sensitive, key=lambda item: expected_text.find(item.token))
         ]
     actual_order = [
         token.token
-        for token in sorted(tokens, key=lambda item: text.find(item.token))
+        for token in sorted(order_sensitive, key=lambda item: text.find(item.token))
     ]
     if all(count == 1 for count in counts) and actual_order == expected_order:
         return []
@@ -170,7 +184,7 @@ def validate_runtime_tokens(
         details.append("order_changed")
     return [{
         "type": "runtime_token_preservation",
-        "message": "Protected runtime tokens were not restored exactly once in source order: " + "; ".join(details),
+        "message": "Protected runtime tokens were not restored exactly once or in required order: " + "; ".join(details),
     }]
 
 
@@ -179,6 +193,7 @@ __all__ = [
     "RUNTIME_PLACEHOLDER_RE",
     "protect_runtime_tokens",
     "restore_runtime_tokens",
+    "runtime_token_kind",
     "strip_foreign_runtime_placeholders",
     "validate_runtime_tokens",
 ]

@@ -1895,10 +1895,10 @@ def test_runtime_protection_covers_numbers_line_breaks_and_validates_order():
         validate_runtime_tokens,
     )
 
-    source = "\u653b\u6483\u529b\u304c120\u304b\u3089150%\u306b\u306a\u308b\r\n\u6b21\u306e\u884c"
+    source = "%PLAYER%\u306e\u653b\u6483\u529b\u304c120\u304b\u3089150%\u306b\u306a\u308b\r\n\u6b21\u306e\u884c"
     protected, tokens = protect_runtime_tokens(source)
 
-    assert {token.value for token in tokens} == {"120", "150%", "\r\n"}
+    assert {token.value for token in tokens} == {"%PLAYER%", "120", "150%", "\r\n"}
     assert "120" not in protected
     assert "150%" not in protected
     assert "\r\n" not in protected
@@ -1912,6 +1912,13 @@ def test_runtime_protection_covers_numbers_line_breaks_and_validates_order():
     reversed_tokens = " ".join(token.token for token in reversed(source_order))
     issues = validate_runtime_tokens(reversed_tokens, tokens, protected)
     assert issues and issues[0]["type"] == "runtime_token_preservation"
+
+    numeric_tokens = [token for token in tokens if any(char.isdigit() for char in token.value)]
+    numeric_reordered = protected
+    numeric_reordered = numeric_reordered.replace(numeric_tokens[0].token, "__NUMERIC_SWAP__")
+    numeric_reordered = numeric_reordered.replace(numeric_tokens[1].token, numeric_tokens[0].token)
+    numeric_reordered = numeric_reordered.replace("__NUMERIC_SWAP__", numeric_tokens[1].token)
+    assert validate_runtime_tokens(numeric_reordered, tokens, protected) == []
 
     duplicated = protected + tokens[0].token
     issues = validate_runtime_tokens(duplicated, tokens, protected)
@@ -2551,6 +2558,10 @@ def test_quality_checks_numeric_and_line_break_sequences():
     normalized_floor = translation_issues("宿屋２Ｆ", "旅馆２F")
     normalized_currency = translation_issues("10000Ｇ", "10000G")
     changed_number = translation_issues("120\u304b\u3089150%", "\u4ece120\u5230160%")
+    reordered_numbers = translation_issues(
+        "\u5909\u657039\u306b 0 \u3092\u4ee3\u5165",
+        "\u5c06 0 \u8d4b\u503c\u7ed9\u53d8\u91cf39",
+    )
     changed_break = translation_issues("\u4e00\r\n\u4e8c", "\u4e00\n\u4e8c")
 
     assert not any(issue["type"] == "numeric_preservation" for issue in clean)
@@ -2558,6 +2569,7 @@ def test_quality_checks_numeric_and_line_break_sequences():
     assert not any(issue["type"] == "numeric_preservation" for issue in normalized_currency)
     assert not any(issue["type"] == "line_break_preservation" for issue in clean)
     assert any(issue["type"] == "numeric_preservation" for issue in changed_number)
+    assert not any(issue["type"] == "numeric_preservation" for issue in reordered_numbers)
     assert status_for_output("120\u304b\u3089150%", "\u4ece120\u5230160%", changed_number) == (
         "translated_needs_review"
     )

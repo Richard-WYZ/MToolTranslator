@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections import Counter
 
 from translation.protection.runtime import (
     AMBIGUOUS_KEY_NAMES,
@@ -461,10 +462,10 @@ def translation_issues(original: str, translated: str, short_label: bool = False
 
     source_numbers = _normalized_numeric_values(original)
     target_numbers = _normalized_numeric_values(translated)
-    if source_numbers != target_numbers:
+    if Counter(source_numbers) != Counter(target_numbers):
         issues.append({
             "type": "numeric_preservation",
-            "message": "Numeric values or parameters differ from the source sequence.",
+            "message": "Numeric values or parameter multiplicities differ from the source.",
         })
 
     source_line_breaks = re.findall(r"\r\n|\r|\n", original)

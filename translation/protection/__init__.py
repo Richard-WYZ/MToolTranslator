@@ -3,6 +3,7 @@
 from translation.protection.runtime import (
     protect_runtime_tokens,
     restore_runtime_tokens,
+    runtime_token_kind,
     strip_foreign_runtime_placeholders,
     validate_runtime_tokens,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "SYMBOL_PROTECTION_VERSION",
     "restore_protected_translation",
     "restore_runtime_tokens",
+    "runtime_token_kind",
     "strip_foreign_runtime_placeholders",
     "validate_runtime_tokens",
     "protect_symbols",
