@@ -13,7 +13,7 @@ from translation.protection.runtime import (
 )
 
 
-QUALITY_RULES_VERSION = "quality-rules-v4-actionable-review-semantics"
+QUALITY_RULES_VERSION = "quality-rules-v5-source-code-preservation"
 FIXED_TRANSLATIONS: dict[str, str] = {
     "continue": "继续",
     "new game": "新游戏",
@@ -109,6 +109,26 @@ ANGLE_CONFIG_FRAGMENT_RE = re.compile(r"^\s*<[^<>\r\n]{1,200}>\s*$")
 NUMERIC_ASSIGNMENT_RE = re.compile(
     r"^\s*[^=\r\n]{1,80}\s*=\s*[-+]?[0-9\uff10-\uff19]+(?:\.[0-9\uff10-\uff19]+)?\s*$"
 )
+CALLABLE_STATEMENT_RE = re.compile(
+    r"^\s*[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*"
+    r"\s*\([^\r\n]*\)\s*;?\s*$"
+)
+CODE_ASSIGNMENT_RE = re.compile(
+    r"^\s*(?:(?:const|let|var)\s+)?"
+    r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*"
+    r"\s*=\s*[^\r\n;]+;?\s*$"
+)
+CODE_CONTROL_FRAGMENT_RE = re.compile(
+    r"^\s*(?:if|else\s+if|while|for|switch)\s*\([^\r\n]*\)\s*\{?\s*$"
+)
+CODE_CONCAT_FRAGMENT_RE = re.compile(
+    r'^\s*\+\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\+\s*["\'][^\r\n]*\)\s*;?\s*$'
+)
+CODE_STRING_CONDITION_FRAGMENT_RE = re.compile(
+    r'^\s*["\'][^\r\n]*["\']\s*\)\s*\{\s*$'
+)
+CODE_COMMENT_RE = re.compile(r"^\s*(?://|/\*|\*)")
+SERIALIZED_KEY_RE = re.compile(r"(?<![A-Za-z0-9_$])[A-Za-z_$][A-Za-z0-9_$]*\s*:")
 KANA_RE = re.compile("[\\u3041-\\u309f\\u30a1-\\u30fa\\u30fd-\\u30ff]")
 HAN_RE = re.compile("[\u3400-\u4dbf\u4e00-\u9fff]")
 NORMALIZED_NUMERIC_VALUE_RE = re.compile(r"\d+(?:[.,]\d+)*")
@@ -252,11 +272,31 @@ def exact_nonlinguistic_translation(text: str) -> str:
         RESOURCE_FILE_RE.fullmatch(text)
         or ANGLE_CONFIG_FRAGMENT_RE.fullmatch(text)
         or NUMERIC_ASSIGNMENT_RE.fullmatch(text)
+        or _looks_like_source_code_or_serialized_fragment(text)
     ):
         return text
     if _looks_like_non_japanese_resource(text):
         return text
     return ""
+
+
+def _looks_like_source_code_or_serialized_fragment(text: str) -> bool:
+    """Preserve high-confidence executable or serialized records as opaque source."""
+    stripped = str(text or "").strip()
+    if not stripped or "\n" in stripped or "\r" in stripped:
+        return False
+    if (
+        CALLABLE_STATEMENT_RE.fullmatch(stripped)
+        or CODE_ASSIGNMENT_RE.fullmatch(stripped)
+        or CODE_CONTROL_FRAGMENT_RE.fullmatch(stripped)
+        or CODE_CONCAT_FRAGMENT_RE.fullmatch(stripped)
+        or CODE_STRING_CONDITION_FRAGMENT_RE.fullmatch(stripped)
+        or CODE_COMMENT_RE.match(stripped)
+    ):
+        return True
+    if "{" in stripped or "}" in stripped:
+        return len(SERIALIZED_KEY_RE.findall(stripped)) >= 2
+    return False
 
 
 def _is_nonlexical_vocalization(text: str) -> bool:

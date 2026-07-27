@@ -3172,6 +3172,22 @@ def test_non_japanese_resources_are_deterministic():
     assert deterministic_translation("\u30d5\u30a3\u30fc\u30cd") == ""
 
 
+def test_japanese_source_code_and_serialized_fragments_are_preserved_unchanged():
+    from translation.classification import deterministic_translation
+
+    sources = [
+        'console.log("1週間分のテストデータを生成しました。");',
+        '$gameVariables.setValue(5, "失敗");',
+        '{ targetId: 307, skillId: 92, values: { "成功',
+        '"失敗") {',
+        '+ itemId + "は所持済みのため、変数39を0にしました");',
+        '// 日本語のデバッグコメント',
+    ]
+
+    assert [deterministic_translation(source) for source in sources] == sources
+    assert deterministic_translation("入口の前で金髪女性に声を掛けられる") == ""
+
+
 def test_decorative_katakana_marks_do_not_count_as_japanese_residue():
     from translation.quality import translation_issues
     from translation.quality import has_japanese, is_refusal
