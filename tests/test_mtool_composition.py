@@ -17,8 +17,9 @@ def test_composition_plan_preserves_layout_and_records_dependency_hashes():
 
     assert set(plan.entries) == {2}
     assert plan.entries[2].dependency_indexes == (0, 1)
-    assert plan.contexts_for_child(0)[0]["text"] == "\u3000こんにちは\n  世界 \n"
+    assert plan.contexts_for_child(0)[0]["text"] == "\u3000こんにちは"
     assert plan.contexts_for_child(0)[0]["line"] == 1
+    assert plan.contexts_for_child(1)[0]["text"] == "\u3000こんにちは\n  世界 "
     assert plan.contexts_for_child(1)[0]["line"] == 2
     assert plan.repair_parent_for_child(0) == plan.entries[2]
     assert plan.extract_child_translations(
@@ -853,7 +854,10 @@ def test_parallel_mtool_workflow_translates_children_once_and_recomposes_parent(
         def fake_translate(model, text, system_prompt=None, terminology=None, options=None, **kwargs):
             payload = json.loads(text)
             calls.append(payload)
-            assert payload["contexts"] == [[0, "赤い花\n　青い空"]]
+            assert payload["contexts"] == [
+                [0, "赤い花"],
+                [1, "赤い花\n　青い空"],
+            ]
             translations = {"赤い花": "红花", "青い空": "蓝天"}
             return json.dumps(
                 [[item[0], translations[item[1]]] for item in payload["items"]],

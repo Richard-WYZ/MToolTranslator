@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 
-COMPOSITION_VERSION = "mtool-line-dependencies-v4"
+COMPOSITION_VERSION = "mtool-line-dependencies-v5-past-context-only"
 _LINE_BREAK_RE = re.compile(r"(\r\n|\r|\n)")
 _LAYOUT_WHITESPACE = " \t\u3000"
 
@@ -362,30 +362,16 @@ def _bounded_context(
     if max_chars <= 0:
         return None
     lines = [split_parts[index] for index in range(0, len(split_parts), 2)]
-    normalized = "\n".join(lines)
-    if len(normalized) <= max_chars:
-        return CompositionContext(text=normalized, line=target_line, parent_index=parent_index)
-
     target_index = target_line - 1
     selected_start = target_index
-    selected_end = target_index + 1
     if len(lines[target_index]) > max_chars:
         return None
-    while True:
-        candidates: list[tuple[int, int]] = []
-        if selected_start > 0:
-            candidates.append((selected_start - 1, selected_end))
-        if selected_end < len(lines):
-            candidates.append((selected_start, selected_end + 1))
-        accepted: tuple[int, int] | None = None
-        for start, end in candidates:
-            if len("\n".join(lines[start:end])) <= max_chars:
-                accepted = (start, end)
-                break
-        if accepted is None:
+    while selected_start > 0:
+        candidate_start = selected_start - 1
+        if len("\n".join(lines[candidate_start:target_index + 1])) > max_chars:
             break
-        selected_start, selected_end = accepted
-    text = "\n".join(lines[selected_start:selected_end])
+        selected_start = candidate_start
+    text = "\n".join(lines[selected_start:target_index + 1])
     return CompositionContext(
         text=text,
         line=target_index - selected_start + 1,
