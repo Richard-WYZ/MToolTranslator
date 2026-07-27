@@ -282,7 +282,7 @@ def test_api_candidate_packing_counts_unique_templates_for_capacity():
     ]
 
 
-def test_line_batch_missing_item_retries_missing_and_adjacent_items():
+def test_line_batch_missing_item_retries_the_whole_batch_without_partial_acceptance():
     from translation.batching import BatchTranslationError, parse_line_batch_response
 
     with pytest.raises(BatchTranslationError) as exc_info:
@@ -292,8 +292,8 @@ def test_line_batch_missing_item_retries_missing_and_adjacent_items():
         )
 
     error = exc_info.value
-    assert error.partial_results == {0: "零", 4: "四"}
-    assert error.retry_indexes == {1, 2, 3}
+    assert error.partial_results == {}
+    assert error.retry_indexes == {0, 1, 2, 3, 4}
 
 
 def test_truncated_json_batch_salvages_complete_items_and_retries_only_missing():
@@ -1225,6 +1225,49 @@ def test_failed_parallel_fallback_cannot_be_downgraded_to_preserved():
     )
 
     assert payloads[0][1] == "review_required"
+
+
+def test_line_structural_failure_retries_the_whole_batch_as_json():
+    from translation.batching import BatchJob, BatchResult, BatchTranslationError
+    from translation.workflow.json_parallel import _finish_api_batch_result
+
+    candidates = [
+        dict(_candidate(0, "甲", short_label=True), i=0),
+        dict(_candidate(1, "乙", short_label=True), i=1),
+    ]
+
+    class FakePipeline:
+        calls: list[tuple[str, list[int]]] = []
+
+        @classmethod
+        def _translate_json_candidates(cls, group, file_path, options, protocol, model=None):
+            cls.calls.append((protocol, [item["idx"] for item in group]))
+            return {
+                item["idx"]: (f"译文-{item['idx']}", "translated", [])
+                for item in group
+            }
+
+        @staticmethod
+        def _status_for_output(source, translated, issues):
+            return "translated_needs_review" if issues else "translated"
+
+    error = BatchTranslationError(
+        "missing line batch indexes: 1",
+        retry_indexes={0, 1},
+    )
+    payloads = _finish_api_batch_result(
+        FakePipeline(),
+        BatchJob("line-batch", candidates, "line", model="api:minimax-m3", options={}),
+        BatchResult("line-batch", {}, error, 1, 0.1),
+        "sample.json",
+        {},
+    )
+
+    assert FakePipeline.calls == [("json", [0, 1])]
+    assert payloads == {
+        0: ("译文-0", "translated", []),
+        1: ("译文-1", "translated", []),
+    }
 
 
 def test_structural_single_fallback_keeps_the_explicit_job_model():

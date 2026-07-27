@@ -46,6 +46,8 @@ def test_quality_profile_matches_validated_route():
     assert config["api_concurrency"] == 10
     assert config["json_batch_size"] == 40
     assert config["max_batch_chars"] == 4000
+    assert config["protocol"] == "json"
+    assert config["compact_json_protocol"] is True
     assert config["line_for_short_only"] is True
     assert {route["role"] for route in summary["routes"]} == {
         "短标签",
@@ -63,6 +65,7 @@ def test_single_model_profile_disables_cross_model_routes():
     assert config["api_sensitive_routing_enabled"] is False
     assert config["api_fast_model"] == ""
     assert config["api_quality_model"] == ""
+    assert config["protocol"] == "json"
     assert summary["routes"] == [{"role": "普通文本", "model": "api:test-model"}]
 
 

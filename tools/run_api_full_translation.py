@@ -79,7 +79,7 @@ def main() -> int:
     )
     parser.add_argument("--batch-size", type=int, default=batch_cfg.get("json_batch_size", 40))
     parser.add_argument("--max-batch-chars", type=int, default=batch_cfg.get("max_batch_chars", 8000))
-    parser.add_argument("--protocol", choices=["json", "line", "auto"], default="line")
+    parser.add_argument("--protocol", choices=["json", "line", "auto"], default="json")
     parser.add_argument(
         "--compact-json",
         action=argparse.BooleanOptionalAction,

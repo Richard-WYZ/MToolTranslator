@@ -630,11 +630,12 @@ def _finish_api_batch_result(
         )
         translated_payloads.update(isolated)
     elif retry_candidates and structural_failure:
+        retry_protocol = "json" if job.protocol == "line" else job.protocol
         translated_payloads.update(pipeline._translate_json_candidates(
             retry_candidates,
             file_path,
             job.options or default_options,
-            job.protocol,
+            retry_protocol,
             model=job.model,
         ))
     elif terminal_transport_failure:

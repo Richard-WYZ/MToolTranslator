@@ -103,7 +103,7 @@ def resolve_execution_profile(
         selected_model = QUALITY_PRIMARY_MODEL
         cfg.update({
             "enabled": True,
-            "protocol": "line",
+            "protocol": "json",
             "line_for_short_only": True,
             "json_batch_size": 40,
             "max_batch_chars": 4000,
@@ -121,7 +121,7 @@ def resolve_execution_profile(
         if not selected_model.startswith("api:") or selected_model == "api:":
             raise HTTPException(status_code=400, detail="Online single-model profile requires an API model")
         cfg.update({
-            "protocol": "line",
+            "protocol": "json",
             "line_for_short_only": True,
             "json_batch_size": 40,
             "max_batch_chars": 4000,

@@ -3242,27 +3242,26 @@ def test_line_batch_response_parser_keeps_continuation_lines():
     }
 
 
-def test_line_batch_response_parser_repairs_position_indexes():
-    from translator.batch import parse_line_batch_response
+def test_line_batch_response_parser_rejects_duplicate_ids_instead_of_guessing_positions():
+    import pytest
+    from translator.batch import BatchTranslationError, parse_line_batch_response
 
     response = "0\t\u96f6\n1\t\u4e00\n1\u3001\u5e94\u8be5\u662f\u4e8c\n3\t\u4e09"
-    assert parse_line_batch_response(response, {0, 1, 2, 3}) == {
-        0: "\u96f6",
-        1: "\u4e00",
-        2: "\u5e94\u8be5\u662f\u4e8c",
-        3: "\u4e09",
-    }
+    with pytest.raises(BatchTranslationError, match="duplicate line batch index") as exc_info:
+        parse_line_batch_response(response, {0, 1, 2, 3})
+    assert exc_info.value.partial_results == {}
+    assert exc_info.value.retry_indexes == {0, 1, 2, 3}
 
 
-def test_line_batch_response_parser_accepts_plain_translation_lines():
-    from translator.batch import parse_line_batch_response
+def test_line_batch_response_parser_rejects_plain_translation_lines():
+    import pytest
+    from translator.batch import BatchTranslationError, parse_line_batch_response
 
     response = "\u95e8\u536b\n\u652f\u4ed8\n\u5148\u653e\u7740"
-    assert parse_line_batch_response(response, {0, 1, 2}) == {
-        0: "\u95e8\u536b",
-        1: "\u652f\u4ed8",
-        2: "\u5148\u653e\u7740",
-    }
+    with pytest.raises(BatchTranslationError, match="without a stable ID") as exc_info:
+        parse_line_batch_response(response, {0, 1, 2})
+    assert exc_info.value.partial_results == {}
+    assert exc_info.value.retry_indexes == {0, 1, 2}
 
 
 def test_line_batch_response_parser_accepts_literal_tab_marker():
@@ -3292,11 +3291,15 @@ def test_batch_finish_strips_source_arrow_echo():
     ) == "\u4e0d\u652f\u4ed8"
 
 
-def test_batch_response_parser_repairs_local_position_indexes():
-    from translator.batch import parse_batch_response
+def test_batch_response_parser_rejects_malformed_or_unexpected_ids():
+    import pytest
+    from translator.batch import BatchTranslationError, parse_batch_response
 
     response = '{"items":[{"i":0,"t":"\u95e8\u536b"},{"i":-1,"t":"\u652f\u4ed8"},{"i":_2,"t":"\u5148\u653e\u7740"}]}'
-    assert parse_batch_response(response, {0, 1, 2}) == {0: "\u95e8\u536b", 1: "\u652f\u4ed8", 2: "\u5148\u653e\u7740"}
+    with pytest.raises(BatchTranslationError, match="malformed batch JSON") as exc_info:
+        parse_batch_response(response, {0, 1, 2})
+    assert exc_info.value.partial_results == {0: "\u95e8\u536b"}
+    assert exc_info.value.retry_indexes == {1, 2}
 
 
 def test_mtool_json_uses_batch_translation(monkeypatch):
@@ -3589,7 +3592,7 @@ def test_batch_parse_failure_splits_before_single_fallback(monkeypatch):
                     return "not json"
                 if "\u30d5\u30a3\u30fc\u30cd" in text:
                     return '[{"i":0,"t":"\u83f2\u59ae"}]'
-                return '[{"i":1,"t":"\u5409\u514b"}]'
+                return '[{"i":0,"t":"\u5409\u514b"}]'
 
             monkeypatch.setattr(pipeline_mod, "translate_once", fake_translate)
             monkeypatch.setattr(pipeline_mod, "translate", fake_translate)

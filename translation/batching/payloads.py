@@ -302,7 +302,7 @@ def parse_batch_response(response: str, expected_indexes: set[int]) -> dict[int,
         raise BatchTranslationError("batch response is not a JSON array")
 
     result: dict[int, str] = {}
-    for position, item in enumerate(data):
+    for item in data:
         if isinstance(item, list):
             if len(item) != 2:
                 raise BatchTranslationError("compact batch response item must contain exactly id and translation")
@@ -320,8 +320,6 @@ def parse_batch_response(response: str, expected_indexes: set[int]) -> dict[int,
             raise BatchTranslationError("batch response item is not an object or compact pair")
         if not isinstance(idx, int) or not isinstance(text, str):
             raise BatchTranslationError("batch response item misses i/t fields")
-        if idx not in expected_indexes and position in expected_indexes and position not in result:
-            idx = position
         if idx not in expected_indexes:
             raise BatchTranslationError(f"unexpected batch index: {idx}")
         if idx in result:
@@ -339,61 +337,41 @@ def parse_line_batch_response(response: str, expected_indexes: set[int]) -> dict
         raise BatchTranslationError("empty line batch response")
     result: dict[int, str] = {}
     current_idx: int | None = None
-    record_position = 0
-    plain_lines: list[str] = []
     for raw_line in response.strip().splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        plain_lines.append(line)
         match = re.match(r"^(?:[-*]\s*)?(?P<i>[0-9]+)\s*(?:\t|<TAB>|[:：．。、])\s*(?P<t>.*)$", line, flags=re.IGNORECASE)
         if match:
             idx = int(match.group("i"))
-            if (idx not in expected_indexes or idx in result) and record_position in expected_indexes and record_position not in result:
-                idx = record_position
-            record_position += 1
             if idx not in expected_indexes:
-                current_idx = None
-                continue
+                raise BatchTranslationError(
+                    f"unexpected line batch index: {idx}",
+                    retry_indexes=set(expected_indexes),
+                )
+            if idx in result:
+                raise BatchTranslationError(
+                    f"duplicate line batch index: {idx}",
+                    retry_indexes=set(expected_indexes),
+                )
             result[idx] = match.group("t").strip()
             current_idx = idx
             continue
         if current_idx is not None:
             result[current_idx] = (result[current_idx] + "\n" + line).strip()
+            continue
+        raise BatchTranslationError(
+            "line batch response contains a translation without a stable ID",
+            retry_indexes=set(expected_indexes),
+        )
 
     empty = {idx for idx, translated in result.items() if not translated.strip()}
     missing = (expected_indexes - set(result)) | empty
-    if missing and not result and len(plain_lines) == len(expected_indexes):
-        plain_result = {
-            idx: plain_lines[position].strip()
-            for position, idx in enumerate(sorted(expected_indexes))
-        }
-        if all(plain_result.values()):
-            return plain_result
-    if missing and result:
-        retry_indexes = set(missing)
-        ordered = sorted(expected_indexes)
-        positions = {idx: position for position, idx in enumerate(ordered)}
-        for idx in missing:
-            position = positions.get(idx)
-            if position is None:
-                continue
-            if position > 0:
-                retry_indexes.add(ordered[position - 1])
-            if position + 1 < len(ordered):
-                retry_indexes.add(ordered[position + 1])
-        partial = {
-            idx: translated
-            for idx, translated in result.items()
-            if idx not in retry_indexes and translated.strip()
-        }
+    if missing:
         raise BatchTranslationError(
             "missing line batch indexes: " + ", ".join(str(i) for i in sorted(missing)[:10]),
-            partial_results=partial,
-            retry_indexes=retry_indexes,
+            retry_indexes=set(expected_indexes),
         )
-    if missing:
-        raise BatchTranslationError("missing line batch indexes: " + ", ".join(str(i) for i in sorted(missing)[:10]))
     return result
 
 
@@ -461,7 +439,7 @@ def translate_parent_batch(
 
 
 def _load_json_response(response: str) -> Any:
-    stripped = _normalize_json_index_artifacts(response.strip())
+    stripped = response.strip()
     try:
         return json.loads(stripped)
     except json.JSONDecodeError:
@@ -479,10 +457,6 @@ def _load_json_response(response: str) -> Any:
     raise BatchTranslationError("unable to parse batch JSON response")
 
 
-def _normalize_json_index_artifacts(response: str) -> str:
-    return re.sub(r'("i"\s*:\s*)_([0-9]+)', r'\1\2', response)
-
-
 def _coerce_batch_index(value: Any) -> int | None:
     if isinstance(value, int):
         return value
@@ -490,14 +464,12 @@ def _coerce_batch_index(value: Any) -> int | None:
         stripped = value.strip()
         if stripped.isdigit():
             return int(stripped)
-        if len(stripped) > 1 and stripped.startswith("_") and stripped[1:].isdigit():
-            return int(stripped[1:])
     return None
 
 
 def _extract_complete_json_items(response: str, expected_indexes: set[int]) -> dict[int, str]:
     """Salvage complete, schema-valid items from a truncated JSON response."""
-    normalized = _normalize_json_index_artifacts(response.strip())
+    normalized = response.strip()
     decoder = json.JSONDecoder()
     allowed_fields = {"i", "index", "t", "translation", "text"}
     result: dict[int, str] = {}

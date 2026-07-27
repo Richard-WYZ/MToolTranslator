@@ -118,6 +118,13 @@ function profileOptions() {
 }
 
 function renderProfile() {
+    var protocolSelect = el("custom-protocol");
+    protocolSelect.querySelector('option[value="json"]').textContent = "JSON（推荐）";
+    protocolSelect.querySelector('option[value="line"]').textContent = "Line（实验性）";
+    if (!protocolSelect.dataset.defaultApplied) {
+        protocolSelect.value = "json";
+        protocolSelect.dataset.defaultApplied = "true";
+    }
     all(".profile-card").forEach(function (card) {
         card.classList.toggle("selected", card.dataset.profileCard === state.profile);
     });
