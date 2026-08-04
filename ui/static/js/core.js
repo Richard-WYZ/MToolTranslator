@@ -1,8 +1,10 @@
 "use strict";
 
 var API = {
-    async request(method, path, body) {
+    async request(method, path, body, requestOptions) {
         var options = { method: method, headers: {} };
+        requestOptions = requestOptions || {};
+        if (requestOptions.signal) options.signal = requestOptions.signal;
         if (body !== undefined) {
             options.headers["Content-Type"] = "application/json";
             options.body = JSON.stringify(body);
@@ -11,6 +13,7 @@ var API = {
         try {
             response = await fetch("/api" + path, options);
         } catch (error) {
+            if (error && error.name === "AbortError") throw error;
             throw new Error("无法连接到本机翻译服务");
         }
         if (!response.ok) {
@@ -19,7 +22,7 @@ var API = {
         }
         return response.json();
     },
-    get: function (path) { return this.request("GET", path); },
+    get: function (path, requestOptions) { return this.request("GET", path, undefined, requestOptions); },
     post: function (path, body) { return this.request("POST", path, body); },
     put: function (path, body) { return this.request("PUT", path, body); },
     delete: function (path) { return this.request("DELETE", path); },
@@ -59,16 +62,31 @@ var state = {
     taskId: "",
     taskStatus: "idle",
     pollingTimer: null,
+    pollingGeneration: 0,
+    pollingFailures: 0,
     hasUnexportedResult: false,
+    exportReady: false,
     review: {
         stats: null,
-        filter: "issues",
+        filter: "required",
         offset: 0,
         limit: 30,
         total: 0,
         items: [],
         selectedRow: null,
         selectedRows: new Set(),
+        selectedItems: new Map(),
+        selectionFilePath: "",
+        loadRequestId: 0,
+        listRequestId: 0,
+        listController: null,
+        aiTaskId: "",
+        aiTaskStatus: "idle",
+        aiPollingTimer: null,
+        aiPollingGeneration: 0,
+        aiProgress: null,
+        actionBusy: "",
+        actionBusyButton: "",
     },
     glossary: {
         payload: { terms: {}, candidates: {} },

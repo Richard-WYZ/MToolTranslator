@@ -18,6 +18,27 @@ def translated_path(file_path: str) -> str:
     return default_output_path(file_path)
 
 
+def translation_output_state(file_path: str) -> dict[str, Any]:
+    """Describe whether a structurally safe snapshot exists and differs from the last export."""
+    output_path = translated_path(file_path)
+    if not os.path.isfile(file_path) or not os.path.isfile(output_path):
+        return {"ready": False, "dirty": False, "output_path": output_path, "reason": "missing_output"}
+    try:
+        source_items = load_json_items(file_path)
+        output_items = load_json_items(output_path)
+    except Exception:
+        return {"ready": False, "dirty": False, "output_path": output_path, "reason": "invalid_json"}
+    source_keys = [key for key, _value in source_items]
+    output_keys = [key for key, _value in output_items]
+    ready = len(source_items) == len(output_items) and source_keys == output_keys
+    return {
+        "ready": ready,
+        "dirty": bool(ready and source_items != output_items),
+        "output_path": output_path,
+        "reason": "ready" if ready else "structure_mismatch",
+    }
+
+
 def save_mtool_upload(upload_dir: str | Path, filename: str, content: bytes) -> dict[str, Any]:
     ext = Path(filename).suffix.lower()
     if ext != ".json":
@@ -82,7 +103,8 @@ def export_mtool_json(session_dir: str | Path, source_path: str, output_dir: str
     output_path = translated_path(source_path)
     if os.path.isfile(output_path):
         try:
-            apply_translated_output(output_path, source_path)
+            # Keep the working snapshot so review can continue after an early export.
+            shutil.copy2(output_path, source_path)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Unable to apply translated file: {exc}") from exc
 

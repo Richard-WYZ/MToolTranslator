@@ -796,7 +796,7 @@ def test_runtime_uses_public_pipeline_token_usage_adapter(monkeypatch):
     runtime = TranslationRuntime(TranslationRequest(file_path="game.json"))
 
     assert runtime.token_usage() == {"total_tokens": 7}
-    assert fake.calls == ["game.json"]
+    assert fake.calls == [None]
 
     usage.reset()
     usage.record("api", "model", {"total_tokens": 4})

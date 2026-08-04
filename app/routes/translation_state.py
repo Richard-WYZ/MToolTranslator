@@ -3,12 +3,12 @@ from __future__ import annotations
 import os
 import threading
 import time
-from typing import MutableMapping
+from typing import Any, MutableMapping
 
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas import CleanupRequest, RecoveryResumeRequest
-from app.services.files import require_mtool_json_file, translated_path
+from app.services.files import require_mtool_json_file, translated_path, translation_output_state
 from app.services.translation_task_service import start_translation_task, task_for_file
 from app.services.translation_tasks import BatchTranslationManager, TranslationTask
 from translation import checkpoint
@@ -42,6 +42,12 @@ def cleanup_translation_state(
     else:
         skipped.append(output_path)
     deleted.extend(checkpoint.clear_checkpoint(req.file_path, include_glossary=True))
+    from translation.review.ai import ai_review_store_path
+
+    ai_review_path = ai_review_store_path(req.file_path)
+    if os.path.exists(ai_review_path):
+        os.remove(ai_review_path)
+        deleted.append(ai_review_path)
     if task:
         task.has_unexported_result = False
         task.status = "cancelled"
@@ -52,6 +58,7 @@ def create_router(
     *,
     tasks: MutableMapping[str, TranslationTask],
     batches: MutableMapping[str, BatchTranslationManager],
+    ai_review_tasks: MutableMapping[str, Any] | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -63,6 +70,10 @@ def create_router(
                 cancelled += 1
         for task in list(tasks.values()):
             if task.status in ("running", "paused", "stopping"):
+                task.cancel()
+                cancelled += 1
+        for task in list((ai_review_tasks or {}).values()):
+            if task.status in {"preparing", "reviewing", "verifying", "applying", "finalizing", "stopping"}:
                 task.cancel()
                 cancelled += 1
         return cancelled
@@ -98,6 +109,10 @@ def create_router(
         if cp.get("version") != 2:
             raise HTTPException(status_code=404, detail="No v2 checkpoint found")
         require_mtool_json_file(req.file_path)
+        if ai_review_tasks:
+            from app.services.ai_review_tasks import active_ai_review_for_file
+            if active_ai_review_for_file(ai_review_tasks, req.file_path):
+                raise HTTPException(status_code=409, detail="Cannot resume translation while AI review is active")
         model = req.model or cp.get("model") or default_model()
         profile_name = req.execution_profile
         profile_options = dict(req.profile_options or {})
@@ -126,7 +141,12 @@ def create_router(
             if file_path and os.path.abspath(task.file_path) != os.path.abspath(file_path):
                 continue
             output_path = translated_path(task.file_path)
-            dirty = task.status in ("running", "paused", "stopping") or task.has_unexported_result or os.path.exists(output_path)
+            output_state = translation_output_state(task.file_path)
+            dirty = (
+                task.status in ("running", "paused", "stopping", "finalizing")
+                or task.has_unexported_result
+                or output_state["dirty"]
+            )
             if dirty:
                 states.append({
                     "task_id": task.task_id,
@@ -135,10 +155,26 @@ def create_router(
                     "translated_path": output_path,
                     "has_unexported_result": task.has_unexported_result or os.path.exists(output_path),
                 })
+        for task in (ai_review_tasks or {}).values():
+            if file_path and os.path.abspath(task.file_path) != os.path.abspath(file_path):
+                continue
+            if task.status in {"preparing", "reviewing", "verifying", "applying", "finalizing", "stopping"}:
+                states.append({
+                    "task_id": task.task_id,
+                    "file_path": task.file_path,
+                    "status": task.status,
+                    "kind": "ai_review",
+                    "has_unexported_result": True,
+                })
         return {"dirty": bool(states), "states": states}
 
     @router.post("/api/translation/cleanup")
     def cleanup_translation(req: CleanupRequest):
+        if ai_review_tasks:
+            from app.services.ai_review_tasks import active_ai_review_for_file
+            active = active_ai_review_for_file(ai_review_tasks, req.file_path)
+            if active:
+                raise HTTPException(status_code=409, detail="Stop AI review before cleaning translation state")
         return cleanup_translation_state(req, tasks=tasks)
 
     return router

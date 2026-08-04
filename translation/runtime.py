@@ -35,7 +35,9 @@ class TranslationRuntime:
         return completed.result
 
     def token_usage(self) -> dict:
-        return self._pipeline.token_usage(self.request.file_path)
+        # Progress reads must never persist the checkpoint. The translation
+        # workflow performs the final durable usage write after model work.
+        return self._pipeline.token_usage()
 
     def pause(self) -> None:
         self._pipeline.pause()

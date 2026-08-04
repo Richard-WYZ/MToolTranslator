@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import MutableMapping
+from typing import Any, Mapping, MutableMapping
 
 from fastapi import APIRouter, HTTPException, Query
 from app.schemas import ReviewBatchSaveRequest, ReviewSaveRequest
@@ -10,15 +10,18 @@ from app.services.files import is_mtool_items, json_original_text, require_mtool
 from app.services.glossary import pause_and_flush_for_edit, resume_after_edit, sync_task_output_cell
 from app.services.review import (
     build_review_row,
-    is_reviewed_status,
+    invalidate_review_cache,
     load_review_context,
     matching_review_rows,
-    review_violations,
 )
 from app.services.translation_tasks import TranslationTask
 
 
-def create_router(*, tasks: MutableMapping[str, TranslationTask]) -> APIRouter:
+def create_router(
+    *,
+    tasks: MutableMapping[str, TranslationTask],
+    ai_review_tasks: Mapping[str, Any] | None = None,
+) -> APIRouter:
     router = APIRouter()
 
     @router.get("/api/review/list")
@@ -88,6 +91,7 @@ def create_router(*, tasks: MutableMapping[str, TranslationTask]) -> APIRouter:
         if not os.path.isfile(req.file_path):
             raise HTTPException(status_code=404, detail=f"File does not exist: {req.file_path}")
         require_mtool_json_file(req.file_path)
+        _ensure_ai_review_idle(ai_review_tasks, req.file_path)
 
         task, was_running = pause_and_flush_for_edit(tasks, req.file_path)
         try:
@@ -132,6 +136,7 @@ def create_router(*, tasks: MutableMapping[str, TranslationTask]) -> APIRouter:
                 issues=[],
             )
             sync_task_output_cell(tasks, req.file_path, req.row, 0, saved_text)
+            invalidate_review_cache(req.file_path)
 
             max_chars, max_lines = output_constraints()
             violations = get_violations(saved_text, max_chars=max_chars, max_lines=max_lines)
@@ -148,6 +153,7 @@ def create_router(*, tasks: MutableMapping[str, TranslationTask]) -> APIRouter:
         if not os.path.isfile(req.file_path):
             raise HTTPException(status_code=404, detail=f"File does not exist: {req.file_path}")
         require_mtool_json_file(req.file_path)
+        _ensure_ai_review_idle(ai_review_tasks, req.file_path)
 
         task, was_running = pause_and_flush_for_edit(tasks, req.file_path)
         try:
@@ -194,6 +200,7 @@ def create_router(*, tasks: MutableMapping[str, TranslationTask]) -> APIRouter:
                 sync_task_output_cell(tasks, req.file_path, edit_row, 0, saved_text)
                 saved_count += 1
             write_json_items(translated_items, output_path)
+            invalidate_review_cache(req.file_path)
             return {"ok": True, "saved_count": saved_count}
         except HTTPException:
             raise
@@ -204,53 +211,18 @@ def create_router(*, tasks: MutableMapping[str, TranslationTask]) -> APIRouter:
 
     @router.get("/api/review/stats")
     def get_review_stats(file_path: str = Query(...)):
-        if not os.path.isfile(file_path):
-            raise HTTPException(status_code=404, detail=f"File does not exist: {file_path}")
-        require_mtool_json_file(file_path)
-
-        from translation import checkpoint as translation_checkpoint
-        from translation.input import load_json_items
-        from translation.quality import is_refusal
-
-        output_path = translated_path(file_path)
-        cp_data = translation_checkpoint.load_checkpoint(file_path)
-        cp_entries = cp_data.get("entries", {})
-        max_chars, max_lines = output_constraints()
-
-        total_cells = 0
-        reviewed = 0
-        needs_review = 0
-        violations_count = 0
-
-        original_items = load_json_items(file_path)
-        translated_items = load_json_items(output_path) if os.path.isfile(output_path) else []
-        mtool = is_mtool_items(original_items)
-        for row_idx, (key, value) in enumerate(original_items):
-            cp_entry = cp_entries.get(f"{row_idx}_0", {})
-            original_text = json_original_text(key, value, cp_entry, mtool=mtool)
-            if not original_text or not str(original_text).strip():
-                continue
-            total_cells += 1
-            translated_text = ""
-            if row_idx < len(translated_items) and isinstance(translated_items[row_idx][1], str):
-                translated_text = translated_items[row_idx][1]
-            status = cp_entry.get("status", "pending") if isinstance(cp_entry, dict) else "pending"
-            violations = review_violations(translated_text, cp_entry, status, max_chars, max_lines)
-            if violations:
-                violations_count += 1
-            if (is_reviewed_status(status) and is_refusal(translated_text)) or status in ("failed_refusal", "review_required", "translated_needs_review"):
-                needs_review += 1
-            elif status in ("done", "translated", "preserved"):
-                reviewed += 1
-        return {
-            "total": total_cells,
-            "reviewed": reviewed,
-            "needs_review": needs_review,
-            "violations_count": violations_count,
-            "total_rows": len(original_items),
-        }
+        return dict(load_review_context(file_path)["stats"])
 
     return router
+
+
+def _ensure_ai_review_idle(ai_review_tasks: Mapping[str, Any] | None, file_path: str) -> None:
+    if not ai_review_tasks:
+        return
+    from app.services.ai_review_tasks import active_ai_review_for_file
+
+    if active_ai_review_for_file(ai_review_tasks, file_path):
+        raise HTTPException(status_code=409, detail="Cannot edit review text while AI review is active")
 
 
 __all__ = ["create_router"]

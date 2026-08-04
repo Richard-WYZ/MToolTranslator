@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import MutableMapping
+from typing import Any, Mapping, MutableMapping
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
@@ -19,7 +19,12 @@ from translation import checkpoint
 from translation.terminology import Glossary
 
 
-def create_router(*, base_dir: Path, tasks: MutableMapping[str, TranslationTask]) -> APIRouter:
+def create_router(
+    *,
+    base_dir: Path,
+    tasks: MutableMapping[str, TranslationTask],
+    ai_review_tasks: Mapping[str, Any] | None = None,
+) -> APIRouter:
     router = APIRouter()
     shared_glossary = None
 
@@ -28,6 +33,13 @@ def create_router(*, base_dir: Path, tasks: MutableMapping[str, TranslationTask]
         if shared_glossary is None:
             shared_glossary = Glossary(file_path=str(base_dir / "glossary.json"))
         return shared_glossary
+
+    def ensure_ai_review_idle(file_path: str) -> None:
+        if not ai_review_tasks:
+            return
+        from app.services.ai_review_tasks import active_ai_review_for_file
+        if active_ai_review_for_file(ai_review_tasks, file_path):
+            raise HTTPException(status_code=409, detail="Cannot edit terminology while AI review is active")
 
     @router.get("/api/glossary")
     def get_glossary():
@@ -70,6 +82,7 @@ def create_router(*, base_dir: Path, tasks: MutableMapping[str, TranslationTask]
 
     @router.put("/api/glossary/dynamic/{term}")
     def update_dynamic_glossary(term: str, req: DynamicGlossaryRequest):
+        ensure_ai_review_idle(req.file_path)
         task, was_running = pause_and_flush_for_edit(tasks, req.file_path)
         try:
             g = Glossary(file_path=checkpoint.get_glossary_path(req.file_path))
@@ -95,6 +108,7 @@ def create_router(*, base_dir: Path, tasks: MutableMapping[str, TranslationTask]
 
     @router.delete("/api/glossary/dynamic/{term}")
     def delete_dynamic_glossary(term: str, file_path: str = Query(...)):
+        ensure_ai_review_idle(file_path)
         task, was_running = pause_and_flush_for_edit(tasks, file_path)
         try:
             g = Glossary(file_path=checkpoint.get_glossary_path(file_path))
@@ -107,6 +121,7 @@ def create_router(*, base_dir: Path, tasks: MutableMapping[str, TranslationTask]
 
     @router.post("/api/glossary/promote")
     def promote_dynamic_glossary(req: PromoteGlossaryRequest):
+        ensure_ai_review_idle(req.file_path)
         task, was_running = pause_and_flush_for_edit(tasks, req.file_path)
         try:
             g = Glossary(file_path=checkpoint.get_glossary_path(req.file_path))

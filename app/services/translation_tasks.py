@@ -37,11 +37,7 @@ class TranslationTask:
             "current": 0,
             "total": 0,
             "percentage": 0.0,
-            "current_original": "",
-            "current_translated": "",
             "status": "idle",
-            "row": 0,
-            "col": 0,
         }
         self.error: Optional[str] = None
         self.runtime: TranslationRuntime | None = None
@@ -54,6 +50,7 @@ class TranslationTask:
         self._lock = threading.Lock()
         self._cancel_requested = False
         self._pause_requested = False
+        self.completion_verified = False
 
     def _update_progress(self, payload: Dict[str, Any]) -> None:
         with self._lock:
@@ -61,12 +58,9 @@ class TranslationTask:
             self.progress = {
                 "current": payload.get("processed", 0),
                 "total": payload.get("total", 0),
-                "percentage": payload.get("percent", 0.0),
-                "current_original": payload.get("original_text", ""),
-                "current_translated": payload.get("translated_text", ""),
+                # 100% is reserved for a structurally verified terminal result.
+                "percentage": min(float(payload.get("percent", 0.0) or 0.0), 99.9),
                 "status": payload.get("status", ""),
-                "row": payload.get("row", 0),
-                "col": payload.get("col", 0),
             }
 
     def get_progress(self) -> Dict[str, Any]:
@@ -75,37 +69,52 @@ class TranslationTask:
         with self._lock:
             progress = dict(self.progress)
             progress["cell_status"] = progress.get("status", "")
-            progress["status"] = self.status
-            progress["token_usage"] = self.runtime.token_usage() if self.runtime else {}
-            now = self.finished_at or time.time()
-            elapsed = max(0.0, now - self.started_at) if self.started_at else 0.0
-            completed = int(progress.get("current", 0) or 0)
-            total = int(progress.get("total", 0) or 0)
-            rate = completed / elapsed if elapsed > 0 else 0.0
-            remaining = max(0, total - completed)
-            progress["elapsed_seconds"] = round(elapsed, 1)
-            progress["entries_per_minute"] = round(rate * 60, 1)
-            progress["eta_seconds"] = round(remaining / rate, 1) if rate > 0 and self.status == "running" else None
-            progress["phase"] = self._phase(progress)
-            progress["profile"] = dict(self.profile_summary)
-            progress["snapshot_ready"] = (
-                self.status in ("completed", "cancelled", "error")
-                and self.has_unexported_result
-                and Path(default_output_path(self.file_path)).is_file()
-            )
-            progress["control_note"] = (
-                "已暂停派发新请求；已发出的请求可能仍在返回。"
-                if self.status == "paused"
-                else "正在等待已发出的请求结束并写入检查点。"
-                if self.status == "stopping"
-                else ""
-            )
-            return {
-                "task_id": self.task_id,
-                "error": self.error,
-                "review_summary": dict(self.review_summary),
-                **progress,
-            }
+            task_status = self.status
+            error = self.error
+            review_summary = dict(self.review_summary)
+            started_at = self.started_at
+            finished_at = self.finished_at
+            has_unexported_result = self.has_unexported_result
+            completion_verified = self.completion_verified
+            runtime = self.runtime
+
+        # Keep observers outside the task lock. This in-memory usage snapshot
+        # cannot write the checkpoint or block progress callbacks.
+        token_usage = runtime.token_usage() if runtime else {}
+        now = finished_at or time.time()
+        elapsed = max(0.0, now - started_at) if started_at else 0.0
+        completed = int(progress.get("current", 0) or 0)
+        total = int(progress.get("total", 0) or 0)
+        rate = completed / elapsed if elapsed > 0 else 0.0
+        remaining = max(0, total - completed)
+        progress["status"] = task_status
+        progress["token_usage"] = token_usage
+        progress["elapsed_seconds"] = round(elapsed, 1)
+        progress["entries_per_minute"] = round(rate * 60, 1)
+        progress["eta_seconds"] = round(remaining / rate, 1) if rate > 0 and task_status == "running" else None
+        progress["phase"] = self._phase(progress)
+        progress["profile"] = dict(self.profile_summary)
+        progress["completion_verified"] = completion_verified
+        progress["snapshot_ready"] = (
+            task_status in ("completed", "cancelled", "error")
+            and has_unexported_result
+            and Path(default_output_path(self.file_path)).is_file()
+        )
+        progress["control_note"] = (
+            "已暂停派发新请求；已发出的请求可能仍在返回。"
+            if task_status == "paused"
+            else "正在等待已发出的请求结束并写入检查点。"
+            if task_status == "stopping"
+            else "正在校验检查点、输出文件和复核报告。"
+            if task_status == "finalizing"
+            else ""
+        )
+        return {
+            "task_id": self.task_id,
+            "error": error,
+            "review_summary": review_summary,
+            **progress,
+        }
 
     def _phase(self, progress: Dict[str, Any]) -> str:
         if self.status == "completed":
@@ -114,6 +123,8 @@ class TranslationTask:
             return "finalized"
         if self.status == "stopping":
             return "stopping"
+        if self.status == "finalizing":
+            return "validation"
         cell_status = str(progress.get("cell_status") or "")
         if cell_status in ("idle", "") and not progress.get("total"):
             return "analysis"
@@ -183,11 +194,17 @@ class TranslationTask:
                 progress_callback=self._update_progress,
                 translate_columns=self.translate_columns,
             )
-            self.review_summary = dict(result.review_summary)
-            self.status = "completed"
-            self.finished_at = time.time()
-            self.has_unexported_result = True
             with self._lock:
+                self.status = "finalizing"
+                self.review_summary = dict(result.review_summary)
+                self.has_unexported_result = True
+            verified_total = self._validate_completion(result)
+            with self._lock:
+                self.status = "completed"
+                self.finished_at = time.time()
+                self.completion_verified = True
+                self.progress["current"] = verified_total
+                self.progress["total"] = verified_total
                 self.progress["percentage"] = 100.0
                 self.progress["status"] = "completed"
         except TranslationCancelled:
@@ -199,6 +216,48 @@ class TranslationTask:
             self.finished_at = time.time()
             self.error = str(exc)
             self.has_unexported_result = True
+
+    def _validate_completion(self, result: Any) -> int:
+        """Return the verified entry count or raise instead of faking 100%."""
+        from translation import checkpoint
+        from translation.input import load_json_items
+        from translation.output import default_output_path
+
+        output_path = str(result.output_path or default_output_path(self.file_path))
+        if not Path(output_path).is_file():
+            raise RuntimeError("翻译流程结束，但完整输出文件不存在")
+        if not result.review_report_path or not Path(result.review_report_path).is_file():
+            raise RuntimeError("翻译流程结束，但质量复核报告不存在")
+
+        original_items = load_json_items(self.file_path)
+        output_items = load_json_items(output_path)
+        if len(output_items) != len(original_items):
+            raise RuntimeError(f"输出条目数不完整：{len(output_items)} / {len(original_items)}")
+        if [key for key, _ in output_items] != [key for key, _ in original_items]:
+            raise RuntimeError("输出文件的原文键或键顺序发生变化")
+
+        cp_data = checkpoint.load_checkpoint(self.file_path)
+        cp_entries = cp_data.get("entries", {})
+        if not isinstance(cp_entries, dict):
+            raise RuntimeError("检查点条目结构无效")
+        incomplete: list[int] = []
+        for row in range(len(original_items)):
+            entry = cp_entries.get(f"{row}_0")
+            if not isinstance(entry, dict) or not checkpoint.is_completed_status(str(entry.get("status", ""))):
+                incomplete.append(row)
+                if len(incomplete) >= 5:
+                    break
+        if incomplete:
+            display_rows = ", ".join(str(row + 1) for row in incomplete)
+            raise RuntimeError(f"仍有未完成的检查点条目（示例行：{display_rows}）")
+
+        pending = int((result.review_summary or {}).get("pending", 0) or 0)
+        summary_total = int((result.review_summary or {}).get("total", 0) or 0)
+        if pending or summary_total != len(original_items):
+            raise RuntimeError(
+                f"完成摘要未通过校验：总计 {summary_total} / {len(original_items)}，未完成 {pending}"
+            )
+        return len(original_items)
 
 
 class BatchTranslationManager:
@@ -288,10 +347,6 @@ class BatchTranslationManager:
                     "total": task_progress.get("total", 0),
                     "percentage": task_progress.get("percentage", 0.0),
                 }
-                if task_progress.get("current_original"):
-                    self.file_results[self.current_index]["current_original"] = task_progress["current_original"]
-                if task_progress.get("current_translated"):
-                    self.file_results[self.current_index]["current_translated"] = task_progress["current_translated"]
 
             return {
                 "batch_id": self.batch_id,

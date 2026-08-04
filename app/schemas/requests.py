@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class GlossaryTermRequest(BaseModel):
@@ -115,3 +115,18 @@ class ReviewSaveRequest(BaseModel):
 class ReviewBatchSaveRequest(BaseModel):
     file_path: str
     edits: List[Dict[str, Any]]
+
+
+class AIReviewRequest(BaseModel):
+    file_path: str
+    scope: Literal["required", "all", "selected", "filter"] = "all"
+    rows: List[int] = Field(default_factory=list)
+    filter: str = "issues"
+    review_model: Optional[str] = "auto"
+    verifier_model: Optional[str] = "auto"
+    sensitive_model: Optional[str] = "auto"
+    auto_apply: bool = True
+
+
+class AIReviewActionRequest(BaseModel):
+    file_path: str

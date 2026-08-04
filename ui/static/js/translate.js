@@ -2,7 +2,7 @@
 
 async function ensureCanReplaceFile() {
     if (!state.filePath) return true;
-    if (["running", "paused", "stopping"].includes(state.taskStatus)) {
+    if (["running", "paused", "stopping", "finalizing"].includes(state.taskStatus)) {
         toast("任务仍在运行，请先停止并等待写盘", "error");
         return false;
     }
@@ -37,6 +37,7 @@ async function handleFile(file) {
         state.taskId = "";
         state.taskStatus = "idle";
         state.hasUnexportedResult = false;
+        state.exportReady = false;
         await loadPreview();
         renderFile();
         invalidatePreflight();
@@ -89,7 +90,14 @@ function resetFile() {
     state.taskId = "";
     state.taskStatus = "idle";
     state.hasUnexportedResult = false;
-    state.review = { stats: null, filter: "issues", offset: 0, limit: 30, total: 0, items: [], selectedRow: null, selectedRows: new Set() };
+    state.exportReady = false;
+    state.review = {
+        stats: null, filter: "required", offset: 0, limit: 30, total: 0,
+        items: [], selectedRow: null, selectedRows: new Set(), selectedItems: new Map(), selectionFilePath: "",
+        loadRequestId: 0, listRequestId: 0, listController: null,
+        aiTaskId: "", aiTaskStatus: "idle", aiPollingTimer: null,
+        aiPollingGeneration: 0, aiProgress: null,
+    };
     el("preview-wrap").hidden = true;
     el("result-summary").hidden = true;
     resetTaskDisplay();
@@ -166,6 +174,7 @@ async function startTranslation() {
         state.taskId = result.task_id;
         state.taskStatus = "running";
         state.hasUnexportedResult = true;
+        state.exportReady = false;
         el("result-summary").hidden = true;
         startPolling();
         updateActionStates();
@@ -179,31 +188,59 @@ async function startTranslation() {
 
 function startPolling() {
     stopPolling();
-    pollProgress();
-    state.pollingTimer = setInterval(pollProgress, 900);
+    state.pollingFailures = 0;
+    var generation = ++state.pollingGeneration;
+    scheduleProgressPoll(generation, 0);
 }
 function stopPolling() {
     if (state.pollingTimer) {
-        clearInterval(state.pollingTimer);
+        clearTimeout(state.pollingTimer);
         state.pollingTimer = null;
     }
+    state.pollingGeneration += 1;
 }
 
-async function pollProgress() {
-    if (!state.taskId) return;
+function scheduleProgressPoll(generation, delay) {
+    if (generation !== state.pollingGeneration || !state.taskId) return;
+    state.pollingTimer = setTimeout(function () { pollProgress(generation); }, delay);
+}
+
+async function pollProgress(generation) {
+    if (!state.taskId || generation !== state.pollingGeneration) return;
     try {
         var progress = await API.get("/translate/" + encodeURIComponent(state.taskId) + "/progress");
+        if (generation !== state.pollingGeneration) return;
+        state.pollingFailures = 0;
         state.taskStatus = progress.status;
         renderProgress(progress);
         if (["completed", "cancelled", "error"].includes(progress.status)) {
             stopPolling();
             state.hasUnexportedResult = Boolean(progress.snapshot_ready);
+            state.exportReady = Boolean(progress.snapshot_ready);
             await refreshReviewCount();
+            return;
         }
         updateActionStates(progress);
+        scheduleProgressPoll(generation, 900);
     } catch (error) {
-        stopPolling();
-        toast(error.message, "error");
+        if (generation !== state.pollingGeneration) return;
+        state.pollingFailures += 1;
+        if (state.pollingFailures >= 2) await refreshTaskStatusFallback(generation);
+        if (state.pollingFailures === 3) toast("进度连接暂时中断，正在自动重试", "error");
+        scheduleProgressPoll(generation, Math.min(5000, 900 * state.pollingFailures));
+    }
+}
+
+async function refreshTaskStatusFallback(generation) {
+    try {
+        var payload = await API.get("/translate/tasks");
+        if (generation !== state.pollingGeneration) return;
+        var task = (payload.tasks || []).find(function (item) { return item.task_id === state.taskId; });
+        if (!task) return;
+        state.taskStatus = task.status;
+        updateTaskStatus(task.status);
+    } catch (error) {
+        // The sequential progress loop remains authoritative and keeps retrying.
     }
 }
 
@@ -220,11 +257,6 @@ function renderProgress(progress) {
     var usage = progress.token_usage || {};
     var totalTokens = usage.total_tokens || ((usage.prompt_tokens || usage.input_tokens || 0) + (usage.completion_tokens || usage.output_tokens || 0));
     el("metric-tokens").textContent = totalTokens ? Number(totalTokens).toLocaleString("zh-CN") : "—";
-    if (progress.current_original || progress.current_translated) {
-        el("current-item").hidden = false;
-        el("current-original").textContent = progress.current_original || "—";
-        el("current-translated").textContent = progress.current_translated || "等待模型返回";
-    }
     el("control-note").hidden = !progress.control_note;
     el("control-note").textContent = progress.control_note || "";
     updateTaskStatus(progress.status, progress.error);
@@ -245,11 +277,11 @@ function updatePhases(phase) {
 function updateTaskStatus(status, error) {
     var labels = {
         idle: "未开始", starting: "正在启动", running: "处理中", paused: "已暂停新请求",
-        stopping: "停止并写盘中", completed: "处理完成", cancelled: "已停止并写盘", error: "任务异常",
+        stopping: "停止并写盘中", finalizing: "正在完成校验", completed: "处理完成", cancelled: "已停止并写盘", error: "任务异常",
     };
     var classes = {
         idle: "neutral", starting: "running", running: "running", paused: "warning",
-        stopping: "warning", completed: "success", cancelled: "warning", error: "danger",
+        stopping: "warning", finalizing: "running", completed: "success", cancelled: "warning", error: "danger",
     };
     el("task-status-badge").className = "status-badge " + (classes[status] || "neutral");
     el("task-status-badge").textContent = labels[status] || status;
@@ -258,6 +290,7 @@ function updateTaskStatus(status, error) {
         running: "总进度包含规则保留、断点恢复、模型翻译与合成条目",
         paused: "不会派发新请求，已发出的请求可能仍在返回",
         stopping: "正在等待已发出的请求结束并刷新输出文件",
+        finalizing: "正在校验检查点、输出结构与复核报告",
         completed: "翻译、质量处理与复核报告已经生成",
         cancelled: "部分结果已写盘，可复核或导出部分结果",
         error: "已保存当前可用检查点，请查看错误后恢复任务",
@@ -288,12 +321,15 @@ function renderResult(progress) {
 
 function updateActionStates(progress) {
     var status = state.taskStatus;
-    var active = ["running", "paused", "stopping", "starting"].includes(status);
+    var active = ["running", "paused", "stopping", "finalizing", "starting"].includes(status);
     el("btn-start").disabled = active || !state.preflight || !state.preflight.ok;
     el("btn-pause").disabled = status !== "running";
     el("btn-resume").disabled = status !== "paused";
     el("btn-stop").disabled = !["running", "paused"].includes(status);
-    el("btn-export").disabled = !(progress ? progress.snapshot_ready : state.hasUnexportedResult && ["completed", "cancelled", "error"].includes(status));
+    if (progress && progress.snapshot_ready) state.exportReady = true;
+    var canExport = state.exportReady && !active && !aiReviewIsActive();
+    el("btn-export").disabled = !canExport;
+    el("btn-review-export").disabled = !canExport;
     lockFileControls(active);
 }
 
@@ -324,40 +360,11 @@ async function stopTranslation() {
     } catch (error) { toast(error.message, "error"); }
 }
 
-async function exportResult() {
-    if (!state.sessionId || !state.filePath) {
-        toast("当前任务不是可直接导出的上传会话", "error");
-        return;
-    }
-    el("btn-export").disabled = true;
-    try {
-        var result = await API.post("/export", {
-            session_id: state.sessionId,
-            file_path: state.filePath,
-            file_type: "json",
-            column_mappings: [],
-        });
-        state.hasUnexportedResult = false;
-        var link = document.createElement("a");
-        link.href = "/api/download?path=" + encodeURIComponent(result.export_path);
-        link.download = result.filename || state.fileName;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        toast("完整结果已导出，源文件备份已创建", "success");
-    } catch (error) {
-        toast(error.message, "error");
-    } finally {
-        updateActionStates();
-    }
-}
-
 function resetTaskDisplay() {
     el("task-progress-fill").style.width = "0%";
     el("task-progress-text").textContent = "0 / 0";
     el("task-progress-percent").textContent = "0%";
     ["metric-elapsed", "metric-eta", "metric-rate", "metric-tokens"].forEach(function (id) { el(id).textContent = "—"; });
-    el("current-item").hidden = true;
     el("control-note").hidden = true;
     updateTaskStatus("idle");
     updatePhases("analysis");

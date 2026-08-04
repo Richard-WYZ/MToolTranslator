@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import MutableMapping
+from typing import Any, Mapping, MutableMapping
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.schemas import TranslateStartRequest
 from app.services.translation_task_service import (
@@ -16,12 +16,16 @@ from app.services.translation_task_service import (
 from app.services.translation_tasks import TranslationTask
 
 
-def create_router(*, tasks: MutableMapping[str, TranslationTask]) -> APIRouter:
+def create_router(*, tasks: MutableMapping[str, TranslationTask], ai_review_tasks: Mapping[str, Any] | None = None) -> APIRouter:
     router = APIRouter()
 
     @router.post("/api/translate/start")
     def start_translation(req: TranslateStartRequest):
         """Start a new translation task in a background thread."""
+        if ai_review_tasks:
+            from app.services.ai_review_tasks import active_ai_review_for_file
+            if active_ai_review_for_file(ai_review_tasks, req.file_path):
+                raise HTTPException(status_code=409, detail="Cannot start translation while AI review is active")
         return start_translation_task(
             tasks,
             file_path=req.file_path,

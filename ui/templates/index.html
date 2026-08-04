@@ -187,10 +187,6 @@
                             <div class="metric"><span>处理速度</span><strong id="metric-rate">—</strong></div>
                             <div class="metric"><span>Token</span><strong id="metric-tokens">—</strong></div>
                         </div>
-                        <div id="current-item" class="current-item" hidden>
-                            <div><span>当前原文</span><p id="current-original">—</p></div>
-                            <div><span>最新译文</span><p id="current-translated">等待模型返回</p></div>
-                        </div>
                         <p id="control-note" class="control-note" hidden></p>
                         <div class="task-actions">
                             <div class="button-row">
@@ -236,15 +232,50 @@
                 <button class="btn btn-primary" data-nav="translate">返回翻译任务</button>
             </div>
             <div id="review-workspace" hidden>
-                <div class="stat-grid">
-                    <div class="stat-card"><span>有效条目</span><strong id="review-stat-total">0</strong><small>有语言内容</small></div>
-                    <div class="stat-card attention"><span>需要复核</span><strong id="review-stat-needs">0</strong><small>译文已保留</small></div>
-                    <div class="stat-card danger"><span>约束问题</span><strong id="review-stat-issues">0</strong><small>自动检查发现</small></div>
-                    <div class="stat-card success"><span>已确认 / 保留</span><strong id="review-stat-done">0</strong><small>可直接导出</small></div>
+                <div id="review-busy-overlay" class="review-busy-overlay" hidden role="status" aria-live="polite">
+                    <div class="review-busy-card">
+                        <span class="review-busy-spinner" aria-hidden="true"></span>
+                        <strong id="review-busy-label">正在处理复核操作…</strong>
+                        <small>请等待当前操作完成，请勿重复点击或切换任务。</small>
+                    </div>
                 </div>
+                <div class="stat-grid">
+                    <div class="stat-card danger"><span>必须复核</span><strong id="review-stat-required">0</strong><small>优先处理，当前默认列表</small></div>
+                    <div class="stat-card attention"><span>建议复核</span><strong id="review-stat-advisory">0</strong><small>译文可用但存在不确定性</small></div>
+                    <div class="stat-card"><span>系统保留</span><strong id="review-stat-preserved">0</strong><small>数字、符号或无需翻译内容</small></div>
+                    <div class="stat-card success"><span>已确认译文</span><strong id="review-stat-done">0</strong><small>已翻译且无需复核</small></div>
+                </div>
+                <section class="panel ai-review-panel" id="ai-review-panel">
+                    <div class="ai-review-heading">
+                        <div><h2>AI 模型复核</h2><p>先判断现有译文，必要时重译，再由第二模型验证；只自动应用通过硬性校验的结果。</p></div>
+                        <span id="ai-review-status" class="status-badge neutral">未开始</span>
+                    </div>
+                    <div class="ai-review-controls">
+                        <div class="field"><label for="ai-review-scope">复核范围</label><select id="ai-review-scope"><option value="required">仅必须复核</option><option value="all" selected>全部需要复核</option><option value="filter">当前筛选结果</option></select></div>
+                        <div class="field"><label for="ai-review-model">主复核模型</label><select id="ai-review-model"><option value="auto">自动选择（推荐）</option></select></div>
+                        <div class="field"><label for="ai-verifier-model">验证模型</label><select id="ai-verifier-model"><option value="auto">自动选择不同模型</option></select></div>
+                        <details class="ai-review-advanced"><summary>敏感内容模型</summary><div class="field"><label for="ai-sensitive-model">敏感文本</label><select id="ai-sensitive-model"><option value="auto">自动选择已测试模型</option></select></div></details>
+                    </div>
+                    <div class="ai-review-actions">
+                        <button id="btn-ai-review-start" class="btn btn-primary">开始 AI 复核</button>
+                        <button id="btn-ai-review-selected" class="btn btn-secondary" disabled>AI 复核所选</button>
+                        <button id="btn-ai-review-stop" class="btn btn-ghost" hidden>停止复核</button>
+                        <button id="btn-ai-review-resume" class="btn btn-secondary" hidden>继续未完成的复核</button>
+                        <button id="btn-ai-review-rollback" class="btn btn-ghost" hidden>撤销本次 AI 复核</button>
+                    </div>
+                    <div id="ai-review-progress" class="ai-review-progress" hidden>
+                        <div class="progress-bar"><div id="ai-review-progress-fill" class="progress-fill"></div></div>
+                        <div class="progress-labels"><strong id="ai-review-progress-text">0 / 0</strong><span id="ai-review-progress-percent">0%</span></div>
+                        <div id="ai-review-summary" class="ai-review-summary"></div>
+                    </div>
+                </section>
                 <div class="review-toolbar panel">
                     <div class="filter-tabs" id="review-filters">
-                        <button data-filter="issues" class="active">优先问题</button>
+                        <button data-filter="required" class="active">必须复核 <b id="review-count-required">0</b></button>
+                        <button data-filter="advisory">建议复核 <b id="review-count-advisory">0</b></button>
+                        <button data-filter="preserved">系统保留 <b id="review-count-preserved">0</b></button>
+                        <button data-filter="issues">全部待复核 <b id="review-count-actionable">0</b></button>
+                        <button data-filter="violated">诊断提示</button>
                         <button data-filter="all">全部</button>
                         <button data-filter="refusal">拒答</button>
                         <button data-filter="term">术语</button>
@@ -252,14 +283,26 @@
                         <button data-filter="symbol">符号</button>
                         <button data-filter="length">长度</button>
                         <button data-filter="pending">未处理</button>
+                        <button data-filter="ai_fixed">AI 已修复</button>
+                        <button data-filter="ai_confirmed">AI 确认原译文</button>
+                        <button data-filter="ai_unresolved">AI 未解决</button>
+                        <button data-filter="ai_pending">尚未 AI 复核</button>
                     </div>
-                    <div class="jump-control"><label for="review-jump">跳至行</label><input id="review-jump" type="number" min="1"><button id="btn-review-jump" class="btn btn-secondary btn-sm">跳转</button></div>
+                    <div class="review-toolbar-actions">
+                        <button id="btn-review-export" class="btn btn-success btn-sm" disabled>导出当前结果</button>
+                        <div class="jump-control"><label for="review-jump">跳至行</label><input id="review-jump" type="number" min="1"><button id="btn-review-jump" class="btn btn-secondary btn-sm">跳转</button></div>
+                    </div>
                 </div>
                 <div class="review-layout">
                     <section class="panel review-queue-panel">
                         <div class="queue-header">
                             <div><h2>复核队列</h2><span id="review-queue-count">0 项</span></div>
-                            <button id="btn-accept-selected" class="btn btn-secondary btn-sm" disabled>确认所选</button>
+                            <div class="queue-selection-actions">
+                                <label class="select-page-control"><input id="review-select-page" type="checkbox">全选本页</label>
+                                <span id="review-selected-count">已选 0 项</span>
+                                <button id="btn-review-clear-selection" class="btn btn-ghost btn-sm" disabled>清空</button>
+                                <button id="btn-accept-selected" class="btn btn-secondary btn-sm" disabled>确认所选</button>
+                            </div>
                         </div>
                         <div id="review-queue" class="review-queue"></div>
                         <div class="pagination">
@@ -275,6 +318,7 @@
                             <div class="text-block source"><label>日文原文</label><p id="editor-source"></p></div>
                             <div class="text-block target"><label for="editor-target">简体中文译文</label><textarea id="editor-target" rows="8"></textarea></div>
                             <div class="editor-actions">
+                                <button id="btn-ai-review-row" class="btn btn-primary">AI 复核此条</button>
                                 <button id="btn-review-accept" class="btn btn-primary">保存并确认</button>
                                 <button id="btn-review-draft" class="btn btn-secondary">保存为待复核</button>
                                 <button id="btn-review-preserve" class="btn btn-ghost">保留原文</button>
@@ -448,7 +492,9 @@
 <script defer src="/static/js/core.js"></script>
 <script defer src="/static/js/profiles.js"></script>
 <script defer src="/static/js/translate.js"></script>
+<script defer src="/static/js/export.js"></script>
 <script defer src="/static/js/review.js"></script>
+<script defer src="/static/js/ai-review.js"></script>
 <script defer src="/static/js/glossary.js"></script>
 <script defer src="/static/js/history.js"></script>
 <script defer src="/static/js/model-testing.js"></script>

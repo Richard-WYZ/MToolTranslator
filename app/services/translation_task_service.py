@@ -37,7 +37,7 @@ def start_translation_task(
         raise HTTPException(status_code=404, detail="File not found")
     require_mtool_json_file(file_path)
     for task in tasks.values():
-        if task.status in ("running", "paused", "stopping"):
+        if task.status in ("running", "paused", "stopping", "finalizing"):
             raise HTTPException(status_code=409, detail="A translation task is already active")
 
     task_id = uuid.uuid4().hex[:12]

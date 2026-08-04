@@ -56,21 +56,24 @@ function renderHistory(checkpoints, tasks) {
             completed: session.completed,
             total: session.total,
             updated_at: task && task.finished_at ? task.finished_at : session.updated_at,
-            review_required: session.review_required || 0,
+            review_queue_size: session.review_queue_size
+                || Number(session.review_required || 0) + Number(session.translated_needs_review || 0),
             file_exists: session.file_exists,
         };
     });
     tasks.forEach(function (task) {
         if (!known.has(task.file_path)) rows.push({
             file_path: task.file_path, file_name: task.file_name, model: task.model, status: task.status,
-            completed: Math.round((task.percentage || 0)), total: 100, updated_at: task.finished_at || task.started_at, review_required: (task.review_summary || {}).review_required || 0,
+            completed: Math.round((task.percentage || 0)), total: 100, updated_at: task.finished_at || task.started_at,
+            review_queue_size: Number((task.review_summary || {}).review_required || 0)
+                + Number((task.review_summary || {}).translated_needs_review || 0),
             file_exists: true,
         });
     });
     el("history-list").innerHTML = rows.map(function (item) {
         var percent = item.total ? Math.round(item.completed * 100 / item.total) : 0;
         return '<div class="history-item"><div class="history-main"><strong title="' + escapeHtml(item.file_path) + '">' + escapeHtml(item.file_name || "未命名任务") + "</strong><span>"
-            + escapeHtml(modelLabel(item.model)) + " · " + escapeHtml(statusLabel(item.status)) + " · " + escapeHtml(formatDate(item.updated_at)) + '</span><div class="history-progress"><div class="mini-progress"><i style="width:' + percent + '%"></i></div><span>' + percent + "% · 待复核 " + item.review_required + "</span></div></div>"
+            + escapeHtml(modelLabel(item.model)) + " · " + escapeHtml(statusLabel(item.status)) + " · " + escapeHtml(formatDate(item.updated_at)) + '</span><div class="history-progress"><div class="mini-progress"><i style="width:' + percent + '%"></i></div><span>' + percent + "% · 待复核 " + item.review_queue_size + "</span></div></div>"
             + '<div class="history-actions"><button class="btn btn-secondary btn-sm" data-open-path="' + escapeHtml(item.file_path) + '"' + (item.file_exists === false ? " disabled" : "") + '>打开复核</button></div></div>';
     }).join("");
 }
@@ -83,13 +86,14 @@ async function adoptHistoryFile(path) {
     try {
         await loadPreview();
         renderFile();
+        await refreshExportState();
         await refreshReviewCount();
         navigate("review");
     } catch (error) { toast(error.message, "error"); }
 }
 
 async function resumeHistory(path) {
-    if (["running", "paused", "stopping"].includes(state.taskStatus)) {
+    if (["running", "paused", "stopping", "finalizing"].includes(state.taskStatus)) {
         toast("已有任务正在运行", "error");
         return;
     }

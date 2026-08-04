@@ -255,10 +255,42 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert "NSFW 可用" in script
     assert "NSFW 上次测试" in script
     assert "model_test_statuses" in script
+    assert 'id="ai-review-model"' in html
+    assert 'id="ai-verifier-model"' in html
+    assert 'id="btn-ai-review-start"' in html
+    assert 'id="btn-ai-review-resume"' in html
+    assert 'data-filter="required" class="active"' in html
+    assert 'data-filter="advisory"' in html
+    assert 'data-filter="preserved"' in html
+    assert 'id="review-select-page"' in html
+    assert 'id="review-selected-count"' in html
+    assert 'id="btn-review-clear-selection"' in html
+    assert 'id="btn-review-export"' in html
+    assert 'id="review-busy-overlay"' in html
+    assert 'id="review-busy-label"' in html
+    assert "/review/ai/preflight" in script
+    assert "/review/ai/start" in script
+    assert "/rollback" in script
+    assert "/export/status" in script
+    assert "window.pywebview && window.pywebview.api" in script
+    assert "setReviewRowSelected" in script
+    assert "toggleCurrentReviewPage" in script
+    assert "setReviewActionBusy" in script
+    assert "reviewActionIsBusy" in script
+    assert 'setReviewActionBusy("save"' in script
+    assert 'setReviewActionBusy("batch_save"' in script
+    assert 'setReviewActionBusy("ai_start"' in script
+    assert "warning is-working" in script
+    main_script = (root / "ui" / "static" / "js" / "main.js").read_text(encoding="utf-8")
+    filter_handler = main_script.split('el("review-filters")', 1)[1].split('el("review-queue")', 1)[0]
+    assert "selectedRows.clear" not in filter_handler
     assert 'test_kind: testKind' in script
     assert "state.settingsConnectionDirty" in script
-    assert len(scripts) == 9
+    assert len(scripts) == 11
     assert len(styles) == 4
     assert max(len(path.read_text(encoding="utf-8").splitlines()) for path in scripts) < 400
     assert "/static/app.js" not in html
     assert "/static/style.css" not in html
+    desktop_script = (root / "app" / "desktop.py").read_text(encoding="utf-8")
+    assert "create_confirmation_dialog" in desktop_script
+    assert "window.evaluate_js" not in desktop_script

@@ -51,13 +51,13 @@ function bindEvents() {
     el("btn-resume").addEventListener("click", resumeTranslation);
     el("btn-stop").addEventListener("click", stopTranslation);
     el("btn-export").addEventListener("click", exportResult);
+    el("btn-review-export").addEventListener("click", exportResult);
 
     el("review-filters").addEventListener("click", function (event) {
         var button = event.target.closest("[data-filter]");
         if (!button) return;
         state.review.filter = button.dataset.filter;
         state.review.offset = 0;
-        state.review.selectedRows.clear();
         all("#review-filters button").forEach(function (node) { node.classList.toggle("active", node === button); });
         loadReviewList(0).catch(function (error) { toast(error.message, "error"); });
     });
@@ -65,8 +65,8 @@ function bindEvents() {
         var checkbox = event.target.closest("[data-review-check]");
         if (checkbox) {
             var row = Number(checkbox.dataset.reviewCheck);
-            if (checkbox.checked) state.review.selectedRows.add(row); else state.review.selectedRows.delete(row);
-            el("btn-accept-selected").disabled = state.review.selectedRows.size === 0;
+            var selectedItem = state.review.items.find(function (item) { return item.row === row; });
+            setReviewRowSelected(row, checkbox.checked, selectedItem);
             event.stopPropagation();
             return;
         }
@@ -75,11 +75,22 @@ function bindEvents() {
     });
     el("btn-review-prev").addEventListener("click", function () { loadReviewList(state.review.offset - state.review.limit).catch(function (error) { toast(error.message, "error"); }); });
     el("btn-review-next").addEventListener("click", function () { loadReviewList(state.review.offset + state.review.limit).catch(function (error) { toast(error.message, "error"); }); });
+    el("review-select-page").addEventListener("change", function () { toggleCurrentReviewPage(this.checked); });
+    el("btn-review-clear-selection").addEventListener("click", clearReviewSelection);
     el("btn-review-jump").addEventListener("click", jumpReview);
     el("btn-review-accept").addEventListener("click", function () { saveReview("accept"); });
     el("btn-review-draft").addEventListener("click", function () { saveReview("draft"); });
     el("btn-review-preserve").addEventListener("click", function () { saveReview("preserve"); });
     el("btn-accept-selected").addEventListener("click", acceptSelected);
+    el("btn-ai-review-start").addEventListener("click", function () { startAIReview(el("ai-review-scope").value); });
+    el("btn-ai-review-selected").addEventListener("click", function () { startAIReview("selected"); });
+    el("btn-ai-review-row").addEventListener("click", function () { startAIReview("row"); });
+    el("btn-ai-review-stop").addEventListener("click", stopAIReview);
+    el("btn-ai-review-resume").addEventListener("click", resumeAIReview);
+    el("btn-ai-review-rollback").addEventListener("click", rollbackAIReview);
+    ["ai-review-model", "ai-verifier-model", "ai-sensitive-model"].forEach(function (id) {
+        el(id).addEventListener("change", function () { localStorage.setItem("lgt." + id, this.value); });
+    });
 
     el("glossary-search").addEventListener("input", function () { state.glossary.search = this.value; renderGlossary(); });
     el("glossary-tabs").addEventListener("click", function (event) {
@@ -107,7 +118,8 @@ function bindEvents() {
         if (button) adoptHistoryFile(button.dataset.openPath);
     });
     window.addEventListener("beforeunload", function (event) {
-        if (state.settingsDirty || state.hasUnexportedResult || ["running", "paused", "stopping"].includes(state.taskStatus)) {
+        if (window.pywebview && window.pywebview.api) return;
+        if (state.settingsDirty || state.hasUnexportedResult || ["starting", "running", "paused", "stopping", "finalizing"].includes(state.taskStatus) || aiReviewIsActive()) {
             event.preventDefault();
             event.returnValue = "";
         }

@@ -20,11 +20,13 @@ from app.routes.files import create_router as create_files_router
 from app.routes.glossary import create_router as create_glossary_router
 from app.routes.models import router as models_router
 from app.routes.review import create_router as create_review_router
+from app.routes.ai_review import create_router as create_ai_review_router
 from app.routes.settings import create_router as create_settings_router
 from app.routes.translation_state import cleanup_translation_state, create_router as create_translation_state_router
 from app.routes.translation_tasks import create_router as create_translation_tasks_router
 from app.schemas import CleanupRequest
 from app.services import BatchTranslationManager, TranslationTask
+from app.services.ai_review_tasks import AIReviewTask
 
 
 BASE_DIR = runtime_base_dir()
@@ -42,6 +44,7 @@ app.include_router(batch_router)
 
 _tasks: dict[str, TranslationTask] = {}
 _batches: dict[str, BatchTranslationManager] = {}
+_ai_review_tasks: dict[str, AIReviewTask] = {}
 
 
 def _get_task_for_file(file_path: str) -> Optional["TranslationTask"]:
@@ -84,15 +87,22 @@ def _apply_term_edit_to_outputs(
 
 
 def cleanup_translation(req: CleanupRequest):
+    from app.services.ai_review_tasks import active_ai_review_for_file
+
+    if active_ai_review_for_file(_ai_review_tasks, req.file_path):
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=409, detail="Stop AI review before cleaning translation state")
     return cleanup_translation_state(req, tasks=_tasks)
 
 
-app.include_router(create_glossary_router(base_dir=BASE_DIR, tasks=_tasks))
-app.include_router(create_files_router(upload_dir=UPLOAD_DIR, tasks=_tasks, get_task_for_file=_get_task_for_file))
-app.include_router(create_translation_tasks_router(tasks=_tasks))
-app.include_router(create_settings_router(tasks=_tasks))
-app.include_router(create_review_router(tasks=_tasks))
-app.include_router(create_translation_state_router(tasks=_tasks, batches=_batches))
+app.include_router(create_glossary_router(base_dir=BASE_DIR, tasks=_tasks, ai_review_tasks=_ai_review_tasks))
+app.include_router(create_files_router(upload_dir=UPLOAD_DIR, tasks=_tasks, get_task_for_file=_get_task_for_file, ai_review_tasks=_ai_review_tasks))
+app.include_router(create_translation_tasks_router(tasks=_tasks, ai_review_tasks=_ai_review_tasks))
+app.include_router(create_settings_router(tasks=_tasks, ai_review_tasks=_ai_review_tasks))
+app.include_router(create_review_router(tasks=_tasks, ai_review_tasks=_ai_review_tasks))
+app.include_router(create_ai_review_router(translation_tasks=_tasks, ai_review_tasks=_ai_review_tasks))
+app.include_router(create_translation_state_router(tasks=_tasks, batches=_batches, ai_review_tasks=_ai_review_tasks))
 
 
 if __name__ == "__main__":

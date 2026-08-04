@@ -9,8 +9,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from common.paths import runtime_base_dir
 
-CHECKPOINT_DIR = ".checkpoints"
+
+CHECKPOINT_DIR = str(runtime_base_dir() / ".checkpoints")
 VERSION = 2
 FINAL_STATUSES = {"translated", "preserved", "translated_needs_review", "review_required"}
 COMPLETED_STATUSES = {"translated", "preserved", "translated_needs_review", "review_required"}
@@ -185,16 +187,17 @@ def _replay_journal(cp_path: str, data: dict[str, Any]) -> None:
 def _update_checkpoint_stats(data: dict[str, Any]) -> None:
     entries = data.setdefault("entries", {})
     stats = data.setdefault("stats", {})
-    stats["completed"] = sum(
-        1
+    normalized_statuses = [
+        normalize_status(str(entry.get("status", "")))
         for entry in entries.values()
-        if is_completed_status(str(entry.get("status", "")))
+        if isinstance(entry, dict)
+    ]
+    stats["completed"] = sum(status in FINAL_STATUSES for status in normalized_statuses)
+    stats["failed"] = sum(status == "review_required" for status in normalized_statuses)
+    stats["translated_needs_review"] = sum(
+        status == "translated_needs_review" for status in normalized_statuses
     )
-    stats["failed"] = sum(
-        1
-        for entry in entries.values()
-        if normalize_status(str(entry.get("status", ""))) == "review_required"
-    )
+    stats["review_queue_size"] = stats["failed"] + stats["translated_needs_review"]
 
 
 def _checkpoint_context(file_path: str) -> dict[str, Any]:
@@ -560,6 +563,8 @@ def list_translation_sessions(*, include_completed: bool = True) -> list[dict[st
                 "updated_at": data.get("updated_at", ""),
                 "status": "completed" if is_complete else "incomplete",
                 "review_required": int(stats.get("failed") or 0),
+                "translated_needs_review": int(stats.get("translated_needs_review") or 0),
+                "review_queue_size": int(stats.get("review_queue_size") or 0),
                 "token_usage": data.get("token_usage", {}),
             }
         )

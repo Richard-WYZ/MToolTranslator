@@ -56,14 +56,33 @@ or production-grade validation. Read and verify the code before relying on it.
    consume tokens.
 6. Export `ManualTransFile.json` from MTool.
 7. Import the JSON on the Translation page and start a translation profile.
-8. Review progress and flagged entries, export the completed JSON, and load it
-   through MTool.
+8. Review progress and flagged entries. You can prioritize required-review
+   items or run AI review with separately selected review and verifier models.
+9. Once translation has finished and the output is structurally complete, you
+   may export the current snapshot before clearing the review queue, continue
+   reviewing, and export again before loading it through MTool.
 
 Runtime files beside the executable include:
 
 - `.env`: local connection settings and credentials; ignored by Git;
 - `.model-status.json`: model test status and timestamps, never model replies;
 - `.checkpoints/`: resumable translation state.
+
+### Review and export
+
+- The review workspace separates required review, advisory review, system-
+  preserved content, and confirmed translations, so numbers and symbols do not
+  crowd the actionable queue.
+- AI review supports separate primary, verifier, and sensitive-content models.
+  Only results that pass structural and quality validation are auto-applied.
+- AI review, single-entry saves, and batch confirmation lock conflicting
+  controls and show a busy indicator to prevent duplicate submissions.
+- Export is blocked while translation or AI review is writing. After the task
+  reaches a structurally complete snapshot, export remains available even if
+  review items remain.
+- Export keeps the working copy, so review and repeated exports can continue.
+  Desktop exit uses a native confirmation dialog and preserves checkpoints and
+  temporary results.
 
 ### Run from source
 
@@ -105,13 +124,18 @@ The portable output is written to `build/dist/`.
 
 ## Runtime and cost
 
-Quality currently takes priority over speed. The latest full-file test used
-**MiniMax M3 + Qwen 3.7 Plus** and completed the model translation phase for
-all **61,978 entries** in `ManualTransFile.json` in
-**4000.095 seconds (about 66.7 minutes)**, consuming about
-**5.4 million tokens**. It produced a structurally complete translation and
-review report, but 1,201 entries remained in the review queue and an independent
-audit flagged 904 issue entries. Human review is still required.
+Quality currently takes priority over speed. The latest validated external
+fixture contained **14,655 entries**. Using **MiniMax M3 + Qwen 3.7 Plus**, its
+translation phase completed in **253.396 seconds (about 4.22 minutes)**, with
+about 4.48 minutes total wall time and **334,922 tokens**. Manual inspection
+still found semantic alignment risk in short-text batches, so meeting the speed
+target does not imply production quality.
+
+The larger **61,978-entry** benchmark most recently required
+**3476.365 seconds (about 57.94 minutes)** and **6,137,210 tokens**, still above
+the 30-minute hard limit. This version adds semantic batch guards, executable-
+code protection, context-contamination isolation, and an AI review workflow,
+but a new full-scale live run has not yet validated every fix end to end.
 
 In plain terms: this project is for people who do not mind waiting and have far
 more tokens than they know what to do with. Do not rely on it yet if you need a

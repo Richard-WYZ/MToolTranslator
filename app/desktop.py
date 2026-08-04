@@ -73,6 +73,38 @@ def start_server(app):
     )
 
 
+def build_close_handler(window, request_client=requests):
+    """Build a non-reentrant desktop close guard using pywebview's native dialog."""
+    def on_closing():
+        try:
+            resp = request_client.get(
+                "http://127.0.0.1:8000/api/translation/dirty-state",
+                timeout=1,
+            )
+            state = resp.json()
+        except Exception:
+            state = {"dirty": False}
+
+        if state.get("dirty"):
+            confirmed = window.create_confirmation_dialog(
+                "确认退出",
+                "当前存在未导出或未完成的翻译结果。退出会停止翻译服务和后台进程，"
+                "临时文件会保留，是否退出？",
+            )
+            if not confirmed:
+                return False
+        try:
+            request_client.post(
+                "http://127.0.0.1:8000/api/desktop/shutdown",
+                timeout=1,
+            )
+        except Exception:
+            pass
+        return True
+
+    return on_closing
+
+
 def run_desktop(app):
     """Launch the desktop window and block until it closes.
 
@@ -99,63 +131,7 @@ def run_desktop(app):
             js_api=Api(),
         )
 
-        def on_closing():
-            try:
-                resp = requests.get(
-                    "http://127.0.0.1:8000/api/translation/dirty-state",
-                    timeout=1,
-                )
-                state = resp.json()
-                if not state.get("dirty"):
-                    return True
-                confirmed = window.evaluate_js(
-                    "confirm('当前存在未导出或未完成的翻译结果。关闭会删除临时 .translated、checkpoint 和动态术语 session，但不会删除源文件。是否关闭？')"
-                )
-                if not confirmed:
-                    return False
-                def cancel_later(items):
-                    for item in items:
-                        try:
-                            requests.post(
-                                "http://127.0.0.1:8000/api/translation/cleanup",
-                                json={
-                                    "file_path": item.get("file_path"),
-                                    "task_id": item.get("task_id"),
-                                    "fast": True,
-                                },
-                                timeout=0.5,
-                            )
-                        except Exception:
-                            pass
-
-                threading.Thread(target=cancel_later, args=(state.get("states", []),), daemon=True).start()
-                return True
-            except Exception:
-                return True
-
-        def on_closing():
-            try:
-                resp = requests.get(
-                    "http://127.0.0.1:8000/api/translation/dirty-state",
-                    timeout=1,
-                )
-                state = resp.json()
-                if state.get("dirty"):
-                    confirmed = window.evaluate_js(
-                        "confirm('\\u5f53\\u524d\\u5b58\\u5728\\u672a\\u5bfc\\u51fa\\u6216\\u672a\\u5b8c\\u6210\\u7684\\u7ffb\\u8bd1\\u7ed3\\u679c\\u3002\\u9000\\u51fa\\u4f1a\\u505c\\u6b62\\u7ffb\\u8bd1\\u670d\\u52a1\\u548c\\u540e\\u53f0\\u8fdb\\u7a0b\\uff0c\\u4e34\\u65f6\\u6587\\u4ef6\\u4f1a\\u4fdd\\u7559\\uff0c\\u662f\\u5426\\u9000\\u51fa\\uff1f')"
-                    )
-                    if not confirmed:
-                        return False
-                try:
-                    requests.post(
-                        "http://127.0.0.1:8000/api/desktop/shutdown",
-                        timeout=1,
-                    )
-                except Exception:
-                    pass
-                return True
-            except Exception:
-                return True
+        on_closing = build_close_handler(window)
 
         try:
             window.events.closing += on_closing

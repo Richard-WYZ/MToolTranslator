@@ -91,10 +91,6 @@ select:disabled { color: #6f7890; background: var(--soft); }
 .progress-labels { display: flex; justify-content: space-between; margin-top: 6px; font-size: 11px; }
 .progress-labels span { color: var(--muted); }
 .task-metrics { margin-top: 14px; }
-.current-item { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 12px; }
-.current-item > div { min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fafbfc; }
-.current-item span { color: var(--muted); font-size: 9px; font-weight: 700; text-transform: uppercase; }
-.current-item p { max-height: 72px; overflow: auto; margin: 4px 0 0; font-size: 11px; white-space: pre-wrap; }
 .control-note { margin: 11px 0 0; padding: 8px 10px; border-radius: 8px; color: #854d0e; background: var(--warning-soft); font-size: 10px; }
 .task-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 17px; padding-top: 15px; border-top: 1px solid var(--line); }
 .button-row { display: flex; gap: 7px; flex-wrap: wrap; }

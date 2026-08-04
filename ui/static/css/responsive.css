@@ -5,6 +5,7 @@
 @keyframes toast-in { from { opacity: 0; transform: translateX(10px); } }
 
 @media (max-width: 1180px) {
+    .ai-review-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .workspace-grid { grid-template-columns: minmax(0, 1fr); }
     .workspace-aside { display: none; }
     .review-layout { grid-template-columns: 250px minmax(360px, 1fr); }
@@ -29,11 +30,16 @@
     .review-layout { grid-template-columns: 1fr; }
     .review-queue-panel, .review-editor-panel, .review-meta-panel { min-height: auto; }
     .review-toolbar { align-items: flex-start; flex-direction: column; }
+    .review-toolbar-actions { align-items: flex-start; flex-wrap: wrap; }
+    .queue-header { align-items: flex-start; flex-direction: column; }
+    .queue-selection-actions { justify-content: flex-start; }
 }
 
 @media (max-width: 520px) {
+    .ai-review-controls { grid-template-columns: 1fr; }
+    .ai-review-heading { flex-direction: column; }
     .topbar-actions .provider-pill { display: none; }
-    .profile-options, .advanced-grid, .current-item, .config-notice { grid-template-columns: 1fr; }
+    .profile-options, .advanced-grid, .config-notice { grid-template-columns: 1fr; }
     .model-config, .task-actions, .section-intro, .settings-actions { align-items: stretch; flex-direction: column; }
     .secret-control { align-items: flex-start; flex-direction: column; }
     .model-picker-heading { align-items: stretch; flex-direction: column; }
