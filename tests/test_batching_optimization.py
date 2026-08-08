@@ -1947,6 +1947,27 @@ def test_runtime_protection_covers_numbers_line_breaks_and_validates_order():
     ) == "保留__KEEP_0__"
 
 
+def test_runtime_protection_recovers_literal_mixed_line_breaks_from_model_output():
+    from translation.protection.runtime import (
+        protect_runtime_tokens,
+        reconcile_line_break_placeholders,
+        restore_runtime_tokens,
+        validate_runtime_tokens,
+    )
+
+    source = "第一行\n\r\n第二行\n\r\n第三行"
+    protected, tokens = protect_runtime_tokens(source)
+    rendered = "译文一\n译文二\n译文三"
+
+    reconciled = reconcile_line_break_placeholders(rendered, tokens, protected)
+
+    assert validate_runtime_tokens(reconciled, tokens, protected) == []
+    assert restore_runtime_tokens(reconciled, tokens) == "译文一\n\r\n译文二\n\r\n译文三"
+
+    mismatched = reconcile_line_break_placeholders("单行译文", tokens, protected)
+    assert validate_runtime_tokens(mismatched, tokens, protected)[0]["type"] == "runtime_token_preservation"
+
+
 def test_model_source_normalizes_generic_japanese_numeric_ordinals_before_protection():
     from translation.batching import prepare_model_candidate
     from translation.classification import normalize_model_source
@@ -2411,6 +2432,39 @@ def test_mtool_batch_finish_does_not_add_or_truncate_line_breaks():
     assert finished == translated
     assert "\n" not in finished
     assert status == "translated"
+
+
+def test_main_batch_accepts_narrative_refusal_wording_but_rejects_explicit_model_refusal():
+    from translation.batching import finish_batch_translation, prepare_model_candidate
+    from translation.quality import status_for_output
+    from translation.terminology import Glossary
+
+    source = "\u306e\u983c\u307f\u3092\u3064\u3044\u3064\u3044\u65ad\u308a\u5207\u308c\u306a\u304b\u3063\u305f\u306e\u3060\u3002"
+    candidate = prepare_model_candidate(batch_i=0, idx=0, source=source)
+    kwargs = {
+        "glossary": Glossary.in_memory(),
+        "restore_func": lambda original, prepared, protected, text, *args: (text, [], []),
+        "pollution_issues_func": lambda source_text, target_text: [],
+        "status_for_output_func": status_for_output,
+    }
+
+    translated, status, issues = finish_batch_translation(
+        candidate,
+        "\u7ec8\u7a76\u6ca1\u80fd\u62d2\u7edd\u5979\u7684\u8bf7\u6c42\u3002",
+        **kwargs,
+    )
+    assert translated == "\u7ec8\u7a76\u6ca1\u80fd\u62d2\u7edd\u5979\u7684\u8bf7\u6c42\u3002"
+    assert status == "translated"
+    assert issues == []
+
+    refused, refused_status, refused_issues = finish_batch_translation(
+        candidate,
+        "\u62b1\u6b49\uff0c\u6211\u65e0\u6cd5\u534f\u52a9\u7ffb\u8bd1\u8be5\u5185\u5bb9\u3002",
+        **kwargs,
+    )
+    assert refused == source
+    assert refused_status == "review_required"
+    assert {item["type"] for item in refused_issues} == {"model_refusal"}
 
 
 def test_json_batch_parser_rejects_duplicate_ids_and_extra_fields():

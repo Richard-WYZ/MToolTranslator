@@ -14,7 +14,7 @@ from translation.protection.runtime import (
 )
 
 
-QUALITY_RULES_VERSION = "quality-rules-v5-source-code-preservation"
+QUALITY_RULES_VERSION = "quality-rules-v8-evidence-based-refusal"
 FIXED_TRANSLATIONS: dict[str, str] = {
     "continue": "继续",
     "new game": "新游戏",
@@ -130,7 +130,13 @@ CODE_STRING_CONDITION_FRAGMENT_RE = re.compile(
 )
 CODE_COMMENT_RE = re.compile(r"^\s*(?://|/\*|\*)")
 SERIALIZED_KEY_RE = re.compile(r"(?<![A-Za-z0-9_$])[A-Za-z_$][A-Za-z0-9_$]*\s*:")
-KANA_RE = re.compile("[\\u3041-\\u309f\\u30a1-\\u30fa\\u30fd-\\u30ff]")
+# Match lexical kana while allowing non-lexical small tsu/voicing marks in
+# Chinese-localized vocalizations. Keep this aligned with refusal.has_japanese.
+KANA_RE = re.compile(
+    "[\\u3041-\\u3062\\u3064-\\u3098\\u309d-\\u309f"
+    "\\u30a1-\\u30c2\\u30c4-\\u30fa\\u30fd-\\u30ff]"
+)
+from translation.quality.refusal import has_japanese
 HAN_RE = re.compile("[\u3400-\u4dbf\u4e00-\u9fff]")
 NORMALIZED_NUMERIC_VALUE_RE = re.compile(r"\d+(?:[.,]\d+)*")
 LEAKED_TERM_PLACEHOLDER_RE = re.compile(
@@ -440,7 +446,7 @@ def translation_issues(original: str, translated: str, short_label: bool = False
             "message": "Translation contains no lexical content for a linguistic source.",
         })
 
-    if KANA_RE.search(translated) and not exact_nonlinguistic_translation(translated):
+    if has_japanese(translated, original=original) and not exact_nonlinguistic_translation(translated):
         issues.append({
             "type": "untranslated_japanese",
             "message": "Japanese kana remain in the translated text.",

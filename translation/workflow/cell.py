@@ -17,6 +17,7 @@ class CellTranslationServices:
     compose_system_prompt: Callable[..., str]
     call_translate: Callable[..., str]
     is_refusal: Callable[..., bool]
+    assess_model_output: Callable[..., Any]
     retry_short_label: Callable[[str, list[dict[str, str]]], str]
     fallback_translate: Callable[[str, str, int, int, list[dict[str, str]]], str]
     status_for_output: Callable[..., str]
@@ -107,23 +108,17 @@ def translate_cell_with_meta(
             issues.append({"type": "fallback_error", "message": str(fallback_exc)})
             translated = ""
 
-    if not translated or services.is_refusal(translated, original=protected_text):
+    assessment = services.assess_model_output(translated, original=protected_text)
+    if assessment.is_hard_failure:
         fallback_text = services.glossary.apply_post_translation(text, text)
         fallback_text = services.apply_fixed_translations(fallback_text)
         fallback_deterministic = services.deterministic_translation(fallback_text, glossary=services.glossary)
         if fallback_deterministic:
             return fallback_deterministic, services.status_for_output(text, fallback_deterministic, issues), issues
-        if translated and services.has_japanese(translated):
-            issues.append({
-                "type": "untranslated_japanese",
-                "message": "Model returned Japanese text without translating; source text was kept for review.",
-            })
-            return fallback_text, "review_required", issues
-        issues.append({
-            "type": "model_refusal",
-            "message": "Model refused or failed after fallback; source text was kept for review.",
-        })
+        issues.append(assessment.as_issue())
         return fallback_text, "review_required", issues
+    if assessment.is_advisory:
+        issues.append(assessment.as_issue())
 
     restored, symbol_issues, missing_terms = services.restore_protected_translation(
         text,

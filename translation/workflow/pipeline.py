@@ -67,10 +67,12 @@ from translation.quality import (
     apply_fixed_translations,
     apply_output_constraints,
     apply_source_conditioned_fixes,
+    assess_model_output,
     auto_wrap,
     english_residue,
     has_japanese,
     is_refusal,
+    is_unusable_model_output,
     new_issues,
     progress_status,
     quality_prompt_rules,
@@ -486,7 +488,7 @@ class TranslationPipeline:
             translate_func=translate,
             retry_with_fallback_func=retry_with_fallback,
             chunk_translate_func=chunk_translate,
-            is_refusal_func=is_refusal,
+            is_refusal_func=is_unusable_model_output,
             primary_failed=primary_failed,
         )
 
@@ -508,7 +510,7 @@ class TranslationPipeline:
             term_hits,
             retry_short_label_translation_func=retry_short_label_translation,
             translate_func=translate,
-            is_refusal_func=is_refusal,
+            is_refusal_func=is_unusable_model_output,
         )
 
     def _call_translate(self, text: str, system_prompt: str, options: dict[str, Any] | None = None) -> str:

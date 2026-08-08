@@ -33,7 +33,7 @@ function renderRecovery(sessions) {
         var percent = session.total ? Math.round(session.completed * 100 / session.total) : 0;
         return '<div class="history-item"><div class="history-main"><strong title="' + escapeHtml(session.file_path) + '">' + escapeHtml(session.file_name || "未命名任务") + "</strong><span>"
             + escapeHtml(modelLabel(session.model)) + " · " + escapeHtml(formatDate(session.updated_at)) + '</span><div class="history-progress"><div class="mini-progress"><i style="width:' + percent + '%"></i></div><span>' + session.completed + " / " + session.total + "</span></div></div>"
-            + '<div class="history-actions"><button class="btn btn-primary btn-sm" data-resume-path="' + escapeHtml(session.file_path) + '"' + (session.file_exists ? "" : " disabled") + ">继续</button></div></div>";
+            + '<div class="history-actions"><button class="btn btn-primary btn-sm" data-resume-path="' + escapeHtml(session.file_path) + '"' + (session.file_exists ? "" : " disabled") + '>继续</button><button class="btn btn-danger-ghost btn-sm" data-delete-history-path="' + escapeHtml(session.file_path) + '">删除</button></div></div>';
     }).join("");
 }
 
@@ -74,7 +74,7 @@ function renderHistory(checkpoints, tasks) {
         var percent = item.total ? Math.round(item.completed * 100 / item.total) : 0;
         return '<div class="history-item"><div class="history-main"><strong title="' + escapeHtml(item.file_path) + '">' + escapeHtml(item.file_name || "未命名任务") + "</strong><span>"
             + escapeHtml(modelLabel(item.model)) + " · " + escapeHtml(statusLabel(item.status)) + " · " + escapeHtml(formatDate(item.updated_at)) + '</span><div class="history-progress"><div class="mini-progress"><i style="width:' + percent + '%"></i></div><span>' + percent + "% · 待复核 " + item.review_queue_size + "</span></div></div>"
-            + '<div class="history-actions"><button class="btn btn-secondary btn-sm" data-open-path="' + escapeHtml(item.file_path) + '"' + (item.file_exists === false ? " disabled" : "") + '>打开复核</button></div></div>';
+            + '<div class="history-actions"><button class="btn btn-secondary btn-sm" data-open-path="' + escapeHtml(item.file_path) + '"' + (item.file_exists === false ? " disabled" : "") + '>打开复核</button><button class="btn btn-danger-ghost btn-sm" data-delete-history-path="' + escapeHtml(item.file_path) + '">删除</button></div></div>';
     }).join("");
 }
 
@@ -106,5 +106,20 @@ async function resumeHistory(path) {
         navigate("translate");
         startPolling();
         toast("已按检查点配置恢复任务", "success");
+    } catch (error) { toast(error.message, "error"); }
+}
+
+async function deleteHistory(path) {
+    var fileName = path.split(/[\\/]/).pop() || "未命名任务";
+    var confirmed = window.confirm(
+        "确定删除“" + fileName + "”的历史记录吗？\n\n"
+        + "将删除检查点、翻译快照和复核数据。已导出的文件与导入的源文件不会删除。此操作无法撤销。"
+    );
+    if (!confirmed) return;
+    try {
+        await API.delete("/history/session?file_path=" + encodeURIComponent(path));
+        if (activeFilePath() && activeFilePath() === path) resetFile();
+        await Promise.all([loadHistory(), loadRecoveryBanner()]);
+        toast("历史记录已删除", "success");
     } catch (error) { toast(error.message, "error"); }
 }

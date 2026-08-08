@@ -2255,7 +2255,7 @@ def test_pipeline_fallback_translation_delegates_to_models_module(monkeypatch):
     assert call["translate_func"] is pipeline_mod.translate
     assert call["retry_with_fallback_func"] is pipeline_mod.retry_with_fallback
     assert call["chunk_translate_func"] is pipeline_mod.chunk_translate
-    assert call["is_refusal_func"] is pipeline_mod.is_refusal
+    assert call["is_refusal_func"] is pipeline_mod.is_unusable_model_output
 
 
 def test_pipeline_translate_call_delegates_to_models_module(monkeypatch):
@@ -2301,7 +2301,7 @@ def test_pipeline_short_label_retry_delegates_to_models_module(monkeypatch):
     assert "Strict retry" in call["retry_prompt"]
     assert call["options"] == {"temperature": 0, "num_predict": 32}
     assert call["translate_func"] is pipeline_mod.translate
-    assert call["is_refusal_func"] is pipeline_mod.is_refusal
+    assert call["is_refusal_func"] is pipeline_mod.is_unusable_model_output
 
 
 def test_pipeline_restore_protected_translation_delegates_to_protection(monkeypatch):
@@ -3198,11 +3198,75 @@ def test_decorative_katakana_marks_do_not_count_as_japanese_residue():
     assert not any(issue["type"] == "untranslated_japanese" for issue in translation_issues("", translated))
 
 
+def test_small_tsu_vocalizations_do_not_hide_lexical_japanese_residue():
+    from translation.quality import has_japanese, is_refusal, translation_issues
+
+    localized_vocalization = "「不要っ、啊啊啊ッッ！！」"
+    lexical_residue = "「喜欢、的说っっ、すきっ」"
+
+    assert not has_japanese(localized_vocalization)
+    assert not is_refusal(localized_vocalization, original="「やめてっ」")
+    assert not any(
+        issue["type"] in {"model_refusal", "untranslated_japanese"}
+        for issue in translation_issues("「やめてっ」", localized_vocalization)
+    )
+    assert has_japanese(lexical_residue)
+    assert any(
+        issue["type"] == "untranslated_japanese"
+        for issue in translation_issues("「好きっ」", lexical_residue)
+    )
+
+
+def test_exact_preserved_kanji_name_reading_is_exempt_but_new_reading_is_not():
+    from translation.quality import has_japanese, is_refusal, translation_issues
+
+    source = "怨京鬼(おんぎょうき)さま、来てください"
+    preserved = "请怨京鬼(おんぎょうき)大人过来"
+    invented = "请怨京鬼(おんぎょうき)大人すぐ过来"
+    duplicated = "请怨京鬼(おんぎょうき)与怨京鬼(おんぎょうき)过来"
+
+    assert not has_japanese(preserved, original=source)
+    assert not is_refusal(preserved, original=source)
+    assert not any(issue["type"] == "untranslated_japanese" for issue in translation_issues(source, preserved))
+    assert has_japanese(invented, original=source)
+    assert any(issue["type"] == "untranslated_japanese" for issue in translation_issues(source, invented))
+    assert has_japanese(duplicated, original=source)
+
+
 def test_refusal_detection_allows_dialogue_apologies():
     from translation.quality import is_refusal
 
     assert not is_refusal("\u300c\u62b1\u6b49\uff0c\u90a3\u505a\u4e0d\u5230\u3002\u300d", original="\u300c\u60aa\u3044\u304c\u305d\u308c\u306f\u51fa\u6765\u306a\u3044\u300d")
     assert is_refusal("\u62b1\u6b49\uff0c\u6211\u65e0\u6cd5\u534f\u52a9\u7ffb\u8bd1\u8be5\u5185\u5bb9", original="\u60aa\u3044")
+    assert not is_refusal("\u5c31\u7b97\u8fdd\u53cd\u89c4\u5b9a\uff0c\u6211\u4e5f\u8981\u7ee7\u7eed\u3002", original="\u898f\u7d04\u9055\u53cd\u306b\u306a\u308d\u3046\u3068\u7d9a\u3051\u308b")
+    assert is_refusal("\u8be5\u8bf7\u6c42\u8fdd\u53cd\u653f\u7b56\uff0c\u56e0\u6b64\u65e0\u6cd5\u534f\u52a9\u7ffb\u8bd1", original="\u898f\u7d04\u9055\u53cd")
+
+
+def test_refusal_detection_requires_context_for_unsuitable_wording():
+    from translation.quality import assess_model_output, is_refusal
+
+    assert not is_refusal("\u679c\u7136\u8fd8\u662f\u4e0d\u9002\u5408\u6211\u2026", original="\u3084\u3063\u3071\u308a\u79c1\u306b\u306f\u4f3c\u5408\u3063\u3066\u306a\u3044\u3067\u3059\u3057\u2026")
+    assert not is_refusal("\u4e0d\u9002\u5408\u6218\u6597\u7684\u6218\u6597\u670d\u2026\uff1f", original="\u6226\u95d8\u5411\u3051\u3058\u3083\u306a\u3044\u6226\u95d8\u670d\u2026\uff1f")
+    assert is_refusal("\u8be5\u5185\u5bb9\u4e0d\u9002\u5408\u7ffb\u8bd1\uff0c\u56e0\u6b64\u65e0\u6cd5\u63d0\u4f9b\u534f\u52a9", original="\u7ffb\u8a33\u3057\u3066\u304f\u3060\u3055\u3044")
+    narrative = "\u7ec8\u7a76\u6ca1\u80fd\u62d2\u7edd\u5979\u7684\u8bf7\u6c42\u3002"
+    narrative_source = "\u306e\u983c\u307f\u3092\u3064\u3044\u3064\u3044\u65ad\u308a\u5207\u308c\u306a\u304b\u3063\u305f\u306e\u3060\u3002"
+    assert not is_refusal(narrative, original=narrative_source)
+    assert assess_model_output(narrative, original=narrative_source).severity == "none"
+    assert is_refusal("\u62b1\u6b49\uff0c\u6211\u65e0\u6cd5\u6ee1\u8db3\u8be5\u8bf7\u6c42", original=narrative_source)
+
+
+def test_model_output_assessment_separates_failure_types_and_advisory_meta_responses():
+    from translation.quality import assess_model_output, is_refusal, is_unusable_model_output
+
+    empty = assess_model_output("")
+    untranslated = assess_model_output("\u3053\u3093\u306b\u3061\u306f", original="\u3053\u3093\u306b\u3061\u306f")
+    suspected = assess_model_output("\u6211\u65e0\u6cd5\u63a5\u53d7\u8fd9\u4e2a\u8bf7\u6c42\u3002", original="\u5f7c\u306e\u983c\u307f\u306f\u53d7\u3051\u3089\u308c\u306a\u3044\u3002")
+
+    assert empty.issue_type == "empty_translation" and empty.is_hard_failure
+    assert untranslated.issue_type == "untranslated_japanese" and untranslated.is_hard_failure
+    assert suspected.issue_type == "suspected_meta_response" and suspected.is_advisory
+    assert not is_refusal("\u3053\u3093\u306b\u3061\u306f", original="\u3053\u3093\u306b\u3061\u306f")
+    assert is_unusable_model_output("\u3053\u3093\u306b\u3061\u306f", original="\u3053\u3093\u306b\u3061\u306f")
 
 
 def test_label_variant_patterns_are_generic_and_conservative():

@@ -272,7 +272,11 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert "/review/ai/start" in script
     assert "/rollback" in script
     assert "/export/status" in script
+    assert "/history/session?file_path=" in script
+    assert "data-delete-history-path" in script
     assert "window.pywebview && window.pywebview.api" in script
+    assert "save_file_dialog" in script
+    assert "output_path: destination.path" in script
     assert "setReviewRowSelected" in script
     assert "toggleCurrentReviewPage" in script
     assert "setReviewActionBusy" in script

@@ -18,15 +18,24 @@ from translation.protection.runtime import ProtectedToken, protect_runtime_token
 from translation.quality.constraints import apply_output_constraints
 from translation.quality.issues import new_issues
 from translation.quality.prompts import quality_prompt_rules
-from translation.quality.refusal import has_japanese, is_refusal
+from translation.quality.refusal import (
+    ModelOutputAssessment,
+    assess_model_output,
+    has_japanese,
+    is_refusal,
+    is_unusable_model_output,
+)
 from translation.quality.retry import retry_english_residue_translation, retry_missing_terms_translation
 from translation.quality.status import progress_status, status_for_output
 
 __all__ = [
     "get_violations",
+    "assess_model_output",
     "has_japanese",
     "is_refusal",
+    "is_unusable_model_output",
     "new_issues",
+    "ModelOutputAssessment",
     "FIXED_TRANSLATIONS",
     "QUALITY_RULES_VERSION",
     "ProtectedToken",

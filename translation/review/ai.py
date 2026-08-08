@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from translation import checkpoint
+from translation.analysis import apply_mtool_compositions, build_mtool_composition_plan
 from translation.batching import prepare_model_candidate
 from translation.classification import has_explicit_adult_content, looks_like_short_label
 from translation.config import output_constraints
@@ -19,13 +20,13 @@ from translation.models import model_configuration, translate as model_translate
 from translation.output import serialize_json_items
 from translation.pollution import translation_pollution_issues
 from translation.protection import restore_protected_translation
-from translation.quality import get_violations, is_refusal, new_issues, status_for_output, translation_issues
+from translation.quality import assess_model_output, get_violations, new_issues, status_for_output, translation_issues
 from translation.quality.status import HARD_REVIEW_ISSUE_TYPES
 from translation.review import write_review_report
 from translation.terminology import Glossary
 
 
-AI_REVIEW_VERSION = "ai-review-v1"
+AI_REVIEW_VERSION = "ai-review-v6-evidence-based-refusal"
 AI_REVIEW_ACTIVE_STATUSES = {"preparing", "reviewing", "verifying", "applying", "finalizing"}
 AI_REVIEW_TERMINAL_STATUSES = {"completed", "cancelled", "error"}
 NON_WAIVABLE_ISSUE_TYPES = set(HARD_REVIEW_ISSUE_TYPES) | {
@@ -36,6 +37,7 @@ NON_WAIVABLE_ISSUE_TYPES = set(HARD_REVIEW_ISSUE_TYPES) | {
     "marker_loss",
     "unsupported_context",
 }
+PRIMARY_RETRY_ISSUE_TYPES = NON_WAIVABLE_ISSUE_TYPES | {"english_residue"}
 
 TranslateFunc = Callable[[str, str, str, dict[str, Any] | None], str]
 ProgressFunc = Callable[[dict[str, Any]], None]
@@ -239,7 +241,7 @@ def run_ai_review(
         for item in prepared:
             result = primary_results.get(item["row"], {})
             candidate = str(result.get("translation", ""))
-            if result.get("decision") == "unable" or _has_non_waivable(result.get("issues", [])) or not candidate:
+            if result.get("decision") == "unable" or _has_retry_issue(result.get("issues", [])) or not candidate:
                 retry_item = dict(item)
                 retry_item["current_for_prompt"] = candidate or item["current"]
                 retry_item["issue_types_for_prompt"] = sorted({
@@ -373,6 +375,12 @@ def apply_ai_review_records(
         applied += 1
 
     if applied:
+        _append_recomposed_parent_records(
+            file_path=file_path,
+            source_items=source_items,
+            output_items=output_items,
+            progress_records=progress_records,
+        )
         _atomic_write_json_items(output_path, output_items)
         checkpoint.save_progress_many(file_path, progress_records)
         write_review_report(file_path, output_path)
@@ -431,6 +439,12 @@ def rollback_ai_review_session(file_path: str, task_id: str, output_path: str) -
         })
         restored += 1
     if restored:
+        _append_recomposed_parent_records(
+            file_path=file_path,
+            source_items=source_items,
+            output_items=output_items,
+            progress_records=restored_records,
+        )
         _atomic_write_json_items(output_path, output_items)
         checkpoint.save_progress_many(file_path, restored_records)
         write_review_report(file_path, output_path)
@@ -439,6 +453,46 @@ def rollback_ai_review_session(file_path: str, task_id: str, output_path: str) -
     session["rollback_skipped"] = skipped
     save_ai_review_store(file_path, store)
     return {"ok": True, "restored": restored, "skipped": skipped, "already_rolled_back": False}
+
+
+def _append_recomposed_parent_records(
+    *,
+    file_path: str,
+    source_items: list[tuple[Any, Any]],
+    output_items: list[tuple[Any, Any]],
+    progress_records: list[dict[str, Any]],
+) -> None:
+    """Rebuild derived multiline parents after reviewed leaf values change."""
+    plan = build_mtool_composition_plan(source_items)
+    if not plan.entries:
+        return
+
+    checkpoint_entries = checkpoint.load_progress(file_path)
+    for record in progress_records:
+        checkpoint_entries[(int(record["row"]), int(record.get("col", 0)))] = {
+            "status": str(record.get("status", "translated")),
+        }
+
+    composition_records: list[dict[str, Any]] = []
+
+    def buffer_record(_file_path: str, records: list[dict[str, Any]], **record: Any) -> None:
+        records.append(record)
+
+    apply_mtool_compositions(
+        plan,
+        translated_items=output_items,
+        checkpoint_entries=checkpoint_entries,
+        file_path=file_path,
+        progress_records=composition_records,
+        processed_targets=0,
+        total_targets=0,
+        progress_callback=None,
+        save_record=buffer_record,
+        mark_dirty=lambda: None,
+        emit_progress=lambda *args, **kwargs: None,
+        progress_status=lambda status: status,
+    )
+    progress_records.extend(composition_records)
 
 
 def _prepare_item(item: dict[str, Any], glossary: Glossary) -> dict[str, Any]:
@@ -598,10 +652,10 @@ def _run_verifier_batches(
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ai-verify") as executor:
         futures = {
             executor.submit(
-                _verifier_batch,
+                _verifier_batch_with_fallback,
                 batch,
                 primary=primary,
-                model=models.sensitive_verifier if batch[0]["sensitive"] else models.verifier,
+                models=models,
                 translator=translator,
             ): batch
             for batch in batches
@@ -627,13 +681,70 @@ def _run_verifier_batches(
     return results
 
 
+def _verifier_batch_with_fallback(
+    items: list[dict[str, Any]],
+    *,
+    primary: dict[int, dict[str, Any]],
+    models: AIReviewModels,
+    translator: TranslateFunc,
+) -> dict[int, dict[str, Any]]:
+    """Run verification with bounded model fallbacks on transport failure."""
+    sensitive = bool(items[0]["sensitive"])
+    preferred = models.sensitive_verifier if sensitive else models.verifier
+    primary_model = models.sensitive if sensitive else models.review
+    candidates = [
+        preferred,
+        models.sensitive if sensitive else models.sensitive_verifier,
+        models.verifier if sensitive else models.sensitive,
+        primary_model,
+    ]
+    attempted: list[str] = []
+    last_error: Exception | None = None
+    for model in candidates:
+        if not model or model in attempted:
+            continue
+        attempted.append(model)
+        try:
+            results = _verifier_batch(items, primary=primary, model=model, translator=translator)
+            adjudication_items = [
+                item
+                for item in items
+                if _needs_candidate_adjudication(
+                    item,
+                    primary.get(item["row"], {}),
+                    results.get(item["row"], {}),
+                )
+            ]
+            if adjudication_items:
+                results.update(_verifier_batch(
+                    adjudication_items,
+                    primary=primary,
+                    model=model,
+                    translator=translator,
+                    adjudicate=True,
+                ))
+            return results
+        except Exception as exc:
+            last_error = exc
+    attempted_text = ", ".join(attempted)
+    raise RuntimeError(f"AI verifier models failed ({attempted_text}): {last_error}") from last_error
+
+
 def _verifier_batch(
     items: list[dict[str, Any]],
     *,
     primary: dict[int, dict[str, Any]],
     model: str,
     translator: TranslateFunc,
+    adjudicate: bool = False,
 ) -> dict[int, dict[str, Any]]:
+    def issue_types(row: int) -> list[str]:
+        return [
+            str(issue.get("type", ""))
+            for issue in primary.get(row, {}).get("issues", [])
+            if isinstance(issue, dict) and str(issue.get("type", ""))
+        ]
+
     payload = {
         "items": [
             {
@@ -642,10 +753,12 @@ def _verifier_batch(
                 "current": item["current"],
                 "candidate": str(primary.get(item["row"], {}).get("translation", "")),
                 "issues": item["issue_types"],
-                "candidate_issues": [
-                    str(issue.get("type", ""))
-                    for issue in primary.get(item["row"], {}).get("issues", [])
-                    if isinstance(issue, dict)
+                "candidate_issues": issue_types(item["row"]),
+                "candidate_blocking_issues": [
+                    value for value in issue_types(item["row"]) if value in NON_WAIVABLE_ISSUE_TYPES
+                ],
+                "candidate_advisory_issues": [
+                    value for value in issue_types(item["row"]) if value not in NON_WAIVABLE_ISSUE_TYPES
                 ],
             }
             for item in items
@@ -654,7 +767,7 @@ def _verifier_batch(
     response = translator(
         model,
         json.dumps(payload, ensure_ascii=False),
-        _verifier_prompt(),
+        _verifier_prompt(adjudicate=adjudicate),
         {"temperature": 0, "num_predict": 3072},
     )
     parsed = _parse_items_response(response, expected={item["row"] for item in items}, kind="verifier")
@@ -666,6 +779,33 @@ def _verifier_batch(
         }
         for item in items
     }
+
+
+def _needs_candidate_adjudication(
+    item: dict[str, Any],
+    primary: dict[str, Any],
+    verifier: dict[str, Any],
+) -> bool:
+    candidate = str(primary.get("translation", ""))
+    candidate_issues = list(primary.get("issues", []) or [])
+    if not candidate or any(
+        str(issue.get("type", "")) in NON_WAIVABLE_ISSUE_TYPES
+        for issue in candidate_issues
+        if isinstance(issue, dict)
+    ):
+        return False
+    current_issues = _validate_translation(
+        item["source"],
+        item["current"],
+        [],
+        short_label=item["short_label"],
+    )
+    current_has_hard_issue = any(
+        str(issue.get("type", "")) in NON_WAIVABLE_ISSUE_TYPES
+        for issue in current_issues
+        if isinstance(issue, dict)
+    )
+    return current_has_hard_issue and str(verifier.get("choice", "unresolved")) != "candidate"
 
 
 def _resolve_record(item: dict[str, Any], primary: dict[str, Any], verifier: dict[str, Any]) -> dict[str, Any]:
@@ -756,10 +896,9 @@ def _validate_translation(
     short_label: bool,
 ) -> list[dict[str, Any]]:
     result = list(issues)
-    if not translated.strip():
-        result.append({"type": "empty_translation", "message": "AI review returned an empty translation."})
-    elif is_refusal(translated, original=source):
-        result.append({"type": "model_refusal", "message": "AI review model refused or returned unusable text."})
+    assessment = assess_model_output(translated, original=source)
+    if assessment.issue_type:
+        result.append(assessment.as_issue())
     result.extend(new_issues(result, translation_issues(source, translated, short_label=short_label)))
     result.extend(new_issues(result, translation_pollution_issues(source, translated)))
     max_chars, max_lines = output_constraints()
@@ -791,20 +930,32 @@ def _primary_prompt(*, retry: bool) -> str:
         + retry_rule
         + "For advisory records, keep a correct current translation and revise only when an issue is real. "
         "For required records, repair every listed issue from the Japanese source. Context is read-only. "
-        "Never add neighboring meaning, names, relationships, symbols, or explanations. Preserve every __KEEP_* "
-        "placeholder exactly once. Translate adult content faithfully without refusal or sanitization. "
+        "Never add neighboring meaning, names, relationships, symbols, or explanations. Preserve every __KEEP_*, "
+        "__SYM_*, __TERM_*, and __PERSON_* placeholder exactly once. Replace meaningful Japanese kana and vocalizations "
+        "with natural Chinese sounds; small っ/ッ may be omitted or localized, but do not copy lexical kana. "
+        "Translate adult content faithfully without refusal or sanitization. "
         "Return JSON only: {\"items\":[{\"i\":0,\"decision\":\"keep|revise|unable\",\"t\":\"translation\"}]}. "
         "Use t=current translation when keeping, the new translation when revising, and an empty t only when unable.\n/no_think"
     )
 
 
-def _verifier_prompt() -> str:
+def _verifier_prompt(*, adjudicate: bool = False) -> str:
+    adjudication_rule = (
+        "This is an isolated adjudication because current has a non-waivable defect while candidate passed hard checks. "
+        "Do not choose current. Choose candidate only if it faithfully covers the source; otherwise choose unresolved. "
+        if adjudicate else ""
+    )
     return (
         "/no_think\n"
         "Act as an independent Japanese-to-Simplified-Chinese localization verifier. Compare current and candidate "
-        "against the Japanese source. Select current, candidate, or unresolved. Do not prefer a changed wording merely "
+        + adjudication_rule
+        + "against the Japanese source. Select current, candidate, or unresolved. Do not prefer a changed wording merely "
         "because it is new. resolved may contain only listed advisory issue types that the selected translation clearly "
-        "handles. Never resolve missing Japanese meaning, refusal, runtime/control tokens, numbers, line breaks, symbols, "
+        "handles. candidate_blocking_issues are non-waivable; candidate_advisory_issues such as layout length, line count, "
+        "or harmless English residue do not by themselves make a faithful candidate unusable. Choose candidate when it "
+        "faithfully covers the source and candidate_blocking_issues is empty; "
+        "adult or explicit wording is not a reason to choose unresolved. Choose unresolved only when neither version is "
+        "usable or the meaning cannot be verified. Never resolve missing Japanese meaning, refusal, runtime/control tokens, numbers, line breaks, symbols, "
         "terminology loss, or unsupported names/context. Translate adult content faithfully when judging it. "
         "Return JSON only: {\"items\":[{\"i\":0,\"choice\":\"current|candidate|unresolved\",\"resolved\":[\"issue_type\"]}]}.\n/no_think"
     )
@@ -977,8 +1128,8 @@ def _translate(model: str, text: str, system_prompt: str, options: dict[str, Any
     return model_translate(model, text, system_prompt=system_prompt, options=options, think=False)
 
 
-def _has_non_waivable(issues: list[dict[str, Any]]) -> bool:
-    return any(str(issue.get("type", "")) in NON_WAIVABLE_ISSUE_TYPES for issue in issues if isinstance(issue, dict))
+def _has_retry_issue(issues: list[dict[str, Any]]) -> bool:
+    return any(str(issue.get("type", "")) in PRIMARY_RETRY_ISSUE_TYPES for issue in issues if isinstance(issue, dict))
 
 
 def _raise_if_cancelled(cancelled: CancelFunc) -> None:

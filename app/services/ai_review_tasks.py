@@ -196,10 +196,7 @@ def build_ai_review_items(
     ctx = load_review_context(file_path)
     requested_rows: list[int]
     if scope == "required":
-        requested_rows = [
-            row for row, columns in enumerate(ctx["columns_by_row"])
-            if any(column.get("status") == "review_required" for column in columns)
-        ]
+        requested_rows = list(matching_review_rows(ctx, "required"))
     elif scope == "all":
         requested_rows = list(matching_review_rows(ctx, "issues"))
     elif scope == "filter":
@@ -218,6 +215,8 @@ def build_ai_review_items(
             continue
         column = columns[0]
         if column.get("status") not in {"review_required", "translated_needs_review"}:
+            continue
+        if column.get("derived_review"):
             continue
         source = str(column.get("original", ""))
         issues = list(column.get("violations", []) or [])

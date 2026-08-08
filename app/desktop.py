@@ -38,12 +38,16 @@ class Api:
             result = webview.windows[0].create_file_dialog(
                 webview.SAVE_DIALOG,
                 save_filename=default_filename,
+                file_types=("JSON files (*.json)", "All files (*.*)"),
             )
-            # pywebview returns a tuple of paths or None
+            # Depending on the GUI backend, pywebview may return one path as
+            # a string or wrap it in a tuple/list.
+            if isinstance(result, str):
+                return result or None
             if result and len(result) > 0:
-                return result[0]
+                return str(result[0])
             return None
-        except Exception as e:
+        except Exception:
             return None
 
     def copy_file(self, source_path, dest_path):

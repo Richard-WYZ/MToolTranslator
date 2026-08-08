@@ -102,6 +102,7 @@ class ExportRequest(BaseModel):
     file_type: str = "json"
     column_mappings: List[ColumnMapping] = []
     output_dir: Optional[str] = None
+    output_path: Optional[str] = None
 
 
 class ReviewSaveRequest(BaseModel):

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 
-REFUSAL_MARKERS = (
+EXPLICIT_ENGLISH_REFUSAL_MARKERS = (
     "i can't assist",
     "i cannot assist",
     "i can’t assist",
@@ -14,27 +15,6 @@ REFUSAL_MARKERS = (
     "cannot translate",
     "can't translate",
     "unable to translate",
-    "抱歉",
-    "对不起",
-    "不能协助",
-    "无法协助",
-    "不能翻译",
-    "无法翻译",
-    "不适当",
-    "不适当内容",
-    "违反政策",
-    "作为ai",
-    "ai助手",
-    "申し訳",
-    "できません",
-    "適切では",
-    "ご容赦",
-    "拒否",
-    "不適切",
-    "无法完成",
-    "不适合",
-    "违反",
-    "不能提供",
     "refuse",
     "violation",
     "inappropriate",
@@ -47,51 +27,147 @@ REFUSAL_MARKERS = (
     "not able",
 )
 
-CODE_EXPRESSION_RE = re.compile(r"\b[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*\(\)?)+")
-CODE_IDENTIFIER_RE = re.compile(
-    r"(?<![A-Za-z0-9_])"
-    r"(?:[A-Z]{2,}[A-Za-z0-9_]*|[A-Za-z]+[A-Z][A-Za-z0-9_]*|"
-    r"[A-Za-z][A-Za-z_]*[0-9][A-Za-z0-9_]*|[A-Za-z]+_[A-Za-z0-9_]+)"
-    r"(?![A-Za-z0-9_])"
+# Small tsu and kana voicing marks are often retained as non-lexical sound
+# notation inside otherwise translated game dialogue.  They are not evidence
+# of a Japanese refusal or untranslated lexical content by themselves.
+JAPANESE_KANA_RE = re.compile(
+    r"[\u3041-\u3062\u3064-\u3098\u309d-\u309f"
+    r"\u30a1-\u30c2\u30c4-\u30fa\u30fd-\u30ff]"
 )
-ENGLISH_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_'-]*")
-JAPANESE_KANA_RE = re.compile(r"[\u3041-\u309f\u30a1-\u30fa\u30fd-\u30ff]")
-CHINESE_APOLOGY_RE = re.compile(r"(\u62b1\u6b49|\u5bf9\u4e0d\u8d77|\u4e0d\u597d\u610f\u601d)")
-CHINESE_REFUSAL_CONTEXT_RE = re.compile(
-    r"(\u65e0\u6cd5|\u4e0d\u80fd|\u4e0d\u53ef\u4ee5|\u4e0d\u4fbf|\u62d2\u7edd).{0,16}"
-    r"(\u7ffb\u8bd1|\u534f\u52a9|\u63d0\u4f9b|\u5904\u7406|\u5b8c\u6210|\u6ee1\u8db3|\u56de\u7b54|\u5185\u5bb9|\u8bf7\u6c42)"
-    r"|(\u4f5c\u4e3a).{0,8}(AI|ai)"
-    r"|(\u653f\u7b56|\u8fdd\u89c4|\u4e0d\u9002\u5f53)"
+PRESERVED_NAME_READING_RE = re.compile(
+    r"[\u3400-\u4dbf\u4e00-\u9fff]{1,16}[（(]"
+    r"[\u3041-\u309f\u30a1-\u30fa\u30fd-\u30ff]{1,24}[)）]"
+)
+CHINESE_EXPLICIT_REFUSAL_RE = re.compile(
+    r"(?:\u4f5c\u4e3a|\u8eab\u4e3a).{0,8}(?:AI|ai|\u4eba\u5de5\u667a\u80fd).{0,24}"
+    r"(?:\u65e0\u6cd5|\u4e0d\u80fd|\u4e0d\u4fbf|\u62d2\u7edd)"
+    r"|(?:AI|ai|\u4eba\u5de5\u667a\u80fd).{0,8}(?:\u52a9\u624b|\u6a21\u578b).{0,24}"
+    r"(?:\u65e0\u6cd5|\u4e0d\u80fd|\u4e0d\u4fbf|\u62d2\u7edd)"
+    r"|(?:\u62b1\u6b49|\u5bf9\u4e0d\u8d77|\u5f88\u9057\u61be)[\uff0c,\u3002\s]*"
+    r"(?:\u6211|\u6211\u4eec|\u672c\u52a9\u624b|\u672c\u6a21\u578b)?.{0,8}"
+    r"(?:\u65e0\u6cd5|\u4e0d\u80fd|\u4e0d\u4fbf).{0,12}"
+    r"(?:\u534f\u52a9|\u5e2e\u52a9|\u7ffb\u8bd1|\u63d0\u4f9b|\u5904\u7406|\u56de\u7b54)"
+    r"|(?:\u65e0\u6cd5|\u4e0d\u80fd|\u4e0d\u4fbf).{0,8}"
+    r"(?:\u534f\u52a9|\u5e2e\u52a9).{0,8}(?:\u7ffb\u8bd1|\u5904\u7406|\u5b8c\u6210|\u63d0\u4f9b)"
+    r"|(?:\u65e0\u6cd5|\u4e0d\u80fd|\u4e0d\u4fbf).{0,8}\u7ffb\u8bd1"
+    r"|(?:\u65e0\u6cd5|\u4e0d\u80fd|\u4e0d\u4fbf).{0,8}\u63d0\u4f9b.{0,6}"
+    r"(?:\u7ffb\u8bd1|\u5e2e\u52a9|\u56de\u7b54)"
+    r"|(?:\u65e0\u6cd5|\u4e0d\u80fd).{0,4}\u6ee1\u8db3"
+    r"(?:\u8be5|\u6b64|\u8fd9\u4e2a|\u60a8\u7684|\u4f60\u7684)\u8bf7\u6c42"
+    r"|(?:\u8be5|\u6b64|\u8fd9\u4e2a|\u60a8\u7684|\u4f60\u7684)\u8bf7\u6c42.{0,12}"
+    r"(?:\u8fdd\u53cd\u653f\u7b56|\u8fdd\u89c4|\u65e0\u6cd5\u5904\u7406|\u4e0d\u80fd\u5904\u7406)"
+    r"|\u8fdd\u53cd\u653f\u7b56|\u8fdd\u89c4\u5185\u5bb9"
+    r"|(?:\u4e0d\u9002\u5408|\u4e0d\u9002\u5f53|\u4e0d\u9069\u5207).{0,12}"
+    r"(?:\u7ffb\u8bd1|\u534f\u52a9|\u5904\u7406|\u56de\u7b54)"
+)
+CHINESE_SUSPECTED_META_RE = re.compile(
+    r"(?:\u6211|\u6211\u4eec|\u672c\u52a9\u624b|\u672c\u6a21\u578b).{0,8}"
+    r"(?:\u65e0\u6cd5|\u4e0d\u80fd|\u4e0d\u4fbf|\u62d2\u7edd).{0,12}"
+    r"(?:\u8bf7\u6c42|\u5185\u5bb9)"
+    r"|(?:\u8be5|\u6b64|\u8fd9\u4e2a|\u60a8\u7684|\u4f60\u7684)\u8bf7\u6c42.{0,8}"
+    r"(?:\u4e0d\u9002\u5408|\u4e0d\u9002\u5f53|\u4e0d\u9069\u5207)"
+    r"|(?:\u62b1\u6b49|\u5bf9\u4e0d\u8d77|\u5f88\u9057\u61be).{0,8}"
+    r"(?:\u65e0\u6cd5|\u4e0d\u80fd|\u4e0d\u4fbf).{0,8}(?:\u5b8c\u6210|\u6ee1\u8db3|\u5904\u7406)?"
 )
 
 
-def has_japanese(text: str) -> bool:
-    return bool(JAPANESE_KANA_RE.search(text or ""))
+@dataclass(frozen=True, slots=True)
+class ModelOutputAssessment:
+    issue_type: str = ""
+    severity: str = "none"
+    message: str = ""
+    evidence: str = ""
+
+    @property
+    def is_hard_failure(self) -> bool:
+        return self.severity == "hard"
+
+    @property
+    def is_advisory(self) -> bool:
+        return self.severity == "advisory"
+
+    def as_issue(self) -> dict[str, str]:
+        issue = {"type": self.issue_type, "message": self.message}
+        if self.evidence:
+            issue["evidence"] = self.evidence
+        return issue
 
 
-def is_refusal(text: str, original: str = "") -> bool:
-    """Return True when a model response looks like a safety refusal or bad translation."""
+def has_japanese(text: str, original: str = "") -> bool:
+    candidate = str(text or "")
+    if original:
+        source_readings = set(PRESERVED_NAME_READING_RE.findall(str(original)))
+        for reading in source_readings:
+            if reading in candidate:
+                candidate = candidate.replace(reading, "", str(original).count(reading))
+    return bool(JAPANESE_KANA_RE.search(candidate))
+
+
+def assess_model_output(text: str, original: str = "") -> ModelOutputAssessment:
+    """Classify unusable output without confusing narrative wording with model refusals."""
     if not text or not text.strip():
-        return True
+        return ModelOutputAssessment(
+            issue_type="empty_translation",
+            severity="hard",
+            message="Model returned an empty translation.",
+        )
 
     stripped = text.strip()
     if _is_only_punctuation(stripped):
-        return True
+        return ModelOutputAssessment(
+            issue_type="empty_translation",
+            severity="hard",
+            message="Model returned punctuation without translatable content.",
+            evidence=stripped[:40],
+        )
+
+    if has_japanese(stripped, original=original):
+        return ModelOutputAssessment(
+            issue_type="untranslated_japanese",
+            severity="hard",
+            message="Japanese kana remain in the model output.",
+        )
 
     lowered = stripped.lower()
-    if any(marker in lowered for marker in REFUSAL_MARKERS) and not _looks_like_dialogue_apology(stripped):
-        return True
+    english_marker = next((marker for marker in EXPLICIT_ENGLISH_REFUSAL_MARKERS if marker in lowered), "")
+    if english_marker:
+        return ModelOutputAssessment(
+            issue_type="model_refusal",
+            severity="hard",
+            message="Model returned an explicit refusal instead of a translation.",
+            evidence=english_marker,
+        )
 
-    if has_japanese(stripped):
-        return True
+    explicit_match = CHINESE_EXPLICIT_REFUSAL_RE.search(stripped)
+    if explicit_match:
+        return ModelOutputAssessment(
+            issue_type="model_refusal",
+            severity="hard",
+            message="Model returned explicit refusal language instead of a translation.",
+            evidence=explicit_match.group(0),
+        )
 
-    if re.search(r"[\u3400-\u4dbf\u4e00-\u9fff]", stripped):
-        return False
+    suspected_match = CHINESE_SUSPECTED_META_RE.search(stripped)
+    if suspected_match:
+        return ModelOutputAssessment(
+            issue_type="suspected_meta_response",
+            severity="advisory",
+            message="Output resembles a model meta-response; verify the translation before export.",
+            evidence=suspected_match.group(0),
+        )
 
-    if original and has_japanese(original) and _english_ratio_ignoring_source_tokens(stripped, original) > 0.5:
-        return True
+    return ModelOutputAssessment()
 
-    return False
+
+def is_refusal(text: str, original: str = "") -> bool:
+    """Return True only for explicit model refusal language."""
+    assessment = assess_model_output(text, original=original)
+    return assessment.issue_type == "model_refusal" and assessment.is_hard_failure
+
+
+def is_unusable_model_output(text: str, original: str = "") -> bool:
+    """Return True for output that should trigger a retry or hard review."""
+    return assess_model_output(text, original=original).is_hard_failure
 
 
 def _is_only_punctuation(text: str) -> bool:
@@ -103,36 +179,10 @@ def _is_only_punctuation(text: str) -> bool:
     return not bool(re.search(r"[\w\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\u3400-\u4dbf]", stripped))
 
 
-def _english_ratio(text: str) -> float:
-    cleaned = re.sub(r"\s", "", text)
-    if not cleaned:
-        return 0.0
-    english_chars = len(re.findall(r"[a-zA-Z]", cleaned))
-    return english_chars / len(cleaned)
-
-
-def _english_ratio_ignoring_source_tokens(text: str, original: str) -> float:
-    cleaned = text
-    for token in sorted(_preservable_source_tokens(original), key=len, reverse=True):
-        cleaned = cleaned.replace(token, "")
-    return _english_ratio(cleaned)
-
-
-def _preservable_source_tokens(original: str) -> set[str]:
-    if not original:
-        return set()
-    tokens: set[str] = set()
-    for match in CODE_EXPRESSION_RE.finditer(original):
-        tokens.update(ENGLISH_WORD_RE.findall(match.group(0)))
-    for match in CODE_IDENTIFIER_RE.finditer(original):
-        tokens.add(match.group(0))
-    return tokens
-
-
-def _looks_like_dialogue_apology(text: str) -> bool:
-    if not CHINESE_APOLOGY_RE.search(text):
-        return False
-    return not CHINESE_REFUSAL_CONTEXT_RE.search(text)
-
-
-__all__ = ["has_japanese", "is_refusal"]
+__all__ = [
+    "ModelOutputAssessment",
+    "assess_model_output",
+    "has_japanese",
+    "is_refusal",
+    "is_unusable_model_output",
+]

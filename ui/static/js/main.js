@@ -110,12 +110,16 @@ function bindEvents() {
     });
 
     el("recovery-list").addEventListener("click", function (event) {
-        var button = event.target.closest("[data-resume-path]");
-        if (button) resumeHistory(button.dataset.resumePath);
+        var remove = event.target.closest("[data-delete-history-path]");
+        var resume = event.target.closest("[data-resume-path]");
+        if (remove) deleteHistory(remove.dataset.deleteHistoryPath);
+        else if (resume) resumeHistory(resume.dataset.resumePath);
     });
     el("history-list").addEventListener("click", function (event) {
-        var button = event.target.closest("[data-open-path]");
-        if (button) adoptHistoryFile(button.dataset.openPath);
+        var remove = event.target.closest("[data-delete-history-path]");
+        var open = event.target.closest("[data-open-path]");
+        if (remove) deleteHistory(remove.dataset.deleteHistoryPath);
+        else if (open) adoptHistoryFile(open.dataset.openPath);
     });
     window.addEventListener("beforeunload", function (event) {
         if (window.pywebview && window.pywebview.api) return;

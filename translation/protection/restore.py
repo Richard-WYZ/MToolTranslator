@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from translation.protection.runtime import (
+    reconcile_line_break_placeholders,
     restore_runtime_tokens,
     strip_foreign_runtime_placeholders,
     validate_runtime_tokens,
@@ -25,6 +26,7 @@ def restore_protected_translation(
 ) -> tuple[str, list[dict[str, Any]], list[dict[str, str]]]:
     """Restore protected placeholders and report missing terminology."""
     restored, symbol_issues = restore_symbols(prepared_text, protected_text, translated, symbol_tokens)
+    restored = reconcile_line_break_placeholders(restored, runtime_tokens, protected_text)
     symbol_issues.extend(validate_runtime_tokens(restored, runtime_tokens, protected_text))
     restored = restore_runtime_tokens(restored, runtime_tokens)
     restored = strip_foreign_runtime_placeholders(restored, original_text)

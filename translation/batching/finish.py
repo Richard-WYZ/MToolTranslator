@@ -7,8 +7,7 @@ from translation.quality import (
     apply_fixed_translations,
     apply_output_constraints,
     apply_source_conditioned_fixes,
-    has_japanese,
-    is_refusal,
+    assess_model_output,
     new_issues,
     translation_issues,
 )
@@ -28,19 +27,13 @@ def finish_batch_translation(
     source_text = candidate["source"]
     translated = strip_source_echo(source_text, translated)
     issues: list[dict[str, Any]] = []
-    if not translated or is_refusal(translated, original=candidate["protected"]):
+    assessment = assess_model_output(translated, original=candidate["protected"])
+    if assessment.is_hard_failure:
         fallback_text = apply_fixed_translations(glossary.apply_post_translation(source_text, source_text))
-        if translated and has_japanese(translated):
-            issues.append({
-                "type": "untranslated_japanese",
-                "message": "Batch model returned Japanese text without translating; source text was kept for review.",
-            })
-            return fallback_text, "review_required", issues
-        issues.append({
-            "type": "model_refusal",
-            "message": "Batch model refused or failed; source text was kept for review.",
-        })
+        issues.append(assessment.as_issue())
         return fallback_text, "review_required", issues
+    if assessment.is_advisory:
+        issues.append(assessment.as_issue())
 
     restored, symbol_issues, missing_terms = restore_func(
         source_text,

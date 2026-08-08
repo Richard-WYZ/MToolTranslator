@@ -10,6 +10,10 @@ from translation.config import output_constraints
 
 
 _ACTIONABLE_STATUSES = {"translated_needs_review", "review_required"}
+_DERIVED_COMPOSITION_ISSUES = {
+    "composed_dependency_review_required",
+    "composed_dependency_needs_review",
+}
 _REVIEW_CACHE: dict[str, dict[str, Any]] = {}
 _REVIEW_CACHE_LOCK = threading.RLock()
 
@@ -111,11 +115,11 @@ def review_filter_matches(columns: list[dict], filter_name: str) -> bool:
         return {str(item.get("type", "")) for item in col.get("violations", []) if isinstance(item, dict)}
 
     if filter_name == "issues":
-        return any(col.get("status") in _ACTIONABLE_STATUSES for col in columns)
+        return any(_is_actionable_review_column(col) for col in columns)
     if filter_name == "required":
-        return any(col.get("status") == "review_required" for col in columns)
+        return any(_is_actionable_review_column(col) and col.get("status") == "review_required" for col in columns)
     if filter_name == "advisory":
-        return any(col.get("status") == "translated_needs_review" for col in columns)
+        return any(_is_actionable_review_column(col) and col.get("status") == "translated_needs_review" for col in columns)
     if filter_name == "preserved":
         return any(col.get("status") == "preserved" for col in columns)
     if filter_name == "violated":
@@ -150,11 +154,29 @@ def review_filter_matches(columns: list[dict], filter_name: str) -> bool:
             return any((col.get("ai_review") or {}).get("status") == expected for col in columns)
         if filter_name == "ai_pending":
             return any(
-                col.get("status") in _ACTIONABLE_STATUSES
+                _is_actionable_review_column(col)
                 and not (col.get("ai_review") or {}).get("status")
                 for col in columns
             )
     return bool(columns)
+
+
+def _is_actionable_review_column(column: dict) -> bool:
+    return (
+        column.get("status") in _ACTIONABLE_STATUSES
+        and not bool(column.get("derived_review"))
+    )
+
+
+def _is_derived_composition_review(cp_entry: dict) -> bool:
+    if str(cp_entry.get("entry_classification", "")) != "composed_multiline":
+        return False
+    issue_types = {
+        str(issue.get("type", ""))
+        for issue in cp_entry.get("issues", []) or []
+        if isinstance(issue, dict)
+    }
+    return bool(issue_types) and issue_types.issubset(_DERIVED_COMPOSITION_ISSUES)
 
 
 def _file_stamp(path: str) -> tuple[int, int] | None:
@@ -259,6 +281,7 @@ def _build_review_context(file_path: str, signature: tuple[Any, ...]) -> dict:
             violations = review_violations(translated_text, cp_entry, status, max_chars, max_lines)
             issue_types = {str(item.get("type", "")) for item in violations}
             refusal = "model_refusal" in issue_types
+            derived_review = _is_derived_composition_review(cp_entry)
             columns.append({
                 "col": 0,
                 "key": str(key),
@@ -267,6 +290,7 @@ def _build_review_context(file_path: str, signature: tuple[Any, ...]) -> dict:
                 "status": status,
                 "violations": violations,
                 "is_refusal": refusal,
+                "derived_review": derived_review,
                 "entry_classification": cp_entry.get("entry_classification", ""),
                 "model_identifier": cp_entry.get("model_identifier", ""),
                 "batch_id": cp_entry.get("batch_id", ""),
@@ -276,7 +300,7 @@ def _build_review_context(file_path: str, signature: tuple[Any, ...]) -> dict:
                 "ai_review": ai_metadata,
             })
             stats["total"] += 1
-            if status in _ACTIONABLE_STATUSES:
+            if status in _ACTIONABLE_STATUSES and not derived_review:
                 stats["needs_review"] += 1
                 if status == "review_required":
                     stats["required_review"] += 1
@@ -290,12 +314,12 @@ def _build_review_context(file_path: str, signature: tuple[Any, ...]) -> dict:
                     stats["confirmed_translation"] += 1
             if violations:
                 stats["violations_count"] += 1
-            if violations and status not in _ACTIONABLE_STATUSES:
+            if violations and (status not in _ACTIONABLE_STATUSES or derived_review):
                 stats["diagnostics_count"] += 1
             ai_status = str(ai_metadata.get("status", ""))
             if ai_status in {"fixed", "confirmed", "unresolved", "conflict"}:
                 stats[f"ai_{ai_status}"] += 1
-            elif status in _ACTIONABLE_STATUSES:
+            elif status in _ACTIONABLE_STATUSES and not derived_review:
                 stats["ai_pending"] += 1
         columns_by_row.append(columns)
         for filter_name in filter_names:

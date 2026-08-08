@@ -75,6 +75,10 @@ Runtime files beside the executable include:
   crowd the actionable queue.
 - AI review supports separate primary, verifier, and sensitive-content models.
   Only results that pass structural and quality validation are auto-applied.
+- Refusal detection hard-blocks only explicit AI, policy, or inability-to-assist
+  meta responses. Ordinary narrative wording such as "unsuitable" or "refused
+  a request" is not rejected by keywords alone; ambiguous meta responses are
+  advisory review items.
 - AI review, single-entry saves, and batch confirmation lock conflicting
   controls and show a busy indicator to prevent duplicate submissions.
 - Export is blocked while translation or AI review is writing. After the task

@@ -15,7 +15,7 @@ from translation.config import (
     system_prompts,
 )
 from translation.models.router import translate
-from translation.quality.refusal import is_refusal
+from translation.quality.refusal import is_unusable_model_output
 
 
 def chunk_translate(
@@ -81,7 +81,7 @@ def chunk_translate(
                 system_prompt=system_prompt,
                 terminology=terminology,
             )
-            if is_refusal(result):
+            if is_unusable_model_output(result, original=chunk):
                 if len(chunk) > max_chars // 2:
                     sub_result = chunk_translate(
                         model,
@@ -92,7 +92,7 @@ def chunk_translate(
                         terminology=terminology,
                         translator=translator,
                     )
-                    if not is_refusal(sub_result):
+                    if not is_unusable_model_output(sub_result, original=chunk):
                         translated_parts.append(sub_result)
                         continue
                 translated_parts.append(chunk)
@@ -169,7 +169,7 @@ def retry_with_fallback(
             )
             attempts_made += 1
             strategies.append(f"prompt_switch:{prompt[:20]}...")
-            if result and not is_refusal(result, original=text):
+            if result and not is_unusable_model_output(result, original=text):
                 return {"status": "SUCCESS", "translation": result}
         except Exception:
             attempts_made += 1
@@ -187,7 +187,7 @@ def retry_with_fallback(
             )
             attempts_made += 1
             strategies.append(f"model_switch:{fallback_model}")
-            if result and not is_refusal(result, original=text):
+            if result and not is_unusable_model_output(result, original=text):
                 return {"status": "SUCCESS", "translation": result}
         except Exception:
             attempts_made += 1
@@ -209,7 +209,7 @@ def retry_with_fallback(
             )
             attempts_made += 1
             strategies.append("chunk_translate")
-            if result and not is_refusal(result, original=text):
+            if result and not is_unusable_model_output(result, original=text):
                 return {"status": "SUCCESS", "translation": result}
         except Exception:
             attempts_made += 1

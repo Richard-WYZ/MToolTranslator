@@ -87,7 +87,12 @@ def preview_mtool_json(path: str, limit: int = 10) -> dict[str, Any]:
     }
 
 
-def export_mtool_json(session_dir: str | Path, source_path: str, output_dir: str | None = None) -> dict[str, Any]:
+def export_mtool_json(
+    session_dir: str | Path,
+    source_path: str,
+    output_dir: str | None = None,
+    output_path: str | None = None,
+) -> dict[str, Any]:
     if not Path(session_dir).is_dir():
         raise HTTPException(status_code=404, detail="Session does not exist")
     if not os.path.isfile(source_path):
@@ -100,15 +105,27 @@ def export_mtool_json(session_dir: str | Path, source_path: str, output_dir: str
     if not os.path.exists(backup_path):
         shutil.copy2(source_path, backup_path)
 
-    output_path = translated_path(source_path)
-    if os.path.isfile(output_path):
+    translated_output_path = translated_path(source_path)
+    if os.path.isfile(translated_output_path):
         try:
             # Keep the working snapshot so review can continue after an early export.
-            shutil.copy2(output_path, source_path)
+            shutil.copy2(translated_output_path, source_path)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Unable to apply translated file: {exc}") from exc
 
-    if output_dir:
+    if output_path:
+        destination = Path(output_path)
+        if destination.exists() and destination.is_dir():
+            raise HTTPException(status_code=400, detail="Export destination must be a file, not a directory")
+        if not destination.parent.is_dir():
+            raise HTTPException(status_code=400, detail="Export destination directory does not exist")
+        try:
+            if destination.resolve() != Path(export_path).resolve():
+                shutil.copy2(export_path, destination)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Unable to save exported file: {exc}") from exc
+        export_path = str(destination)
+    elif output_dir:
         output_dir_path = Path(output_dir)
         if not output_dir_path.is_dir():
             try:

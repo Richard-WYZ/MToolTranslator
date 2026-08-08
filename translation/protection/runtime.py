@@ -132,6 +132,53 @@ def restore_runtime_tokens(text: str, tokens: list[ProtectedToken]) -> str:
     return restored
 
 
+def reconcile_line_break_placeholders(
+    text: str,
+    tokens: list[ProtectedToken],
+    expected_text: str | None = None,
+) -> str:
+    """Recover line-break placeholders when a model rendered real newlines instead.
+
+    Some providers normalize ``__KEEP_*`` line-break markers into literal ``\n``
+    characters even when the number and placement of logical breaks are intact.
+    When every missing source line-break run has a one-to-one literal counterpart,
+    replace it with the authoritative source markers before normal runtime-token
+    validation and restoration. This also recovers providers that collapse a
+    mixed ``\n\r\n`` run to one logical newline. Ambiguous partial/mismatched
+    cases remain untouched and continue to fail validation.
+    """
+    line_tokens = [token for token in tokens if runtime_token_kind(token.value) == "line_break"]
+    if not line_tokens or any(text.count(token.token) for token in line_tokens):
+        return text
+    ordered = (
+        sorted(line_tokens, key=lambda item: expected_text.find(item.token))
+        if expected_text is not None
+        else line_tokens
+    )
+    groups: list[list[ProtectedToken]] = []
+    for token in ordered:
+        if (
+            groups
+            and expected_text is not None
+            and expected_text.find(token.token)
+            == expected_text.find(groups[-1][-1].token) + len(groups[-1][-1].token)
+        ):
+            groups[-1].append(token)
+        else:
+            groups.append([token])
+    literal_breaks = list(re.finditer(r"(?:\r\n|\r|\n)+", text))
+    if len(literal_breaks) != len(groups):
+        return text
+    parts: list[str] = []
+    start = 0
+    for match, group in zip(literal_breaks, groups):
+        parts.append(text[start:match.start()])
+        parts.append("".join(token.token for token in group))
+        start = match.end()
+    parts.append(text[start:])
+    return "".join(parts)
+
+
 def strip_foreign_runtime_placeholders(text: str, source_text: str) -> str:
     """Remove model-copied runtime markers while preserving literal source text."""
     allowed = Counter(RUNTIME_PLACEHOLDER_RE.findall(source_text))
@@ -192,6 +239,7 @@ __all__ = [
     "ProtectedToken",
     "RUNTIME_PLACEHOLDER_RE",
     "protect_runtime_tokens",
+    "reconcile_line_break_placeholders",
     "restore_runtime_tokens",
     "runtime_token_kind",
     "strip_foreign_runtime_placeholders",

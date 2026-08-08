@@ -41,6 +41,14 @@ def cleanup_translation_state(
         deleted.append(output_path)
     else:
         skipped.append(output_path)
+    from translation.review import review_report_path
+
+    report_path = review_report_path(req.file_path, output_path)
+    if os.path.exists(report_path):
+        os.remove(report_path)
+        deleted.append(report_path)
+    else:
+        skipped.append(report_path)
     deleted.extend(checkpoint.clear_checkpoint(req.file_path, include_glossary=True))
     from translation.review.ai import ai_review_store_path
 
@@ -52,6 +60,48 @@ def cleanup_translation_state(
         task.has_unexported_result = False
         task.status = "cancelled"
     return {"ok": True, "deleted": deleted, "skipped": skipped}
+
+
+def delete_history_session(
+    file_path: str,
+    *,
+    tasks: MutableMapping[str, TranslationTask],
+    ai_review_tasks: MutableMapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    absolute_path = os.path.abspath(file_path)
+    matching_tasks = [
+        (task_id, task)
+        for task_id, task in tasks.items()
+        if os.path.abspath(task.file_path) == absolute_path
+    ]
+    if any(task.status in {"running", "paused", "stopping", "finalizing"} for _task_id, task in matching_tasks):
+        raise HTTPException(status_code=409, detail="Stop the translation task before deleting its history")
+
+    matching_ai_tasks = [
+        (task_id, task)
+        for task_id, task in (ai_review_tasks or {}).items()
+        if os.path.abspath(str(getattr(task, "file_path", ""))) == absolute_path
+    ]
+    if any(
+        task.status in {"preparing", "reviewing", "verifying", "applying", "finalizing", "stopping"}
+        for _task_id, task in matching_ai_tasks
+    ):
+        raise HTTPException(status_code=409, detail="Stop AI review before deleting its history")
+
+    result = cleanup_translation_state(CleanupRequest(file_path=file_path), tasks=tasks)
+    for task_id, _task in matching_tasks:
+        tasks.pop(task_id, None)
+    for task_id, _task in matching_ai_tasks:
+        (ai_review_tasks or {}).pop(task_id, None)
+
+    from app.services.review import invalidate_review_cache
+
+    invalidate_review_cache(file_path)
+    return {
+        **result,
+        "removed_tasks": len(matching_tasks),
+        "removed_ai_review_tasks": len(matching_ai_tasks),
+    }
 
 
 def create_router(
@@ -99,6 +149,14 @@ def create_router(
     @router.get("/api/history/sessions")
     def get_history_sessions():
         return {"sessions": checkpoint.list_translation_sessions(include_completed=True)}
+
+    @router.delete("/api/history/session")
+    def delete_history(file_path: str = Query(...)):
+        return delete_history_session(
+            file_path,
+            tasks=tasks,
+            ai_review_tasks=ai_review_tasks,
+        )
 
     @router.post("/api/recovery/resume")
     def resume_recovery_session(req: RecoveryResumeRequest):
@@ -180,4 +238,4 @@ def create_router(
     return router
 
 
-__all__ = ["cleanup_translation_state", "create_router"]
+__all__ = ["cleanup_translation_state", "create_router", "delete_history_session"]

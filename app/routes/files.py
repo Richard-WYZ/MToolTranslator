@@ -55,7 +55,12 @@ def create_router(
             if active_ai_review_for_file(ai_review_tasks, source_path):
                 raise HTTPException(status_code=409, detail="AI review is still modifying the translated output")
 
-        result = export_mtool_json(session_dir, source_path, req.output_dir)
+        result = export_mtool_json(
+            session_dir,
+            source_path,
+            output_dir=req.output_dir,
+            output_path=req.output_path,
+        )
 
         task = get_task_for_file(req.file_path)
         if task:

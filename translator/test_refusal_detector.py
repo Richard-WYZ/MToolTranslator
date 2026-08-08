@@ -24,15 +24,18 @@ def test_is_refusal():
 
     # 中文拒绝
     assert refusal_detector.is_refusal("作为AI助手，我不能") is True
-    assert refusal_detector.is_refusal("这个请求不适当") is True
-    assert refusal_detector.is_refusal("抱歉，无法完成") is True
+    assert refusal_detector.is_refusal("这个请求不适当") is False
+    assert refusal_detector.assess_model_output("这个请求不适当").is_advisory
+    assert refusal_detector.is_refusal("抱歉，无法完成") is False
+    assert refusal_detector.assess_model_output("抱歉，无法完成").is_advisory
     print("  [PASS] 中文拒绝检测")
 
-    # 日文拒绝
-    assert refusal_detector.is_refusal("申し訳ありませんが") is True
-    assert refusal_detector.is_refusal("それはできません") is True
-    assert refusal_detector.is_refusal("適切ではありません") is True
-    print("  [PASS] 日文拒绝检测")
+    # 日文响应属于未翻译，不与模型拒绝混为一类
+    assert refusal_detector.is_refusal("申し訳ありませんが") is False
+    assert refusal_detector.is_unusable_model_output("申し訳ありませんが") is True
+    assert refusal_detector.is_refusal("それはできません") is False
+    assert refusal_detector.is_unusable_model_output("それはできません") is True
+    print("  [PASS] 日文残留分类")
 
     # 正常中文翻译
     assert refusal_detector.is_refusal("他走了过来") is False
@@ -41,23 +44,27 @@ def test_is_refusal():
     print("  [PASS] 正常中文翻译不被误判")
 
     # 空响应
-    assert refusal_detector.is_refusal("") is True
-    assert refusal_detector.is_refusal("   ") is True
-    assert refusal_detector.is_refusal("\n\t") is True
+    assert refusal_detector.is_refusal("") is False
+    assert refusal_detector.is_unusable_model_output("") is True
+    assert refusal_detector.is_unusable_model_output("   ") is True
+    assert refusal_detector.is_unusable_model_output("\n\t") is True
     print("  [PASS] 空/空白响应检测")
 
     # 仅标点
-    assert refusal_detector.is_refusal("...") is True
-    assert refusal_detector.is_refusal("！！！") is True
+    assert refusal_detector.is_refusal("...") is False
+    assert refusal_detector.is_unusable_model_output("...") is True
+    assert refusal_detector.is_unusable_model_output("！！！") is True
     print("  [PASS] 仅标点响应检测")
 
     # 日文残留（伪翻译）
-    assert refusal_detector.is_refusal("他走了过来です") is True
-    assert refusal_detector.is_refusal("测试テスト") is True
+    assert refusal_detector.is_refusal("他走了过来です") is False
+    assert refusal_detector.is_unusable_model_output("他走了过来です") is True
+    assert refusal_detector.is_unusable_model_output("测试テスト") is True
     print("  [PASS] 日文残留检测")
 
     # 英文占比过高（原文是日文）
-    assert refusal_detector.is_refusal("Hello world", original="こんにちは") is True
+    assert refusal_detector.is_refusal("Hello world", original="こんにちは") is False
+    assert refusal_detector.is_unusable_model_output("Hello world", original="こんにちは") is False
     assert refusal_detector.is_refusal("你好", original="こんにちは") is False
     print("  [PASS] 英文占比检测")
 
