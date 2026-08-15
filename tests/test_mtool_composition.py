@@ -1086,3 +1086,24 @@ def test_content_rejection_fallback_removes_read_only_context():
     assert candidates[0]["contexts"]
     assert payloads[4][0] == "译文"
     assert set(errors) == {4}
+
+
+def test_parent_repair_child_normalizes_small_tsu_before_validation():
+    from translation.quality import status_for_output
+    from translation.terminology import Glossary
+    from translation.workflow.json_parallel import _parent_repair_child_payload
+
+    class FakePipeline:
+        glossary = Glossary.in_memory()
+        _pollution_issues = staticmethod(lambda source, translated: [])
+        _status_for_output = staticmethod(status_for_output)
+
+    translated, status, issues = _parent_repair_child_payload(
+        FakePipeline(),
+        {"source": "や、やだ……っ！", "short_label": False},
+        "不、不要啊……っ！",
+    )
+
+    assert translated == "不、不要啊……！"
+    assert status == "translated"
+    assert issues == []

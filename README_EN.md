@@ -75,6 +75,9 @@ Runtime files beside the executable include:
   crowd the actionable queue.
 - AI review supports separate primary, verifier, and sensitive-content models.
   Only results that pass structural and quality validation are auto-applied.
+- Before model review, stale checkpoints receive a rollback-safe deterministic
+  correction pass. Code calls, resource identifiers, and character ranges stay
+  opaque; failed multiline repairs fall back to isolated source-line retries.
 - Refusal detection hard-blocks only explicit AI, policy, or inability-to-assist
   meta responses. Ordinary narrative wording such as "unsuitable" or "refused
   a request" is not rejected by keywords alone; ambiguous meta responses are

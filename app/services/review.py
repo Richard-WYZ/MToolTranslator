@@ -145,6 +145,7 @@ def review_filter_matches(columns: list[dict], filter_name: str) -> bool:
         return any(issue_types(col) & {"line_too_long", "too_many_lines"} for col in columns)
     if filter_name.startswith("ai_"):
         expected = {
+            "ai_reclassified": "reclassified",
             "ai_fixed": "fixed",
             "ai_confirmed": "confirmed",
             "ai_unresolved": "unresolved",
@@ -239,7 +240,7 @@ def _build_review_context(file_path: str, signature: tuple[Any, ...]) -> dict:
     filter_names = (
         "all", "issues", "required", "advisory", "preserved", "violated", "pending",
         "refusal", "term", "english", "symbol", "length",
-        "ai_fixed", "ai_confirmed", "ai_unresolved", "ai_conflict", "ai_pending",
+        "ai_reclassified", "ai_fixed", "ai_confirmed", "ai_unresolved", "ai_conflict", "ai_pending",
     )
     rows_by_filter: dict[str, list[int]] = {name: [] for name in filter_names}
     stats = {
@@ -253,6 +254,7 @@ def _build_review_context(file_path: str, signature: tuple[Any, ...]) -> dict:
         "violations_count": 0,
         "diagnostics_count": 0,
         "total_rows": len(original_items),
+        "ai_reclassified": 0,
         "ai_fixed": 0,
         "ai_confirmed": 0,
         "ai_unresolved": 0,
@@ -317,7 +319,7 @@ def _build_review_context(file_path: str, signature: tuple[Any, ...]) -> dict:
             if violations and (status not in _ACTIONABLE_STATUSES or derived_review):
                 stats["diagnostics_count"] += 1
             ai_status = str(ai_metadata.get("status", ""))
-            if ai_status in {"fixed", "confirmed", "unresolved", "conflict"}:
+            if ai_status in {"reclassified", "fixed", "confirmed", "unresolved", "conflict"}:
                 stats[f"ai_{ai_status}"] += 1
             elif status in _ACTIONABLE_STATUSES and not derived_review:
                 stats["ai_pending"] += 1

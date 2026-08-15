@@ -13,20 +13,32 @@ from typing import Any, Callable, Iterable
 from translation import checkpoint
 from translation.analysis import apply_mtool_compositions, build_mtool_composition_plan
 from translation.batching import prepare_model_candidate
-from translation.classification import has_explicit_adult_content, looks_like_short_label
+from translation.classification import (
+    deterministic_translation,
+    has_explicit_adult_content,
+    has_source_japanese,
+    looks_like_short_label,
+)
 from translation.config import output_constraints
 from translation.input import load_json_items
 from translation.models import model_configuration, translate as model_translate
 from translation.output import serialize_json_items
 from translation.pollution import translation_pollution_issues
 from translation.protection import restore_protected_translation
-from translation.quality import assess_model_output, get_violations, new_issues, status_for_output, translation_issues
+from translation.quality import (
+    apply_source_conditioned_fixes,
+    assess_model_output,
+    get_violations,
+    new_issues,
+    status_for_output,
+    translation_issues,
+)
 from translation.quality.status import HARD_REVIEW_ISSUE_TYPES
 from translation.review import write_review_report
 from translation.terminology import Glossary
 
 
-AI_REVIEW_VERSION = "ai-review-v6-evidence-based-refusal"
+AI_REVIEW_VERSION = "ai-review-v7-deterministic-reclassification"
 AI_REVIEW_ACTIVE_STATUSES = {"preparing", "reviewing", "verifying", "applying", "finalizing"}
 AI_REVIEW_TERMINAL_STATUSES = {"completed", "cancelled", "error"}
 NON_WAIVABLE_ISSUE_TYPES = set(HARD_REVIEW_ISSUE_TYPES) | {
@@ -202,6 +214,62 @@ def estimate_review_usage(items: Iterable[dict[str, Any]]) -> dict[str, int]:
     }
 
 
+def build_deterministic_reclassification_records(
+    source_texts: list[str],
+    current_texts: list[str],
+    checkpoint_entries: dict[Any, Any],
+) -> list[dict[str, Any]]:
+    """Build rollback-safe repairs for outputs made stale by newer deterministic rules."""
+    records: list[dict[str, Any]] = []
+    for row, source in enumerate(source_texts):
+        current = current_texts[row] if row < len(current_texts) else source
+        deterministic = deterministic_translation(source)
+        if not deterministic:
+            continue
+        cp_entry = checkpoint_entries.get(f"{row}_0", checkpoint_entries.get((row, 0), {}))
+        if not isinstance(cp_entry, dict):
+            cp_entry = {}
+        expected_status = status_for_output(source, deterministic)
+        before_issues = list(cp_entry.get("issues", []) or [])
+        already_current = (
+            current == deterministic
+            and str(cp_entry.get("translated", current)) == deterministic
+            and str(cp_entry.get("status", "")) == expected_status
+            and str(cp_entry.get("entry_classification", "")) == "deterministic"
+            and not before_issues
+        )
+        if already_current:
+            continue
+        records.append({
+            "row": row,
+            "source": source,
+            "before": current,
+            "after": deterministic,
+            "before_status": str(cp_entry.get("status", "pending")),
+            "before_issues": before_issues,
+            "before_model": str(cp_entry.get("model_identifier", "")),
+            "before_entry_classification": str(cp_entry.get("entry_classification", "")),
+            "entry_classification": "deterministic",
+            "decision": "deterministic",
+            "primary_decision": "deterministic",
+            "result": "reclassified",
+            "final_status": expected_status,
+            "remaining_issues": [],
+            "resolved_issue_types": sorted({
+                str(issue.get("type", ""))
+                for issue in before_issues
+                if isinstance(issue, dict) and str(issue.get("type", ""))
+            }),
+            "review_model": "deterministic:classification",
+            "verifier_model": "",
+            "attempts": 0,
+            "applied": False,
+            "message": "Reclassified by a newer deterministic preservation rule.",
+            "deterministic_reclassification": True,
+        })
+    return records
+
+
 def run_ai_review(
     *,
     task_id: str,
@@ -213,15 +281,28 @@ def run_ai_review(
     cancelled: CancelFunc,
     translator: TranslateFunc | None = None,
     auto_apply: bool = True,
+    reclassification_records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     translator = translator or _translate
-    if not items:
+    if not items and not reclassification_records:
         return _empty_result(task_id, file_path, models)
 
     glossary = Glossary(file_path=checkpoint.get_glossary_path(file_path))
-    prepared = [_prepare_item(item, glossary) for item in items]
-    total = len(prepared)
-    progress({"status": "reviewing", "phase": "reviewing", "current": 0, "total": total})
+    deterministic_records = [dict(record) for record in reclassification_records or []]
+    deterministic_rows = {int(record["row"]) for record in deterministic_records}
+    prepared = [
+        _prepare_item(item, glossary)
+        for item in items
+        if int(item.get("row", -1)) not in deterministic_rows
+    ]
+    deterministic_count = len(deterministic_records)
+    total = deterministic_count + len(prepared)
+    progress({
+        "status": "reviewing",
+        "phase": "reviewing",
+        "current": deterministic_count,
+        "total": total,
+    })
 
     work = _load_session_work(file_path, task_id)
     primary_results = _decode_result_map(work.get("primary", {})) if work.get("primary_complete") else {}
@@ -232,7 +313,7 @@ def run_ai_review(
             translator=translator,
             cancelled=cancelled,
             progress=progress,
-            progress_offset=0,
+            progress_offset=deterministic_count,
             progress_total=total,
         )
         _raise_if_cancelled(cancelled)
@@ -243,11 +324,15 @@ def run_ai_review(
             candidate = str(result.get("translation", ""))
             if result.get("decision") == "unable" or _has_retry_issue(result.get("issues", [])) or not candidate:
                 retry_item = dict(item)
-                retry_item["current_for_prompt"] = candidate or item["current"]
-                retry_item["issue_types_for_prompt"] = sorted({
+                retry_issue_types = sorted({
                     *item["issue_types"],
                     *[str(issue.get("type", "")) for issue in result.get("issues", []) if isinstance(issue, dict)],
                 })
+                retry_item["issue_types_for_prompt"] = retry_issue_types
+                retry_item["current_for_prompt"] = (
+                    "" if any(issue in NON_WAIVABLE_ISSUE_TYPES for issue in retry_issue_types)
+                    else candidate or item["current"]
+                )
                 retry_items.append(retry_item)
         if retry_items:
             retry_results = _run_primary_batches(
@@ -256,15 +341,33 @@ def run_ai_review(
                 translator=translator,
                 cancelled=cancelled,
                 progress=progress,
-                progress_offset=total,
+                progress_offset=deterministic_count + len(prepared),
                 progress_total=total + len(retry_items),
                 retry=True,
             )
             primary_results.update(retry_results)
+        for item in prepared:
+            result = primary_results.get(item["row"], {})
+            if (
+                ("\n" in item["source"] or "\r" in item["source"])
+                and _has_non_waivable_issue(result.get("issues", []))
+            ):
+                isolated = _repair_multiline_by_lines(
+                    item,
+                    model=models.sensitive if item["sensitive"] else models.review,
+                    translator=translator,
+                )
+                if isolated and not _has_non_waivable_issue(isolated.get("issues", [])):
+                    primary_results[item["row"]] = isolated
         _save_session_work(file_path, task_id, primary=primary_results, primary_complete=True)
 
     _raise_if_cancelled(cancelled)
-    progress({"status": "verifying", "phase": "verifying", "current": 0, "total": total})
+    progress({
+        "status": "verifying",
+        "phase": "verifying",
+        "current": deterministic_count,
+        "total": total,
+    })
     work = _load_session_work(file_path, task_id)
     verifier_results = _decode_result_map(work.get("verifier", {})) if work.get("verifier_complete") else {}
     if not work.get("verifier_complete"):
@@ -276,18 +379,23 @@ def run_ai_review(
             cancelled=cancelled,
             progress=progress,
             progress_total=total,
+            progress_offset=deterministic_count,
         )
         _save_session_work(file_path, task_id, verifier=verifier_results, verifier_complete=True)
     _raise_if_cancelled(cancelled)
 
-    records = [
+    model_records = [
         _resolve_record(item, primary_results.get(item["row"], {}), verifier_results.get(item["row"], {}))
         for item in prepared
     ]
+    records = sorted(
+        [*deterministic_records, *model_records],
+        key=lambda record: int(record.get("row", -1)),
+    )
     counts = _record_counts(records)
     applied = 0
     if auto_apply:
-        progress({"status": "applying", "phase": "applying", "current": 0, "total": total})
+        progress({"status": "applying", "phase": "applying", "current": total, "total": total})
         applied = apply_ai_review_records(
             task_id=task_id,
             file_path=file_path,
@@ -335,7 +443,7 @@ def apply_ai_review_records(
     progress_records: list[dict[str, Any]] = []
     applied = 0
     for record in records:
-        if record.get("result") not in {"fixed", "confirmed"}:
+        if record.get("result") not in {"fixed", "confirmed", "reclassified"}:
             continue
         row = int(record["row"])
         current_output = str(output_items[row][1])
@@ -350,6 +458,21 @@ def apply_ai_review_records(
             continue
         key, _ = output_items[row]
         output_items[row] = (key, after)
+        deterministic_record = bool(record.get("deterministic_reclassification"))
+        recorded_model = "deterministic:classification" if deterministic_record else str(record.get("review_model", models.review))
+        recorded_configuration = (
+            {
+                "review": {"provider": "deterministic", "model": "classification"},
+                "verifier": {"provider": "deterministic", "model": "classification"},
+                "ai_review_version": AI_REVIEW_VERSION,
+            }
+            if deterministic_record
+            else {
+                "review": model_configuration(str(record.get("review_model", models.review))),
+                "verifier": model_configuration(str(record.get("verifier_model", models.verifier))),
+                "ai_review_version": AI_REVIEW_VERSION,
+            }
+        )
         progress_records.append({
             "row": row,
             "col": 0,
@@ -360,13 +483,9 @@ def apply_ai_review_records(
             "json_key": str(key),
             "entry_classification": str(record.get("entry_classification", "")),
             "batch_id": f"ai_review_{task_id}",
-            "model_identifier": str(record.get("review_model", models.review)),
-            "model_configuration": {
-                "review": model_configuration(str(record.get("review_model", models.review))),
-                "verifier": model_configuration(str(record.get("verifier_model", models.verifier))),
-                "ai_review_version": AI_REVIEW_VERSION,
-            },
-            "retry_count": int(record.get("attempts", 1) or 1),
+            "model_identifier": recorded_model,
+            "model_configuration": recorded_configuration,
+            "retry_count": 0 if deterministic_record else int(record.get("attempts", 1) or 1),
             "ai_review_task_id": task_id,
             "ai_review_decision": str(record.get("decision", "")),
             "ai_review_resolved_issues": list(record.get("resolved_issue_types", []) or []),
@@ -432,7 +551,7 @@ def rollback_ai_review_session(file_path: str, task_id: str, output_path: str) -
             "status": str(record.get("before_status", "translated_needs_review")),
             "issues": list(record.get("before_issues", []) or []),
             "json_key": str(source_items[row][0]),
-            "entry_classification": str(record.get("entry_classification", "")),
+            "entry_classification": str(record.get("before_entry_classification", record.get("entry_classification", ""))),
             "batch_id": f"ai_review_rollback_{task_id}",
             "model_identifier": str(record.get("before_model", "")),
             "ai_review_rollback_task_id": task_id,
@@ -644,6 +763,7 @@ def _run_verifier_batches(
     cancelled: CancelFunc,
     progress: ProgressFunc,
     progress_total: int,
+    progress_offset: int = 0,
 ) -> dict[int, dict[str, Any]]:
     batches = _make_batches(items, max_items=16, max_chars=3600, verifier_payload=primary)
     results: dict[int, dict[str, Any]] = {}
@@ -677,8 +797,88 @@ def _run_verifier_batches(
                 }
             results.update(batch_results)
             done += len(batch)
-            progress({"status": "verifying", "phase": "verifying", "current": done, "total": progress_total})
+            progress({
+                "status": "verifying",
+                "phase": "verifying",
+                "current": min(progress_total, progress_offset + done),
+                "total": progress_total,
+            })
     return results
+
+
+def _repair_multiline_by_lines(
+    item: dict[str, Any],
+    *,
+    model: str,
+    translator: TranslateFunc,
+) -> dict[str, Any] | None:
+    """Repair a failed multiline review without allowing line or context leakage."""
+    fragments = str(item["source"]).splitlines(keepends=True)
+    if len(fragments) < 2:
+        return None
+    rendered: list[str] = [""] * len(fragments)
+    model_lines: list[dict[str, Any]] = []
+    line_indexes: dict[int, int] = {}
+    for line_index, fragment in enumerate(fragments):
+        ending_match = re.search(r"(?:\r\n|\r|\n)$", fragment)
+        ending = ending_match.group(0) if ending_match else ""
+        body = fragment[:-len(ending)] if ending else fragment
+        if not body or not has_source_japanese(body):
+            rendered[line_index] = body + ending
+            continue
+        deterministic = deterministic_translation(body)
+        if deterministic:
+            rendered[line_index] = deterministic + ending
+            continue
+        synthetic_row = -((int(item["row"]) + 1) * 10000 + line_index + 1)
+        line_item = _prepare_item({
+            "row": synthetic_row,
+            "source": body,
+            "current": "",
+            "status": "review_required",
+            "issues": [{"type": "untranslated_japanese"}],
+            "issue_types": ["untranslated_japanese"],
+            "neighbors": [],
+            "entry_classification": "multiline_line",
+            "model_identifier": item.get("before_model", ""),
+            "sensitive": bool(item.get("sensitive")),
+        }, item["glossary"])
+        line_item["current_for_prompt"] = ""
+        line_item["issue_types_for_prompt"] = sorted({
+            "untranslated_japanese",
+            *[str(value) for value in item.get("issue_types_for_prompt", []) if str(value)],
+        })
+        model_lines.append(line_item)
+        line_indexes[synthetic_row] = line_index
+        rendered[line_index] = ending
+    if not model_lines:
+        return None
+    line_results = _primary_batch(model_lines, model=model, translator=translator, retry=True)
+    for line_item in model_lines:
+        result = line_results.get(line_item["row"], {})
+        translated = str(result.get("translation", ""))
+        if not translated or _has_non_waivable_issue(result.get("issues", [])):
+            return None
+        line_index = line_indexes[line_item["row"]]
+        ending_match = re.search(r"(?:\r\n|\r|\n)$", fragments[line_index])
+        ending = ending_match.group(0) if ending_match else ""
+        body = fragments[line_index][:-len(ending)] if ending else fragments[line_index]
+        leading = re.match(r"^[ \t]*", body).group(0)
+        rendered[line_index] = leading + translated.lstrip(" \t") + ending
+    translation = "".join(rendered)
+    issues = _validate_translation(
+        item["source"],
+        translation,
+        [],
+        short_label=False,
+    )
+    return {
+        "decision": "revise",
+        "translation": translation,
+        "issues": issues,
+        "attempts": 3,
+        "review_model": model,
+    }
 
 
 def _verifier_batch_with_fallback(
@@ -885,6 +1085,7 @@ def _restore_candidate(item: dict[str, Any], translated: str) -> tuple[str, list
             "message": "Confirmed terminology was not preserved: "
             + ", ".join(f"{term['source']}=>{term['target']}" for term in missing_terms),
         })
+    restored = apply_source_conditioned_fixes(item["source"], restored)
     return restored, issues
 
 
@@ -1036,7 +1237,7 @@ def _batch_count(items: list[dict[str, Any]], *, max_items: int, max_chars: int)
 
 
 def _record_counts(records: list[dict[str, Any]]) -> dict[str, int]:
-    counts = {"fixed": 0, "confirmed": 0, "unresolved": 0, "conflict": 0, "applied": 0}
+    counts = {"fixed": 0, "confirmed": 0, "reclassified": 0, "unresolved": 0, "conflict": 0, "applied": 0}
     for record in records:
         result = str(record.get("result", "unresolved"))
         counts[result if result in counts else "unresolved"] += 1
@@ -1132,6 +1333,14 @@ def _has_retry_issue(issues: list[dict[str, Any]]) -> bool:
     return any(str(issue.get("type", "")) in PRIMARY_RETRY_ISSUE_TYPES for issue in issues if isinstance(issue, dict))
 
 
+def _has_non_waivable_issue(issues: list[dict[str, Any]]) -> bool:
+    return any(
+        str(issue.get("type", "")) in NON_WAIVABLE_ISSUE_TYPES
+        for issue in issues
+        if isinstance(issue, dict)
+    )
+
+
 def _raise_if_cancelled(cancelled: CancelFunc) -> None:
     if cancelled():
         raise AIReviewCancelled("AI review was cancelled")
@@ -1161,6 +1370,7 @@ __all__ = [
     "AIReviewModels",
     "ai_review_store_path",
     "begin_ai_review_session",
+    "build_deterministic_reclassification_records",
     "estimate_review_usage",
     "latest_ai_review_by_row",
     "get_ai_review_session",

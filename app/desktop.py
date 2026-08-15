@@ -24,6 +24,8 @@ if sys.stderr is None:
 import uvicorn
 import webview
 
+from app.services.desktop_sources import desktop_source_registry
+
 
 class Api:
     """pywebview JS-Python bridge API for desktop features."""
@@ -49,6 +51,29 @@ class Api:
             return None
         except Exception:
             return None
+
+    def choose_source_file(self):
+        """Choose one JSON source and return a trusted one-time import token."""
+        try:
+            result = webview.windows[0].create_file_dialog(
+                webview.OPEN_DIALOG,
+                allow_multiple=False,
+                file_types=("JSON files (*.json)", "All files (*.*)"),
+            )
+            if isinstance(result, str):
+                selected = result
+            elif result and len(result) > 0:
+                selected = str(result[0])
+            else:
+                return None
+            return desktop_source_registry.register(selected).public()
+        except Exception:
+            return None
+
+    def consume_dropped_file_path(self, filename, size):
+        """Wait briefly for the native WebView2 drop event and return its token."""
+        record = desktop_source_registry.wait_for_match(str(filename), int(size), timeout=2.0)
+        return record.public() if record else None
 
     def copy_file(self, source_path, dest_path):
         """Copy a file from source to destination.
@@ -126,13 +151,14 @@ def run_desktop(app):
         time.sleep(2)
 
         # 3. Create the pywebview window (no address bar by default)
+        api = Api()
         window = webview.create_window(
             title="MTool 汉化工具",
             url="http://127.0.0.1:8000",
             width=1200,
             height=800,
             min_size=(800, 600),
-            js_api=Api(),
+            js_api=api,
         )
 
         on_closing = build_close_handler(window)
@@ -143,7 +169,39 @@ def run_desktop(app):
             pass
 
         # 4. Block until the window is closed
-        webview.start()
+        drop_binding = {"ready": False}
+
+        def bind_desktop_drop(*_args):
+            if drop_binding["ready"]:
+                return
+            try:
+                from webview.dom import DOMEventHandler
+
+                def capture_dropped_files(event):
+                    files = (event or {}).get("dataTransfer", {}).get("files", [])
+                    for file_info in files:
+                        path = str(file_info.get("pywebviewFullPath") or "")
+                        if path:
+                            try:
+                                desktop_source_registry.register(path)
+                            except (OSError, ValueError):
+                                pass
+
+                zone = window.dom.get_element("#upload-zone")
+                if zone:
+                    zone.on(
+                        "drop",
+                        DOMEventHandler(capture_dropped_files, prevent_default=True),
+                    )
+                    drop_binding["ready"] = True
+            except Exception:
+                pass
+
+        try:
+            window.events.loaded += bind_desktop_drop
+        except Exception:
+            pass
+        webview.start(bind_desktop_drop)
 
         # 5. Force clean exit. sys.exit() can leave uvicorn/pywebview worker
         # threads alive after the window disappears, which keeps temp/source

@@ -10,6 +10,7 @@ from translation.output import default_output_path, write_json_items
 from translation.review.ai import (
     AIReviewModels,
     apply_ai_review_records,
+    build_deterministic_reclassification_records,
     get_ai_review_session,
     load_ai_review_store,
     rollback_ai_review_session,
@@ -109,6 +110,7 @@ def test_ai_review_batches_and_confirms_existing_translations(tmp_path, isolated
     assert result["counts"] == {
         "fixed": 0,
         "confirmed": 25,
+        "reclassified": 0,
         "unresolved": 0,
         "conflict": 0,
         "applied": 25,
@@ -146,6 +148,40 @@ def test_ai_review_rejects_candidate_with_hard_issue_even_if_verifier_selects_it
     assert result["counts"]["unresolved"] == 1
     assert result["counts"]["applied"] == 0
     assert json.loads(Path(output_path).read_text(encoding="utf-8"))["こんにちは0"] == "你好0"
+
+
+def test_ai_review_normalizes_small_tsu_in_otherwise_chinese_candidate(tmp_path, isolated_checkpoint_dir):
+    source_path, output_path, items = _write_source_and_output(tmp_path, 1)
+
+    def fake_translate(model, text, system_prompt, options):
+        if "independent" in system_prompt:
+            return json.dumps({
+                "items": [{"i": 0, "choice": "candidate", "resolved": ["style_review"]}],
+            })
+        return json.dumps({
+            "items": [{"i": 0, "decision": "revise", "t": "您好っ__KEEP_0__"}],
+        }, ensure_ascii=False)
+
+    models = AIReviewModels("api:review", "api:verify", "api:adult", "api:adult-verify")
+    from translation.review.ai import begin_ai_review_session
+
+    begin_ai_review_session(task_id="small-tsu-task", file_path=source_path, models=models, items=items, auto_apply=True)
+    result = run_ai_review(
+        task_id="small-tsu-task",
+        file_path=source_path,
+        items=items,
+        models=models,
+        output_path=output_path,
+        progress=lambda payload: None,
+        cancelled=lambda: False,
+        translator=fake_translate,
+    )
+
+    assert result["counts"]["fixed"] == 1
+    assert result["counts"]["applied"] == 1
+    assert result["records"][0]["after"] == "您好0"
+    assert result["records"][0]["remaining_issues"] == []
+    assert json.loads(Path(output_path).read_text(encoding="utf-8"))["こんにちは0"] == "您好0"
 
 
 def test_ai_review_applies_narrative_request_refusal_wording(tmp_path, isolated_checkpoint_dir):
@@ -204,6 +240,242 @@ def test_ai_review_applies_narrative_request_refusal_wording(tmp_path, isolated_
     assert result["counts"]["applied"] == 1
     assert result["counts"]["unresolved"] == 0
     assert json.loads(Path(output_path).read_text(encoding="utf-8"))[source] == translated
+
+
+def test_ai_review_reclassifies_stale_code_and_isolates_hard_retry(
+    tmp_path,
+    isolated_checkpoint_dir,
+):
+    code_required = ".setAnimation(0, '能力変化セラ1');"
+    code_hidden = ".setAnimation(0, 'カーソル1');"
+    prose = "テストモードです。"
+    contaminated = "输出至テストモードです。"
+    repaired = "这是测试模式。"
+    source_path = tmp_path / "ManualTransFile.json"
+    source_path.write_text(
+        json.dumps({value: value for value in (code_required, code_hidden, prose)}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    output_path = default_output_path(str(source_path))
+    write_json_items([
+        (code_required, code_required),
+        (code_hidden, ".setAnimation(0, '光标1');"),
+        (prose, contaminated),
+    ], output_path)
+    checkpoint.init_checkpoint(
+        str(source_path), total=3, model="api:original", translate_columns=[1], file_type="json"
+    )
+    checkpoint.save_progress_many(str(source_path), [
+        {
+            "row": 0,
+            "col": 0,
+            "original": code_required,
+            "translated": code_required,
+            "status": "review_required",
+            "issues": [{"type": "untranslated_japanese"}],
+            "entry_classification": "short_label",
+        },
+        {
+            "row": 1,
+            "col": 0,
+            "original": code_hidden,
+            "translated": ".setAnimation(0, '光标1');",
+            "status": "translated",
+            "issues": [],
+            "entry_classification": "short_label",
+        },
+        {
+            "row": 2,
+            "col": 0,
+            "original": prose,
+            "translated": contaminated,
+            "status": "review_required",
+            "issues": [{"type": "untranslated_japanese"}],
+            "entry_classification": "multiline",
+        },
+    ])
+    cp_entries = checkpoint.load_checkpoint(str(source_path))["entries"]
+    reclassification_records = build_deterministic_reclassification_records(
+        [code_required, code_hidden, prose],
+        [code_required, ".setAnimation(0, '光标1');", contaminated],
+        cp_entries,
+    )
+    assert {record["row"] for record in reclassification_records} == {0, 1}
+
+    items = [
+        {
+            "row": 0,
+            "source": code_required,
+            "current": code_required,
+            "status": "review_required",
+            "issues": [{"type": "untranslated_japanese"}],
+            "issue_types": ["untranslated_japanese"],
+            "neighbors": [],
+            "entry_classification": "short_label",
+            "model_identifier": "api:original",
+            "sensitive": False,
+        },
+        {
+            "row": 2,
+            "source": prose,
+            "current": contaminated,
+            "status": "review_required",
+            "issues": [{"type": "untranslated_japanese"}],
+            "issue_types": ["untranslated_japanese"],
+            "neighbors": [],
+            "entry_classification": "multiline",
+            "model_identifier": "api:original",
+            "sensitive": False,
+        },
+    ]
+    primary_attempts = 0
+
+    def fake_translate(model, text, system_prompt, options):
+        nonlocal primary_attempts
+        payload = json.loads(text)
+        assert [item["i"] for item in payload["items"]] == [2]
+        if "independent" in system_prompt:
+            return json.dumps({"items": [{"i": 2, "choice": "candidate", "resolved": []}]})
+        primary_attempts += 1
+        if "final bounded repair" in system_prompt:
+            assert payload["items"][0]["current"] == ""
+            return json.dumps(
+                {"items": [{"i": 2, "decision": "revise", "t": repaired}]},
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {"items": [{"i": 2, "decision": "revise", "t": contaminated}]},
+            ensure_ascii=False,
+        )
+
+    models = AIReviewModels("api:review", "api:verify", "api:adult", "api:adult-verify")
+    from translation.review.ai import begin_ai_review_session
+
+    begin_ai_review_session(
+        task_id="reclassify-task",
+        file_path=str(source_path),
+        models=models,
+        items=items,
+        auto_apply=True,
+    )
+    result = run_ai_review(
+        task_id="reclassify-task",
+        file_path=str(source_path),
+        items=items,
+        models=models,
+        output_path=output_path,
+        progress=lambda payload: None,
+        cancelled=lambda: False,
+        translator=fake_translate,
+        reclassification_records=reclassification_records,
+    )
+
+    assert primary_attempts == 2
+    assert result["counts"]["reclassified"] == 2
+    assert result["counts"]["fixed"] == 1
+    assert result["counts"]["unresolved"] == 0
+    assert result["counts"]["applied"] == 3
+    output = json.loads(Path(output_path).read_text(encoding="utf-8"))
+    assert output[code_required] == code_required
+    assert output[code_hidden] == code_hidden
+    assert output[prose] == repaired
+    entries = checkpoint.load_checkpoint(str(source_path))["entries"]
+    assert entries["0_0"]["status"] == "preserved"
+    assert entries["1_0"]["status"] == "preserved"
+    assert entries["2_0"]["status"] == "translated"
+
+    rolled_back = rollback_ai_review_session(str(source_path), "reclassify-task", output_path)
+    assert rolled_back["restored"] == 3
+    restored_output = json.loads(Path(output_path).read_text(encoding="utf-8"))
+    assert restored_output[code_hidden] == ".setAnimation(0, '光标1');"
+    assert restored_output[prose] == contaminated
+
+
+def test_ai_review_repairs_multiline_runtime_text_line_by_line(
+    tmp_path,
+    isolated_checkpoint_dir,
+):
+    source = "コンパイルモードです。\n          テストモードです。test/basic.txtを読み込みます。"
+    expected = "这是编译模式。\n          这是测试模式。读取test/basic.txt。"
+    source_path = tmp_path / "ManualTransFile.json"
+    source_path.write_text(json.dumps({source: source}, ensure_ascii=False), encoding="utf-8")
+    output_path = default_output_path(str(source_path))
+    write_json_items([(source, source)], output_path)
+    checkpoint.init_checkpoint(
+        str(source_path), total=1, model="api:original", translate_columns=[1], file_type="json"
+    )
+    checkpoint.save_progress(
+        str(source_path),
+        0,
+        0,
+        source,
+        source,
+        status="review_required",
+        issues=[{"type": "untranslated_japanese"}],
+        entry_classification="multiline",
+    )
+    items = [{
+        "row": 0,
+        "source": source,
+        "current": source,
+        "status": "review_required",
+        "issues": [{"type": "untranslated_japanese"}],
+        "issue_types": ["untranslated_japanese"],
+        "neighbors": [],
+        "entry_classification": "multiline",
+        "model_identifier": "api:original",
+        "sensitive": False,
+    }]
+    saw_line_fallback = False
+
+    def fake_translate(model, text, system_prompt, options):
+        nonlocal saw_line_fallback
+        payload = json.loads(text)
+        if "independent" in system_prompt:
+            return json.dumps({"items": [{"i": 0, "choice": "candidate", "resolved": []}]})
+        if all(int(item["i"]) < 0 for item in payload["items"]):
+            saw_line_fallback = True
+            response_items = []
+            for item in payload["items"]:
+                translated = (
+                    "这是编译模式。"
+                    if "コンパイル" in item["source"]
+                    else "          这是测试模式。读取__KEEP_0__。"
+                )
+                response_items.append({"i": item["i"], "decision": "revise", "t": translated})
+            return json.dumps({"items": response_items}, ensure_ascii=False)
+        return json.dumps({
+            "items": [
+                {"i": item["i"], "decision": "revise", "t": item["source"]}
+                for item in payload["items"]
+            ]
+        }, ensure_ascii=False)
+
+    models = AIReviewModels("api:review", "api:verify", "api:adult", "api:adult-verify")
+    from translation.review.ai import begin_ai_review_session
+
+    begin_ai_review_session(
+        task_id="multiline-repair",
+        file_path=str(source_path),
+        models=models,
+        items=items,
+        auto_apply=True,
+    )
+    result = run_ai_review(
+        task_id="multiline-repair",
+        file_path=str(source_path),
+        items=items,
+        models=models,
+        output_path=output_path,
+        progress=lambda payload: None,
+        cancelled=lambda: False,
+        translator=fake_translate,
+    )
+
+    assert saw_line_fallback
+    assert result["counts"]["fixed"] == 1
+    assert result["counts"]["unresolved"] == 0
+    assert json.loads(Path(output_path).read_text(encoding="utf-8"))[source] == expected
 
 
 def test_ai_review_retries_verification_with_sensitive_primary_when_verifier_fails(

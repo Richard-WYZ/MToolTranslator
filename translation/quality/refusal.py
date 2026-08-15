@@ -27,13 +27,15 @@ EXPLICIT_ENGLISH_REFUSAL_MARKERS = (
     "not able",
 )
 
-# Small tsu and kana voicing marks are often retained as non-lexical sound
-# notation inside otherwise translated game dialogue.  They are not evidence
-# of a Japanese refusal or untranslated lexical content by themselves.
+# Kana voicing marks and decorative long marks are not lexical residue by
+# themselves. Small tsu (っ/ッ), however, is Japanese script and must remain
+# visible to validators; normalizable occurrences in otherwise localized text
+# are removed before the final output is accepted.
 JAPANESE_KANA_RE = re.compile(
-    r"[\u3041-\u3062\u3064-\u3098\u309d-\u309f"
-    r"\u30a1-\u30c2\u30c4-\u30fa\u30fd-\u30ff]"
+    r"[\u3041-\u3098\u309d-\u309f"
+    r"\u30a1-\u30fa\u30fd-\u30ff]"
 )
+SMALL_TSU_RE = re.compile(r"[\u3063\u30c3]+")
 PRESERVED_NAME_READING_RE = re.compile(
     r"[\u3400-\u4dbf\u4e00-\u9fff]{1,16}[（(]"
     r"[\u3041-\u309f\u30a1-\u30fa\u30fd-\u30ff]{1,24}[)）]"
@@ -121,7 +123,11 @@ def assess_model_output(text: str, original: str = "") -> ModelOutputAssessment:
             evidence=stripped[:40],
         )
 
-    if has_japanese(stripped, original=original):
+    # Small tsu can be removed deterministically when a model has otherwise
+    # localized the text. Do not reject that repairable raw response before
+    # restoration and source-conditioned output normalization run.
+    japanese_candidate = SMALL_TSU_RE.sub("", stripped)
+    if has_japanese(japanese_candidate, original=original):
         return ModelOutputAssessment(
             issue_type="untranslated_japanese",
             severity="hard",

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from app.schemas import AIReviewRequest
 from app.services.runtime_profiles import (
     QUALITY_FAST_MODEL,
     QUALITY_PRIMARY_MODEL,
@@ -34,6 +35,10 @@ def test_model_ids_preserve_provider_identity(monkeypatch):
     assert models[0]["provider"] == "ollama"
     assert model_router.model_configuration("ollama:qwen-local")["provider"] == "ollama"
     assert canonical_model_id("qwen-api", "api") == "api:qwen-api"
+
+
+def test_ai_review_defaults_to_required_entries():
+    assert AIReviewRequest(file_path="fixture.json").scope == "required"
 
 
 def test_quality_profile_matches_validated_route():
@@ -259,6 +264,7 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert 'id="ai-verifier-model"' in html
     assert 'id="btn-ai-review-start"' in html
     assert 'id="btn-ai-review-resume"' in html
+    assert '<option value="required" selected>仅必须复核</option>' in html
     assert 'data-filter="required" class="active"' in html
     assert 'data-filter="advisory"' in html
     assert 'data-filter="preserved"' in html
@@ -270,6 +276,8 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert 'id="review-busy-label"' in html
     assert "/review/ai/preflight" in script
     assert "/review/ai/start" in script
+    assert "system_corrections" in script
+    assert "counts.reclassified" in script
     assert "/rollback" in script
     assert "/export/status" in script
     assert "/history/session?file_path=" in script
@@ -277,6 +285,10 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert "window.pywebview && window.pywebview.api" in script
     assert "save_file_dialog" in script
     assert "output_path: destination.path" in script
+    assert "overwrite_original" in script
+    assert "state.originalFilePath" in script
+    assert "consume_dropped_file_path" in script
+    assert "/import-local" in script
     assert "setReviewRowSelected" in script
     assert "toggleCurrentReviewPage" in script
     assert "setReviewActionBusy" in script
@@ -298,3 +310,5 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     desktop_script = (root / "app" / "desktop.py").read_text(encoding="utf-8")
     assert "create_confirmation_dialog" in desktop_script
     assert "window.evaluate_js" not in desktop_script
+    assert "capture_dropped_files" in desktop_script
+    assert "DOMEventHandler" in desktop_script

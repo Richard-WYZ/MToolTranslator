@@ -11,6 +11,7 @@ from translation.quality.rules import (
     exact_japanese_menu_translation,
     exact_nonlinguistic_translation,
     is_valid_identical_han_translation,
+    normalize_small_tsu_residue,
     suspicious_artifacts,
     translation_issues,
 )
@@ -48,6 +49,7 @@ __all__ = [
     "exact_japanese_menu_translation",
     "exact_nonlinguistic_translation",
     "is_valid_identical_han_translation",
+    "normalize_small_tsu_residue",
     "progress_status",
     "protect_runtime_tokens",
     "quality_prompt_rules",

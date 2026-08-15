@@ -19,7 +19,41 @@ async function ensureCanReplaceFile() {
     return true;
 }
 
-async function handleFile(file) {
+async function applyImportedFile(result, fallbackSize) {
+    state.filePath = result.saved_path; state.sourceFilePath = result.saved_path;
+    state.originalFilePath = result.original_path || ""; state.fileName = result.filename;
+    state.fileSize = result.file_size || fallbackSize || 0; state.sessionId = result.session_id;
+    state.taskId = ""; state.taskStatus = "idle";
+    state.hasUnexportedResult = false; state.exportReady = false;
+    await loadPreview(); renderFile(); invalidatePreflight();
+    toast("文件已导入，尚未发送给任何模型", "success");
+}
+
+async function chooseSourceFile() {
+    var bridge = window.pywebview && window.pywebview.api;
+    if (!bridge || typeof bridge.choose_source_file !== "function") {
+        el("file-input").click();
+        return;
+    }
+    if (!(await ensureCanReplaceFile())) return;
+    lockFileControls(true); try {
+        var selected = await bridge.choose_source_file();
+        if (!selected || !selected.token) return;
+        if (!String(selected.filename || "").toLowerCase().endsWith(".json")) {
+            toast("只支持 MTool JSON 文件", "error");
+            return;
+        }
+        var result = await API.importLocal(selected.token);
+        await applyImportedFile(result, selected.size);
+    } catch (error) {
+        toast(error.message, "error");
+    } finally {
+        lockFileControls(false);
+        el("file-input").value = "";
+    }
+}
+
+async function handleFile(file, sourceToken) {
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".json")) {
         toast("只支持 MTool JSON 文件", "error");
@@ -28,20 +62,8 @@ async function handleFile(file) {
     if (!(await ensureCanReplaceFile())) return;
     lockFileControls(true);
     try {
-        var result = await API.upload(file);
-        state.filePath = result.saved_path;
-        state.sourceFilePath = result.saved_path;
-        state.fileName = result.filename;
-        state.fileSize = result.file_size || file.size;
-        state.sessionId = result.session_id;
-        state.taskId = "";
-        state.taskStatus = "idle";
-        state.hasUnexportedResult = false;
-        state.exportReady = false;
-        await loadPreview();
-        renderFile();
-        invalidatePreflight();
-        toast("文件已导入，尚未发送给任何模型", "success");
+        var result = await API.upload(file, sourceToken || "");
+        await applyImportedFile(result, file.size);
     } catch (error) {
         toast(error.message, "error");
     } finally {
@@ -81,6 +103,7 @@ function resetFile() {
     stopPolling();
     state.filePath = "";
     state.sourceFilePath = "";
+    state.originalFilePath = "";
     state.fileName = "";
     state.fileSize = 0;
     state.sessionId = "";

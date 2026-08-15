@@ -3,6 +3,7 @@
 from app.schemas.requests import (
     BatchTranslateStartRequest,
     CleanupRequest,
+    DesktopImportRequest,
     ColumnMapping,
     DynamicGlossaryRequest,
     ExportRequest,
@@ -24,6 +25,7 @@ from app.schemas.requests import (
 __all__ = [
     "BatchTranslateStartRequest",
     "CleanupRequest",
+    "DesktopImportRequest",
     "ColumnMapping",
     "DynamicGlossaryRequest",
     "ExportRequest",

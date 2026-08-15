@@ -225,7 +225,7 @@ function renderReviewQueue() {
             var checked = state.review.selectedRows.has(item.row) ? " checked" : "";
             var selectable = reviewItemIsSelectable(item) && !reviewActionIsBusy() && !aiReviewIsActive();
             var aiStatus = (column.ai_review || {}).status || "";
-            var aiLabel = { fixed: "AI已修复", confirmed: "AI已确认", unresolved: "AI未解决", conflict: "AI冲突" }[aiStatus] || "";
+            var aiLabel = { reclassified: "系统已校正", fixed: "AI已修复", confirmed: "AI已确认", unresolved: "AI未解决", conflict: "AI冲突" }[aiStatus] || "";
             return '<div class="queue-item' + (item.row === state.review.selectedRow ? " selected" : "") + '" data-review-row="' + item.row + '">'
                 + '<input type="checkbox" data-review-check="' + item.row + '"' + checked + (selectable ? "" : " disabled") + ' aria-label="选择第 ' + (item.row + 1) + ' 行">'
                 + '<div class="queue-copy"><div class="queue-meta"><span><i class="risk-dot ' + risk + '"></i>第 ' + (item.row + 1) + ' 行' + (aiLabel ? '<i class="queue-ai-badge">' + aiLabel + "</i>" : "") + '</span><span>' + escapeHtml(statusLabel(column.status)) + "</span></div>"
@@ -290,7 +290,7 @@ function renderReviewEditor(item) {
         ["更新时间", formatDate(column.updated_at)],
     ];
     if (column.ai_review && column.ai_review.status) {
-        meta.push(["AI复核", { fixed: "已修复", confirmed: "确认原译文", unresolved: "仍无法确认", conflict: "写入冲突" }[column.ai_review.status] || column.ai_review.status]);
+        meta.push(["AI复核", { reclassified: "系统确定性校正", fixed: "已修复", confirmed: "确认原译文", unresolved: "仍无法确认", conflict: "写入冲突" }[column.ai_review.status] || column.ai_review.status]);
         meta.push(["复核模型", modelLabel(column.ai_review.review_model) || "未记录"]);
         meta.push(["验证模型", modelLabel(column.ai_review.verifier_model) || "未记录"]);
     }

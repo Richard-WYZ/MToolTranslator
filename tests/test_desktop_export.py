@@ -4,10 +4,21 @@ import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from app.desktop import Api, build_close_handler
-from app.services.files import export_mtool_json, translation_output_state
+from app.routes.files import create_router as create_files_router
+from app.services.desktop_sources import (
+    DesktopSourceRegistry,
+    desktop_source_registry,
+    validate_desktop_source,
+)
+from app.services.files import (
+    export_mtool_json,
+    load_session_metadata,
+    save_mtool_upload,
+    translation_output_state,
+)
 from translation.output import default_output_path
 
 
@@ -66,7 +77,7 @@ def test_export_state_is_ready_before_review_completion_and_clean_after_export(t
 
 
 def test_export_can_save_to_an_exact_user_selected_path(tmp_path):
-    source, _output = _write_translation_pair(tmp_path)
+    source, output = _write_translation_pair(tmp_path)
     destination_dir = tmp_path / "chosen"
     destination_dir.mkdir()
     destination = destination_dir / "自定义译文.json"
@@ -76,6 +87,149 @@ def test_export_can_save_to_an_exact_user_selected_path(tmp_path):
     assert result["export_path"] == str(destination)
     assert result["filename"] == destination.name
     assert json.loads(destination.read_text(encoding="utf-8")) == {"こんにちは": "你好"}
+    assert json.loads(source.read_text(encoding="utf-8")) == {"こんにちは": "こんにちは"}
+    assert output.is_file()
+
+
+def test_export_overwrites_real_original_with_backup_and_keeps_working_copy(tmp_path):
+    original = tmp_path / "game" / "ManualTransFile.json"
+    original.parent.mkdir()
+    original_content = json.dumps({"こんにちは": "こんにちは"}, ensure_ascii=False).encode("utf-8")
+    original.write_bytes(original_content)
+    upload_root = tmp_path / "uploads"
+    upload_root.mkdir()
+    imported = save_mtool_upload(
+        upload_root,
+        original.name,
+        original_content,
+        original_path=str(original),
+    )
+    working = Path(imported["saved_path"])
+    output = Path(default_output_path(str(working)))
+    output.write_text(json.dumps({"こんにちは": "你好"}, ensure_ascii=False), encoding="utf-8")
+
+    result = export_mtool_json(
+        working.parent,
+        str(working),
+        overwrite_original=True,
+    )
+
+    assert result["overwrote_original"] is True
+    assert result["export_path"] == str(original)
+    assert json.loads(original.read_text(encoding="utf-8")) == {"こんにちは": "你好"}
+    assert json.loads(Path(f"{original}.bak").read_text(encoding="utf-8")) == {"こんにちは": "こんにちは"}
+    assert json.loads(working.read_text(encoding="utf-8")) == {"こんにちは": "こんにちは"}
+    assert load_session_metadata(working)["original_path"] == str(original)
+    assert translation_output_state(str(working))["dirty"] is False
+
+    output.write_text(json.dumps({"こんにちは": "您好"}, ensure_ascii=False), encoding="utf-8")
+    assert translation_output_state(str(working))["dirty"] is True
+    export_mtool_json(working.parent, str(working), overwrite_original=True)
+    assert json.loads(original.read_text(encoding="utf-8")) == {"こんにちは": "您好"}
+    assert json.loads(Path(f"{original}.bak").read_text(encoding="utf-8")) == {"こんにちは": "こんにちは"}
+    assert translation_output_state(str(working))["dirty"] is False
+
+
+def test_export_refuses_to_overwrite_an_original_changed_outside_the_app(tmp_path):
+    original = tmp_path / "ManualTransFile.json"
+    original_content = json.dumps({"こんにちは": "こんにちは"}, ensure_ascii=False).encode("utf-8")
+    original.write_bytes(original_content)
+    upload_root = tmp_path / "uploads"
+    upload_root.mkdir()
+    imported = save_mtool_upload(
+        upload_root,
+        original.name,
+        original_content,
+        original_path=str(original),
+    )
+    working = Path(imported["saved_path"])
+    Path(default_output_path(str(working))).write_text(
+        json.dumps({"こんにちは": "你好"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    original.write_text(json.dumps({"こんにちは": "外部変更"}, ensure_ascii=False), encoding="utf-8")
+
+    try:
+        export_mtool_json(working.parent, str(working), overwrite_original=True)
+        raise AssertionError("Expected the changed source file to be rejected")
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert "changed after import" in str(exc.detail)
+    assert not Path(f"{original}.bak").exists()
+
+
+def test_desktop_source_registry_uses_one_time_tokens_and_validates_content(tmp_path):
+    source = tmp_path / "drag.json"
+    content = b'{"a":"a"}'
+    source.write_bytes(content)
+    registry = DesktopSourceRegistry(ttl_seconds=10)
+
+    registered = registry.register(str(source))
+    matched = registry.wait_for_match(source.name, len(content), timeout=0)
+
+    assert matched == registered
+    consumed = registry.consume(registered.token)
+    assert consumed == registered
+    assert validate_desktop_source(consumed, source.name, content) == str(source.resolve())
+    assert registry.consume(registered.token) is None
+
+
+def test_import_route_associates_a_trusted_dragged_source_path(tmp_path):
+    original = tmp_path / "original" / "ManualTransFile.json"
+    original.parent.mkdir()
+    content = json.dumps({"こんにちは": "こんにちは"}, ensure_ascii=False).encode("utf-8")
+    original.write_bytes(content)
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    desktop_source_registry.clear()
+    token = desktop_source_registry.register(str(original)).token
+    api = FastAPI()
+    api.include_router(
+        create_files_router(
+            upload_dir=uploads,
+            tasks={},
+            get_task_for_file=lambda _path: None,
+            ai_review_tasks={},
+        )
+    )
+
+    response = TestClient(api).post(
+        "/api/import",
+        files={"file": (original.name, content, "application/json")},
+        data={"source_token": token},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["original_path"] == str(original.resolve())
+    assert load_session_metadata(payload["saved_path"])["original_path"] == str(original.resolve())
+    assert desktop_source_registry.consume(token) is None
+
+
+def test_local_import_route_reads_only_a_registered_desktop_source(tmp_path):
+    original = tmp_path / "selected.json"
+    original.write_text(json.dumps({"一": "一"}, ensure_ascii=False), encoding="utf-8")
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    desktop_source_registry.clear()
+    token = desktop_source_registry.register(str(original)).token
+    api = FastAPI()
+    api.include_router(
+        create_files_router(
+            upload_dir=uploads,
+            tasks={},
+            get_task_for_file=lambda _path: None,
+            ai_review_tasks={},
+        )
+    )
+    client = TestClient(api)
+
+    response = client.post("/api/import-local", json={"source_token": token})
+    repeated = client.post("/api/import-local", json={"source_token": token})
+
+    assert response.status_code == 200
+    assert response.json()["original_path"] == str(original.resolve())
+    assert repeated.status_code == 400
 
 
 def test_desktop_save_dialog_accepts_string_and_sequence_results(monkeypatch):

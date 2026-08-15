@@ -19,7 +19,7 @@ from translation.batching import (
 )
 from translation.output import write_json_items
 from translation.protection import protect_symbols
-from translation.quality import new_issues, translation_issues
+from translation.quality import apply_source_conditioned_fixes, new_issues, translation_issues
 from translation.workflow.composition import finalize_mtool_compositions
 
 
@@ -240,6 +240,7 @@ def _parent_repair_child_payload(
     """Validate an extracted parent line as an ordinary child translation."""
     source = str(candidate["source"])
     translated = pipeline.glossary.apply_post_translation(source, str(translated))
+    translated = apply_source_conditioned_fixes(source, translated)
     issues = translation_issues(
         source,
         translated,

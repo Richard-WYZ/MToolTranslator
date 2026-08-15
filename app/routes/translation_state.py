@@ -8,7 +8,12 @@ from typing import Any, MutableMapping
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas import CleanupRequest, RecoveryResumeRequest
-from app.services.files import require_mtool_json_file, translated_path, translation_output_state
+from app.services.files import (
+    require_mtool_json_file,
+    session_metadata_path,
+    translated_path,
+    translation_output_state,
+)
 from app.services.translation_task_service import start_translation_task, task_for_file
 from app.services.translation_tasks import BatchTranslationManager, TranslationTask
 from translation import checkpoint
@@ -56,6 +61,10 @@ def cleanup_translation_state(
     if os.path.exists(ai_review_path):
         os.remove(ai_review_path)
         deleted.append(ai_review_path)
+    metadata_path = str(session_metadata_path(req.file_path))
+    if os.path.exists(metadata_path):
+        os.remove(metadata_path)
+        deleted.append(metadata_path)
     if task:
         task.has_unexported_result = False
         task.status = "cancelled"

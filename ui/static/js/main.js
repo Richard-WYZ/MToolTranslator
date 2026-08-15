@@ -16,14 +16,27 @@ function bindEvents() {
     el("btn-refresh-history").addEventListener("click", loadHistory);
 
     var zone = el("upload-zone");
-    zone.addEventListener("click", function () { if (!zone.classList.contains("disabled")) el("file-input").click(); });
-    zone.addEventListener("keydown", function (event) { if ((event.key === "Enter" || event.key === " ") && !zone.classList.contains("disabled")) el("file-input").click(); });
+    zone.addEventListener("click", function () { if (!zone.classList.contains("disabled")) chooseSourceFile(); });
+    zone.addEventListener("keydown", function (event) { if ((event.key === "Enter" || event.key === " ") && !zone.classList.contains("disabled")) chooseSourceFile(); });
     zone.addEventListener("dragover", function (event) { event.preventDefault(); zone.classList.add("dragover"); });
     zone.addEventListener("dragleave", function () { zone.classList.remove("dragover"); });
-    zone.addEventListener("drop", function (event) {
+    zone.addEventListener("drop", async function (event) {
         event.preventDefault();
         zone.classList.remove("dragover");
-        if (!zone.classList.contains("disabled")) handleFile(event.dataTransfer.files[0]);
+        if (zone.classList.contains("disabled")) return;
+        var file = event.dataTransfer.files[0];
+        if (!file) return;
+        var sourceToken = "";
+        var bridge = window.pywebview && window.pywebview.api;
+        if (bridge && typeof bridge.consume_dropped_file_path === "function") {
+            try {
+                var dropped = await bridge.consume_dropped_file_path(file.name, file.size);
+                sourceToken = dropped && dropped.token ? dropped.token : "";
+            } catch (error) {
+                sourceToken = "";
+            }
+        }
+        await handleFile(file, sourceToken);
     });
     el("file-input").addEventListener("change", function () { handleFile(this.files[0]); });
     el("btn-remove-file").addEventListener("click", async function () { if (await ensureCanReplaceFile()) resetFile(); });

@@ -81,6 +81,7 @@ function renderHistory(checkpoints, tasks) {
 async function adoptHistoryFile(path) {
     state.filePath = path;
     state.sourceFilePath = path;
+    state.originalFilePath = "";
     state.fileName = path.split(/[\\/]/).pop();
     state.sessionId = path.split(/[\\/]/).slice(-2, -1)[0] || "";
     try {

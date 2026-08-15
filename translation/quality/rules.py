@@ -14,7 +14,7 @@ from translation.protection.runtime import (
 )
 
 
-QUALITY_RULES_VERSION = "quality-rules-v8-evidence-based-refusal"
+QUALITY_RULES_VERSION = "quality-rules-v10-small-tsu-localization"
 FIXED_TRANSLATIONS: dict[str, str] = {
     "continue": "继续",
     "new game": "新游戏",
@@ -130,11 +130,20 @@ CODE_STRING_CONDITION_FRAGMENT_RE = re.compile(
 )
 CODE_COMMENT_RE = re.compile(r"^\s*(?://|/\*|\*)")
 SERIALIZED_KEY_RE = re.compile(r"(?<![A-Za-z0-9_$])[A-Za-z_$][A-Za-z0-9_$]*\s*:")
-# Match lexical kana while allowing non-lexical small tsu/voicing marks in
-# Chinese-localized vocalizations. Keep this aligned with refusal.has_japanese.
+# Match Japanese kana including small tsu. Decorative long/voicing marks remain
+# excluded when they occur without lexical kana. Keep this aligned with
+# refusal.has_japanese.
 KANA_RE = re.compile(
-    "[\\u3041-\\u3062\\u3064-\\u3098\\u309d-\\u309f"
-    "\\u30a1-\\u30c2\\u30c4-\\u30fa\\u30fd-\\u30ff]"
+    "[\\u3041-\\u3098\\u309d-\\u309f"
+    "\\u30a1-\\u30fa\\u30fd-\\u30ff]"
+)
+SMALL_TSU_RE = re.compile("[\\u3063\\u30c3]+")
+LEADING_MEMBER_CALL_FRAGMENT_RE = re.compile(
+    r"^\s*\.[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*"
+    r"\s*\([^\r\n]*(?:\)\s*;?)?\s*$"
+)
+COMPACT_CHARACTER_RANGE_RE = re.compile(
+    r"^\[?(?:[^\-\s\[\]]-[^\-\s\[\]]){3,}\]?$"
 )
 from translation.quality.refusal import has_japanese
 HAN_RE = re.compile("[\u3400-\u4dbf\u4e00-\u9fff]")
@@ -294,6 +303,8 @@ def _looks_like_source_code_or_serialized_fragment(text: str) -> bool:
         return False
     if (
         CALLABLE_STATEMENT_RE.fullmatch(stripped)
+        or LEADING_MEMBER_CALL_FRAGMENT_RE.fullmatch(stripped)
+        or COMPACT_CHARACTER_RANGE_RE.fullmatch(stripped)
         or CODE_ASSIGNMENT_RE.fullmatch(stripped)
         or CODE_CONTROL_FRAGMENT_RE.fullmatch(stripped)
         or CODE_CONCAT_FRAGMENT_RE.fullmatch(stripped)
@@ -321,6 +332,14 @@ def _is_nonlexical_vocalization(text: str) -> bool:
     return meaningful
 
 
+def normalize_small_tsu_residue(text: str) -> str:
+    """Remove Japanese small tsu from localized text, but keep symbol-only sounds."""
+    value = str(text or "")
+    if not SMALL_TSU_RE.search(value) or _is_nonlexical_vocalization(value):
+        return value
+    return SMALL_TSU_RE.sub("", value)
+
+
 def apply_fixed_translations(text: str) -> str:
     if not text:
         return text
@@ -335,9 +354,11 @@ def apply_fixed_translations(text: str) -> str:
 
 
 def apply_source_conditioned_fixes(source: str, translated: str) -> str:
-    if not source or not translated:
+    if not translated:
         return translated
-    result = translated
+    result = normalize_small_tsu_residue(translated)
+    if not source:
+        return result
     if "メスガキ" in source:
         result = result.replace("女童", "小恶女")
         result = result.replace("幼女", "小恶女")
@@ -629,6 +650,7 @@ __all__ = [
     "exact_fixed_translation",
     "exact_japanese_menu_translation",
     "exact_nonlinguistic_translation",
+    "normalize_small_tsu_residue",
     "suspicious_artifacts",
     "translation_issues",
 ]

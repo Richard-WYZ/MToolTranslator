@@ -25,10 +25,14 @@ async function startAIReview(scope) {
     try {
         var preflight = await API.post("/review/ai/preflight", payload);
         if (!preflight.counts || !preflight.counts.total) { toast("当前范围没有可复核条目", "error"); return; }
-        var message = "将 AI 复核 " + preflight.counts.total + " 条译文（必须复核 " + preflight.counts.required
-            + "，建议复核 " + preflight.counts.advisory + "）。\n\n主模型：" + modelLabel(preflight.models.review)
+        var modelEntries = Number(preflight.counts.model_entries || 0);
+        var systemCorrections = Number(preflight.counts.system_corrections || 0);
+        var message = "将处理 " + preflight.counts.total + " 条（模型复核 " + modelEntries
+            + "，系统确定性校正 " + systemCorrections + "；当前范围必须复核 " + preflight.counts.required
+            + "，建议复核 " + preflight.counts.advisory + "）。"
+            + (modelEntries ? "\n\n主模型：" + modelLabel(preflight.models.review)
             + "\n验证模型：" + modelLabel(preflight.models.verifier)
-            + (preflight.counts.sensitive ? "\n敏感内容：" + modelLabel(preflight.models.sensitive) : "")
+            + (preflight.counts.sensitive ? "\n敏感内容：" + modelLabel(preflight.models.sensitive) : "") : "")
             + "\n预计请求：约 " + preflight.estimated_requests
             + "\n预计 Token：约 " + Number(preflight.estimated_tokens || 0).toLocaleString("zh-CN")
             + "\n\n只会自动应用通过硬性校验和第二模型确认的结果。是否开始？";
@@ -101,6 +105,7 @@ function renderAIReviewProgress(task) {
     el("ai-review-progress-percent").textContent = percent.toFixed(percent % 1 ? 1 : 0) + "%";
     var counts = task.counts || {}, usage = task.token_usage || {};
     el("ai-review-summary").innerHTML = [
+        '<span class="good">系统校正 ' + Number(counts.reclassified || 0) + "</span>",
         '<span class="good">已修复 ' + Number(counts.fixed || 0) + "</span>",
         '<span class="good">确认原译文 ' + Number(counts.confirmed || 0) + "</span>",
         '<span class="warn">仍无法确认 ' + Number(counts.unresolved || 0) + "</span>",

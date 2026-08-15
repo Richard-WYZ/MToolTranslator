@@ -103,6 +103,11 @@ class ExportRequest(BaseModel):
     column_mappings: List[ColumnMapping] = []
     output_dir: Optional[str] = None
     output_path: Optional[str] = None
+    overwrite_original: bool = False
+
+
+class DesktopImportRequest(BaseModel):
+    source_token: str
 
 
 class ReviewSaveRequest(BaseModel):
@@ -120,7 +125,7 @@ class ReviewBatchSaveRequest(BaseModel):
 
 class AIReviewRequest(BaseModel):
     file_path: str
-    scope: Literal["required", "all", "selected", "filter"] = "all"
+    scope: Literal["required", "all", "selected", "filter"] = "required"
     rows: List[int] = Field(default_factory=list)
     filter: str = "issues"
     review_model: Optional[str] = "auto"

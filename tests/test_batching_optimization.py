@@ -1968,6 +1968,27 @@ def test_runtime_protection_recovers_literal_mixed_line_breaks_from_model_output
     assert validate_runtime_tokens(mismatched, tokens, protected)[0]["type"] == "runtime_token_preservation"
 
 
+def test_resource_protection_does_not_swallow_surrounding_japanese():
+    from translation.protection import protect_runtime_tokens, restore_runtime_tokens
+
+    sources = [
+        "このモードでは、Map.json / CommonEvent.jsonの形式へフォーマットされません。",
+        "テストモードです。test/basic.txtを読み込み、data/Map001.jsonに出力します。",
+    ]
+
+    first_protected, first_tokens = protect_runtime_tokens(sources[0])
+    second_protected, second_tokens = protect_runtime_tokens(sources[1])
+
+    assert first_protected.startswith("このモードでは、")
+    assert first_protected.endswith("の形式へフォーマットされません。")
+    assert [token.value for token in first_tokens] == ["Map.json", "CommonEvent.json"]
+    assert second_protected.startswith("テストモードです。")
+    assert second_protected.endswith("を読み込み、__KEEP_1__に出力します。")
+    assert [token.value for token in second_tokens] == ["test/basic.txt", "data/Map001.json"]
+    assert restore_runtime_tokens(first_protected, first_tokens) == sources[0]
+    assert restore_runtime_tokens(second_protected, second_tokens) == sources[1]
+
+
 def test_model_source_normalizes_generic_japanese_numeric_ordinals_before_protection():
     from translation.batching import prepare_model_candidate
     from translation.classification import normalize_model_source
@@ -2639,14 +2660,36 @@ def test_quality_rejects_punctuation_only_translation():
 
 def test_quality_preserves_nonlexical_small_kana_vocalizations():
     from translation.classification import deterministic_translation
-    from translation.quality import translation_issues
+    from translation.quality import apply_source_conditioned_fixes, translation_issues
 
     source = "\u300c\uff5e\uff5e\uff5e\uff5e\uff5e\uff5e\uff5e\u3063\uff01\u300d"
 
     assert deterministic_translation(source) == source
+    assert apply_source_conditioned_fixes(source, source) == source
     assert translation_issues(source, source) == []
     assert translation_issues(source, "\u300c\uff5e\uff5e\uff5e\uff5e\uff5e\uff5e\uff5e\uff01\u300d") == []
     assert translation_issues("\u300c\uff5e\uff5e\uff5e\u3063\u203c\u300d", "\u300c\uff5e\uff5e\uff5e\uff01\uff01\u300d") == []
+
+
+def test_batch_finish_removes_small_tsu_from_otherwise_chinese_output():
+    from translation.batching import finish_batch_translation, prepare_model_candidate
+    from translation.quality import status_for_output
+    from translation.terminology import Glossary
+
+    source = "あ……っ、あ……っ！"
+    candidate = prepare_model_candidate(batch_i=0, idx=0, source=source)
+    translated, status, issues = finish_batch_translation(
+        candidate,
+        "啊……っ、啊……っ！",
+        glossary=Glossary.in_memory(),
+        restore_func=lambda original, prepared, protected, text, *args: (text, [], []),
+        pollution_issues_func=lambda source_text, target_text: [],
+        status_for_output_func=status_for_output,
+    )
+
+    assert translated == "啊……、啊……！"
+    assert status == "translated"
+    assert issues == []
 
 
 def test_refusal_check_accepts_short_chinese_label_with_source_latin_token():

@@ -26,15 +26,19 @@ var API = {
     post: function (path, body) { return this.request("POST", path, body); },
     put: function (path, body) { return this.request("PUT", path, body); },
     delete: function (path) { return this.request("DELETE", path); },
-    upload: async function (file) {
+    upload: async function (file, sourceToken) {
         var data = new FormData();
         data.append("file", file);
+        if (sourceToken) data.append("source_token", sourceToken);
         var response = await fetch("/api/import", { method: "POST", body: data });
         if (!response.ok) {
             var payload = await response.json().catch(function () { return {}; });
             throw new Error(payload.detail || "文件导入失败");
         }
         return response.json();
+    },
+    importLocal: function (sourceToken) {
+        return this.post("/import-local", { source_token: sourceToken });
     },
 };
 
@@ -52,6 +56,7 @@ var state = {
     runtime: null,
     filePath: "",
     sourceFilePath: "",
+    originalFilePath: "",
     fileName: "",
     fileSize: 0,
     sessionId: "",

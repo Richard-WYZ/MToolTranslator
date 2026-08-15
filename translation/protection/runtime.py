@@ -17,7 +17,16 @@ KEY_NAMES = {
 AMBIGUOUS_KEY_NAMES = {"start", "select"}
 
 VARIABLE_RE = re.compile(
-    r"(%[A-Za-z0-9_]+%|\{[^{}\n]{1,40}\}|\\\\[A-Za-z]+\[[^\]]+\]|<[^>\n]{1,80}>|https?://\S+|\S+\.(?:png|jpg|jpeg|webp|gif|ogg|mp3|wav|dat|json|csv))"
+    r"(%[A-Za-z0-9_]+%|\{[^{}\n]{1,40}\}|\\\\[A-Za-z]+\[[^\]]+\]|<[^>\n]{1,80}>|https?://\S+)"
+)
+RESOURCE_REFERENCE_RE = re.compile(
+    r"(?<![A-Za-z0-9_\u3040-\u30ff\u3400-\u9fff])"
+    r"(?:[A-Za-z]:[\\/]|\.{1,2}[\\/])?"
+    r"(?:[A-Za-z0-9_$@+.\-\u3040-\u30ff\u3400-\u9fff]+[\\/])*"
+    r"[A-Za-z0-9_$@+\-\u3040-\u30ff\u3400-\u9fff]+"
+    r"\.(?:png|jpg|jpeg|webp|gif|ogg|mp3|wav|dat|json|csv|js|css|txt)"
+    r"(?![A-Za-z0-9_])",
+    re.IGNORECASE,
 )
 CODE_EXPRESSION_RE = re.compile(r"\b[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*\(\)?)+")
 CODE_IDENTIFIER_RE = re.compile(
@@ -76,6 +85,7 @@ def protect_runtime_tokens(text: str) -> tuple[str, list[ProtectedToken]]:
         return token
 
     protected = VARIABLE_RE.sub(lambda m: add_token(m.group(0)), text)
+    protected = RESOURCE_REFERENCE_RE.sub(lambda m: add_token(m.group(0)), protected)
     protected = CODE_EXPRESSION_RE.sub(lambda m: add_token(m.group(0)), protected)
     protected = CODE_IDENTIFIER_RE.sub(lambda m: add_token(m.group(0)), protected)
     protected = LINE_BREAK_RE.sub(lambda m: add_token(m.group(0)), protected)

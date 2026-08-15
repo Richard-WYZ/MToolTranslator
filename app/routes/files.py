@@ -4,10 +4,11 @@ import os
 from pathlib import Path
 from typing import Callable, Mapping, Protocol
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
-from app.schemas import ExportRequest
+from app.schemas import DesktopImportRequest, ExportRequest
+from app.services.desktop_sources import desktop_source_registry, validate_desktop_source
 from app.services.files import export_mtool_json, preview_mtool_json, save_mtool_upload, translation_output_state
 
 
@@ -25,16 +26,51 @@ def create_router(
 ) -> APIRouter:
     router = APIRouter()
 
-    @router.post("/api/import")
-    async def import_file(file: UploadFile = File(...)):
-        """Upload one MTool-style JSON file."""
+    def ensure_import_available() -> None:
         if any(task.status in ("running", "paused", "stopping") for task in tasks.values()) or any(
             task.status in {"preparing", "reviewing", "verifying", "applying", "finalizing", "stopping"}
             for task in (ai_review_tasks or {}).values()
         ):
             raise HTTPException(status_code=409, detail="Cannot import or switch files while translation is running")
+
+    def desktop_original_path(source_token: str, filename: str, content: bytes) -> str | None:
+        if not source_token:
+            return None
+        record = desktop_source_registry.consume(source_token)
+        if not record:
+            raise HTTPException(status_code=400, detail="Desktop source token is invalid or expired")
+        try:
+            return validate_desktop_source(record, filename, content)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @router.post("/api/import")
+    async def import_file(file: UploadFile = File(...), source_token: str = Form("")):
+        """Upload one MTool-style JSON file."""
+        ensure_import_available()
         filename = file.filename or "unknown"
-        return save_mtool_upload(upload_dir, filename, await file.read())
+        content = await file.read()
+        original_path = desktop_original_path(source_token, filename, content)
+        return save_mtool_upload(upload_dir, filename, content, original_path=original_path)
+
+    @router.post("/api/import-local")
+    def import_local_file(req: DesktopImportRequest):
+        """Import a file selected by the trusted desktop bridge."""
+        ensure_import_available()
+        record = desktop_source_registry.consume(req.source_token)
+        if not record:
+            raise HTTPException(status_code=400, detail="Desktop source token is invalid or expired")
+        try:
+            content = Path(record.path).read_bytes()
+            original_path = validate_desktop_source(record, record.filename, content)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return save_mtool_upload(
+            upload_dir,
+            record.filename,
+            content,
+            original_path=original_path,
+        )
 
     @router.get("/api/preview")
     def preview_file(path: str = Query(...), limit: int = Query(10)):
@@ -60,6 +96,7 @@ def create_router(
             source_path,
             output_dir=req.output_dir,
             output_path=req.output_path,
+            overwrite_original=req.overwrite_original,
         )
 
         task = get_task_for_file(req.file_path)
@@ -87,11 +124,12 @@ def create_router(
         }
 
     @router.get("/api/download")
-    def download_file(path: str = Query(...)):
+    def download_file(path: str = Query(...), filename: str | None = Query(None)):
         """Download a file by its path."""
         if not os.path.isfile(path):
             raise HTTPException(status_code=404, detail=f"File does not exist: {path}")
-        return FileResponse(path, filename=Path(path).name, media_type="application/octet-stream")
+        download_name = Path(filename).name if filename else Path(path).name
+        return FileResponse(path, filename=download_name, media_type="application/octet-stream")
 
     return router
 

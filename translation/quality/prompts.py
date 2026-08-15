@@ -9,6 +9,7 @@ def quality_prompt_rules() -> str:
         "Render Japanese honorifics contextually in Chinese; do not silently discard them or apply a fixed global mapping. "
         "Preserve identified kanji proper names exactly unless a confirmed term explicitly overrides them. "
         "The final output should be Chinese. Do not leave ordinary English words in the translation. "
+        "Omit or localize Japanese small っ/ッ; never copy them into otherwise Chinese output. "
         "Preserve runtime tokens, control codes, tags, variables, URLs, file names, and button/key labels exactly. "
         "Translate UI/system words such as Continue, Save, Load, Inventory, Mission, and Battle into Chinese."
     )

@@ -18,6 +18,7 @@ from translation.review.ai import (
     AIReviewCancelled,
     AIReviewModels,
     begin_ai_review_session,
+    build_deterministic_reclassification_records,
     estimate_review_usage,
     get_ai_review_session,
     load_ai_review_store,
@@ -42,6 +43,7 @@ class AIReviewTask:
         models: AIReviewModels,
         auto_apply: bool = True,
         translator: TranslateFunc | None = None,
+        reclassification_records: list[dict[str, Any]] | None = None,
     ):
         self.task_id = task_id
         self.file_path = os.path.abspath(file_path)
@@ -49,13 +51,24 @@ class AIReviewTask:
         self.models = models
         self.auto_apply = bool(auto_apply)
         self.translator = translator
+        self.reclassification_records = [dict(record) for record in reclassification_records or []]
         self.status = "idle"
         self.phase = "preparing"
         self.current = 0
-        self.total = len(items)
+        reclassified_rows = {int(record["row"]) for record in self.reclassification_records}
+        self.total = len(self.reclassification_records) + sum(
+            int(item.get("row", -1)) not in reclassified_rows for item in items
+        )
         self.percentage = 0.0
         self.error = ""
-        self.counts = {"fixed": 0, "confirmed": 0, "unresolved": 0, "conflict": 0, "applied": 0}
+        self.counts = {
+            "fixed": 0,
+            "confirmed": 0,
+            "reclassified": 0,
+            "unresolved": 0,
+            "conflict": 0,
+            "applied": 0,
+        }
         self.token_usage: dict[str, Any] = {}
         self.started_at = 0.0
         self.finished_at = 0.0
@@ -146,6 +159,7 @@ class AIReviewTask:
                 cancelled=self._cancel_event.is_set,
                 translator=self.translator,
                 auto_apply=self.auto_apply,
+                reclassification_records=self.reclassification_records,
             )
             from app.services.review import invalidate_review_cache
 
@@ -154,8 +168,8 @@ class AIReviewTask:
                 self.counts = dict(result.get("counts", self.counts))
                 self.status = "completed"
                 self.phase = "completed"
-                self.current = len(self.items)
-                self.total = len(self.items)
+                self.total = int(result.get("total", self.total) or 0)
+                self.current = self.total
                 self.percentage = 100.0
                 self.finished_at = time.time()
                 self.updated_at = self.finished_at
@@ -253,6 +267,15 @@ def build_ai_review_items(
     return items
 
 
+def build_reclassification_records(file_path: str) -> list[dict[str, Any]]:
+    ctx = load_review_context(file_path)
+    return build_deterministic_reclassification_records(
+        list(ctx["source_texts"]),
+        list(ctx["translated_texts"]),
+        dict(ctx["cp_entries"]),
+    )
+
+
 def ai_review_preflight(
     *,
     file_path: str,
@@ -267,22 +290,37 @@ def ai_review_preflight(
     if not Path(output_path).is_file():
         raise FileNotFoundError("Translated output does not exist; finish translation first")
     items = build_ai_review_items(file_path, scope=scope, rows=rows, filter_name=filter_name)
-    needs_sensitive = any(item.get("sensitive") for item in items)
-    models = resolve_ai_review_models(
-        review_model=review_model,
-        verifier_model=verifier_model,
-        sensitive_model=sensitive_model,
-        needs_sensitive=needs_sensitive,
+    reclassification_records = build_reclassification_records(file_path)
+    reclassified_rows = {int(record["row"]) for record in reclassification_records}
+    model_items = [item for item in items if int(item.get("row", -1)) not in reclassified_rows]
+    needs_sensitive = any(item.get("sensitive") for item in model_items)
+    models = (
+        resolve_ai_review_models(
+            review_model=review_model,
+            verifier_model=verifier_model,
+            sensitive_model=sensitive_model,
+            needs_sensitive=needs_sensitive,
+        )
+        if model_items
+        else AIReviewModels(
+            "deterministic:classification",
+            "deterministic:classification",
+            "deterministic:classification",
+            "deterministic:classification",
+        )
     )
-    estimate = estimate_review_usage(items)
+    estimate = estimate_review_usage(model_items)
     return {
-        "ok": bool(items),
+        "ok": bool(model_items or reclassification_records),
         "scope": scope,
         "counts": {
-            "total": len(items),
+            "total": len(model_items) + len(reclassification_records),
+            "requested": len(items),
+            "model_entries": len(model_items),
+            "system_corrections": len(reclassification_records),
             "required": sum(item.get("status") == "review_required" for item in items),
             "advisory": sum(item.get("status") == "translated_needs_review" for item in items),
-            "sensitive": sum(bool(item.get("sensitive")) for item in items),
+            "sensitive": sum(bool(item.get("sensitive")) for item in model_items),
         },
         "models": models.as_dict(),
         **estimate,
@@ -348,13 +386,25 @@ def start_ai_review_task(
     if existing:
         raise RuntimeError(f"An AI review task is already active for this file: {existing.task_id}")
     items = build_ai_review_items(file_path, scope=scope, rows=rows, filter_name=filter_name)
-    if not items:
+    reclassification_records = build_reclassification_records(file_path)
+    if not items and not reclassification_records:
         raise ValueError("No entries match the selected AI review scope")
-    models = resolve_ai_review_models(
-        review_model=review_model,
-        verifier_model=verifier_model,
-        sensitive_model=sensitive_model,
-        needs_sensitive=any(item.get("sensitive") for item in items),
+    reclassified_rows = {int(record["row"]) for record in reclassification_records}
+    model_items = [item for item in items if int(item.get("row", -1)) not in reclassified_rows]
+    models = (
+        resolve_ai_review_models(
+            review_model=review_model,
+            verifier_model=verifier_model,
+            sensitive_model=sensitive_model,
+            needs_sensitive=any(item.get("sensitive") for item in model_items),
+        )
+        if model_items
+        else AIReviewModels(
+            "deterministic:classification",
+            "deterministic:classification",
+            "deterministic:classification",
+            "deterministic:classification",
+        )
     )
     task = AIReviewTask(
         task_id=uuid.uuid4().hex[:12],
@@ -363,6 +413,7 @@ def start_ai_review_task(
         models=models,
         auto_apply=auto_apply,
         translator=translator,
+        reclassification_records=reclassification_records,
     )
     registry[task.task_id] = task
     task.start()
@@ -399,7 +450,14 @@ def persisted_ai_review_progress(file_path: str) -> dict[str, Any] | None:
     request = session.get("request", {}) or {}
     items = request.get("items", []) or []
     records = session.get("records", []) or []
-    counts = {"fixed": 0, "confirmed": 0, "unresolved": 0, "conflict": 0, "applied": int(session.get("applied", 0) or 0)}
+    counts = {
+        "fixed": 0,
+        "confirmed": 0,
+        "reclassified": 0,
+        "unresolved": 0,
+        "conflict": 0,
+        "applied": int(session.get("applied", 0) or 0),
+    }
     for record in records:
         if not isinstance(record, dict):
             continue
@@ -409,7 +467,7 @@ def persisted_ai_review_progress(file_path: str) -> dict[str, Any] | None:
     stored_status = str(session.get("status", ""))
     interrupted = stored_status in AI_REVIEW_ACTIVE_STATUSES | {"stopping"}
     status = "interrupted" if interrupted else "completed" if stored_status == "candidate_ready" else stored_status or "idle"
-    total = len(items) or len(records)
+    total = max(len(items), len(records))
     current = total if status == "completed" else 0
     return {
         "task_id": str(session.get("task_id", "")),
@@ -462,6 +520,7 @@ def resume_ai_review_task(
         ),
         auto_apply=bool(request.get("auto_apply", True)),
         translator=translator,
+        reclassification_records=build_reclassification_records(file_path),
     )
     registry[task_id] = task
     task.start()
@@ -525,6 +584,7 @@ __all__ = [
     "active_ai_review_for_file",
     "ai_review_preflight",
     "build_ai_review_items",
+    "build_reclassification_records",
     "latest_ai_review_for_file",
     "persisted_ai_review_progress",
     "resume_ai_review_task",

@@ -3188,6 +3188,20 @@ def test_japanese_source_code_and_serialized_fragments_are_preserved_unchanged()
     assert deterministic_translation("入口の前で金髪女性に声を掛けられる") == ""
 
 
+def test_leading_member_calls_and_compact_character_ranges_are_preserved():
+    from translation.classification import deterministic_translation
+
+    sources = [
+        ".setAnimation(0, '能力変化セラ1');",
+        ".setAnimation(1, '目_しいたけ",
+        "゠-ヿ぀-ゟ々-〆ム-鿏",
+        "[ぁ-んァ-ヶ一-龠]",
+    ]
+
+    assert [deterministic_translation(source) for source in sources] == sources
+    assert deterministic_translation("速度-普通") == ""
+
+
 def test_decorative_katakana_marks_do_not_count_as_japanese_residue():
     from translation.quality import translation_issues
     from translation.quality import has_japanese, is_refusal
@@ -3198,18 +3212,35 @@ def test_decorative_katakana_marks_do_not_count_as_japanese_residue():
     assert not any(issue["type"] == "untranslated_japanese" for issue in translation_issues("", translated))
 
 
-def test_small_tsu_vocalizations_do_not_hide_lexical_japanese_residue():
-    from translation.quality import has_japanese, is_refusal, translation_issues
+def test_small_tsu_in_chinese_output_is_detected_and_can_be_normalized():
+    from translation.quality import (
+        apply_source_conditioned_fixes,
+        has_japanese,
+        is_refusal,
+        translation_issues,
+    )
 
     localized_vocalization = "「不要っ、啊啊啊ッッ！！」"
     lexical_residue = "「喜欢、的说っっ、すきっ」"
 
-    assert not has_japanese(localized_vocalization)
+    assert has_japanese(localized_vocalization)
     assert not is_refusal(localized_vocalization, original="「やめてっ」")
-    assert not any(
-        issue["type"] in {"model_refusal", "untranslated_japanese"}
+    assert any(
+        issue["type"] == "untranslated_japanese"
         for issue in translation_issues("「やめてっ」", localized_vocalization)
     )
+    assert apply_source_conditioned_fixes(
+        "「やめてっ」",
+        localized_vocalization,
+    ) == "「不要、啊啊啊！！」"
+    assert apply_source_conditioned_fixes(
+        "あ……っ、あ……っ！",
+        "啊……っ、啊……っ！",
+    ) == "啊……、啊……！"
+    assert apply_source_conditioned_fixes(
+        "や、やだ……っ！",
+        "不、不要啊……っ！",
+    ) == "不、不要啊……！"
     assert has_japanese(lexical_residue)
     assert any(
         issue["type"] == "untranslated_japanese"

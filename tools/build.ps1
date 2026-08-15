@@ -35,9 +35,10 @@ try {
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
-    if (-not (Test-Path -LiteralPath $PortableEnvPath)) {
-        Set-Content -LiteralPath $PortableEnvPath -Value $PortableEnvTemplate -Encoding utf8
-    }
+    # A previous portable run may have saved local credentials beside the EXE.
+    # Release builds must always replace that file with the credential-empty
+    # template instead of reusing local state.
+    Set-Content -LiteralPath $PortableEnvPath -Value $PortableEnvTemplate -Encoding utf8
     exit 0
 }
 finally {
