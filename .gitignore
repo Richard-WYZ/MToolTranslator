@@ -36,6 +36,7 @@ Thumbs.db
 *.log
 *.sqlite3
 .checkpoints/
+.codex_tools/
 .agents/
 .omo/
 output/
