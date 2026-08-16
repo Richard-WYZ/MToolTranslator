@@ -65,6 +65,7 @@ def create_router(
                 verifier_model=req.verifier_model,
                 sensitive_model=req.sensitive_model,
                 auto_apply=req.auto_apply,
+                auto_retry=req.auto_retry,
             )
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=409 if isinstance(exc, RuntimeError) else 400, detail=str(exc)) from exc

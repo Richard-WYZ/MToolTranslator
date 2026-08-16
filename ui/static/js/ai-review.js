@@ -10,6 +10,7 @@ function aiReviewRequest(scope, rows) {
         review_model: el("ai-review-model").value || "auto",
         verifier_model: el("ai-verifier-model").value || "auto",
         sensitive_model: el("ai-sensitive-model").value || "auto", auto_apply: true,
+        auto_retry: el("ai-auto-retry").checked,
     };
 }
 
@@ -25,18 +26,6 @@ async function startAIReview(scope) {
     try {
         var preflight = await API.post("/review/ai/preflight", payload);
         if (!preflight.counts || !preflight.counts.total) { toast("当前范围没有可复核条目", "error"); return; }
-        var modelEntries = Number(preflight.counts.model_entries || 0);
-        var systemCorrections = Number(preflight.counts.system_corrections || 0);
-        var message = "将处理 " + preflight.counts.total + " 条（模型复核 " + modelEntries
-            + "，系统确定性校正 " + systemCorrections + "；当前范围必须复核 " + preflight.counts.required
-            + "，建议复核 " + preflight.counts.advisory + "）。"
-            + (modelEntries ? "\n\n主模型：" + modelLabel(preflight.models.review)
-            + "\n验证模型：" + modelLabel(preflight.models.verifier)
-            + (preflight.counts.sensitive ? "\n敏感内容：" + modelLabel(preflight.models.sensitive) : "") : "")
-            + "\n预计请求：约 " + preflight.estimated_requests
-            + "\n预计 Token：约 " + Number(preflight.estimated_tokens || 0).toLocaleString("zh-CN")
-            + "\n\n只会自动应用通过硬性校验和第二模型确认的结果。是否开始？";
-        if (!window.confirm(message)) return;
         var task = await API.post("/review/ai/start", payload);
         state.review.aiTaskId = task.task_id; state.review.aiTaskStatus = task.status;
         renderAIReviewProgress(task); startAIReviewPolling();
@@ -81,7 +70,13 @@ async function pollAIReview(generation) {
                 }
                 clearReviewSelection();
                 await refreshReviewAfterEdit();
-                toast(task.status === "completed" ? "AI 复核完成" : task.status === "cancelled" ? "AI 复核已停止" : "AI 复核失败：" + task.error, task.status === "completed" ? "success" : "error");
+                var unresolved = Number((task.counts || {}).unresolved || 0) + Number((task.counts || {}).conflict || 0);
+                var retryStopped = task.status === "completed" && task.auto_retry
+                    && Number(task.no_progress_rounds || 0) >= 3 && unresolved > 0;
+                var completionMessage = retryStopped
+                    ? "自动重试已停止：连续 3 轮没有成功，仍有 " + unresolved + " 条未解决"
+                    : "AI 复核完成";
+                toast(task.status === "completed" ? completionMessage : task.status === "cancelled" ? "AI 复核已停止" : "AI 复核失败：" + task.error, task.status === "completed" && !retryStopped ? "success" : "error");
             }
             return;
         }
@@ -112,6 +107,9 @@ function renderAIReviewProgress(task) {
         "<span>已应用 " + Number(counts.applied || 0) + "</span>",
         "<span>Token " + Number(usage.total_tokens || 0).toLocaleString("zh-CN") + "</span>",
         "<span>用时 " + formatDuration(task.elapsed_seconds || 0) + "</span>",
+        task.auto_retry && Number(task.retry_rounds || 0) > 1
+            ? "<span>自动重试第 " + Number(task.retry_rounds) + " 轮 · 连续无进展 " + Number(task.no_progress_rounds || 0) + "/3</span>"
+            : "",
     ].join("");
     var active = aiReviewIsActive(), busy = reviewActionIsBusy(), locked = active || busy;
     el("btn-ai-review-start").disabled = locked;
@@ -121,7 +119,7 @@ function renderAIReviewProgress(task) {
     el("btn-ai-review-stop").hidden = !active || task.status === "stopping";
     el("btn-ai-review-resume").hidden = !task.can_resume;
     el("btn-ai-review-rollback").hidden = !task.can_rollback;
-    ["ai-review-scope", "ai-review-model", "ai-verifier-model", "ai-sensitive-model"].forEach(function (id) { el(id).disabled = locked; });
+    ["ai-review-scope", "ai-review-model", "ai-verifier-model", "ai-sensitive-model", "ai-auto-retry"].forEach(function (id) { el(id).disabled = locked; });
     ["btn-review-accept", "btn-review-draft", "btn-review-preserve", "btn-accept-selected"].forEach(function (id) { el(id).disabled = locked || (id === "btn-accept-selected" && state.review.selectedRows.size === 0); });
     el("editor-target").readOnly = locked;
     all("[data-review-check]").forEach(function (node) {

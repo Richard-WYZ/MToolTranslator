@@ -38,7 +38,7 @@ from translation.review import write_review_report
 from translation.terminology import Glossary
 
 
-AI_REVIEW_VERSION = "ai-review-v8-source-layout-and-related-context"
+AI_REVIEW_VERSION = "ai-review-v11-auto-retry"
 AI_REVIEW_ACTIVE_STATUSES = {"preparing", "reviewing", "verifying", "applying", "finalizing"}
 AI_REVIEW_TERMINAL_STATUSES = {"completed", "cancelled", "error"}
 NON_WAIVABLE_ISSUE_TYPES = set(HARD_REVIEW_ISSUE_TYPES) | {
@@ -153,6 +153,7 @@ def begin_ai_review_session(
     models: AIReviewModels,
     items: list[dict[str, Any]],
     auto_apply: bool,
+    auto_retry: bool = True,
 ) -> None:
     store = load_ai_review_store(file_path)
     sessions = store.setdefault("sessions", [])
@@ -164,7 +165,17 @@ def begin_ai_review_session(
         "version": AI_REVIEW_VERSION,
         "status": "preparing",
         "models": models.as_dict(),
-        "request": {"items": items, "auto_apply": bool(auto_apply)},
+        "request": {
+            "items": items,
+            "auto_apply": bool(auto_apply),
+            "auto_retry": bool(auto_retry),
+        },
+        "retry": {
+            "enabled": bool(auto_retry),
+            "rounds": 0,
+            "no_progress_rounds": 0,
+            "remaining": len(items),
+        },
         "updated_at": _now(),
         "finished_at": "",
     })
@@ -297,6 +308,7 @@ def run_ai_review(
     cancelled: CancelFunc,
     translator: TranslateFunc | None = None,
     auto_apply: bool = True,
+    auto_retry: bool = False,
     reclassification_records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     translator = translator or _translate
@@ -404,6 +416,100 @@ def run_ai_review(
         _resolve_record(item, primary_results.get(item["row"], {}), verifier_results.get(item["row"], {}))
         for item in prepared
     ]
+    records_by_row = {int(record["row"]): record for record in model_records}
+    latest_primary = dict(primary_results)
+    retry_rounds = 1 if prepared else 0
+    initial_successes = deterministic_count + sum(
+        str(record.get("result", "")) in {"fixed", "confirmed"}
+        for record in model_records
+    )
+    no_progress_rounds = 0 if initial_successes else (1 if prepared else 0)
+    pending = [
+        item for item in prepared
+        if str(records_by_row[item["row"]].get("result", "")) not in {"fixed", "confirmed"}
+    ]
+
+    while auto_retry and pending and no_progress_rounds < 3:
+        retry_rounds += 1
+        resolved_before_round = len(prepared) - len(pending)
+
+        def retry_progress(payload: dict[str, Any]) -> None:
+            progress({
+                **payload,
+                "retry_rounds": retry_rounds,
+                "no_progress_rounds": no_progress_rounds,
+            })
+
+        retry_items: list[dict[str, Any]] = []
+        for item in pending:
+            retry_item = dict(item)
+            previous = latest_primary.get(item["row"], {})
+            previous_candidate = str(previous.get("translation", ""))
+            retry_issue_types = sorted({
+                *item["issue_types"],
+                *[
+                    str(issue.get("type", ""))
+                    for issue in previous.get("issues", [])
+                    if isinstance(issue, dict) and str(issue.get("type", ""))
+                ],
+            })
+            retry_item["issue_types_for_prompt"] = retry_issue_types
+            retry_item["current_for_prompt"] = (
+                ""
+                if any(issue in NON_WAIVABLE_ISSUE_TYPES for issue in retry_issue_types)
+                else previous_candidate or item["current"]
+            )
+            retry_items.append(retry_item)
+
+        round_primary = _run_primary_batches(
+            retry_items,
+            models=models,
+            translator=translator,
+            cancelled=cancelled,
+            progress=retry_progress,
+            progress_offset=deterministic_count + resolved_before_round,
+            progress_total=total,
+            retry=True,
+        )
+        _raise_if_cancelled(cancelled)
+        round_verifier = _run_verifier_batches(
+            retry_items,
+            round_primary,
+            models=models,
+            translator=translator,
+            cancelled=cancelled,
+            progress=retry_progress,
+            progress_total=total,
+            progress_offset=deterministic_count + resolved_before_round,
+        )
+        _raise_if_cancelled(cancelled)
+
+        round_records = [
+            _resolve_record(item, round_primary.get(item["row"], {}), round_verifier.get(item["row"], {}))
+            for item in retry_items
+        ]
+        round_successes = sum(
+            str(record.get("result", "")) in {"fixed", "confirmed"}
+            for record in round_records
+        )
+        for record in round_records:
+            records_by_row[int(record["row"])] = record
+        latest_primary.update(round_primary)
+        pending = [
+            item for item in pending
+            if str(records_by_row[item["row"]].get("result", "")) not in {"fixed", "confirmed"}
+        ]
+        no_progress_rounds = 0 if round_successes else no_progress_rounds + 1
+        progress({
+            "status": "reviewing",
+            "phase": "reviewing",
+            "current": deterministic_count + len(prepared) - len(pending),
+            "total": total,
+            "retry_rounds": retry_rounds,
+            "no_progress_rounds": no_progress_rounds,
+        })
+
+    model_records = [records_by_row[item["row"]] for item in prepared]
     records = sorted(
         [*deterministic_records, *model_records],
         key=lambda record: int(record.get("row", -1)),
@@ -429,6 +535,14 @@ def run_ai_review(
             applied=0,
         )
     counts["applied"] = applied
+    _persist_retry_metadata(
+        file_path=file_path,
+        task_id=task_id,
+        rounds=retry_rounds,
+        no_progress_rounds=no_progress_rounds,
+        remaining=len(pending),
+        enabled=auto_retry,
+    )
     progress({"status": "finalizing", "phase": "finalizing", "current": total, "total": total})
     return {
         "task_id": task_id,
@@ -437,8 +551,38 @@ def run_ai_review(
         "total": total,
         "counts": counts,
         "records": records,
+        "auto_retry": bool(auto_retry),
+        "retry_rounds": retry_rounds,
+        "no_progress_rounds": no_progress_rounds,
+        "remaining": len(pending),
         "store_path": ai_review_store_path(file_path),
     }
+
+
+def _persist_retry_metadata(
+    *,
+    file_path: str,
+    task_id: str,
+    rounds: int,
+    no_progress_rounds: int,
+    remaining: int,
+    enabled: bool,
+) -> None:
+    store = load_ai_review_store(file_path)
+    session = next(
+        (value for value in store.get("sessions", []) if isinstance(value, dict) and value.get("task_id") == task_id),
+        None,
+    )
+    if session is None:
+        return
+    session["retry"] = {
+        "enabled": bool(enabled),
+        "rounds": max(0, int(rounds)),
+        "no_progress_rounds": max(0, int(no_progress_rounds)),
+        "remaining": max(0, int(remaining)),
+    }
+    session["updated_at"] = _now()
+    save_ai_review_store(file_path, store)
 
 
 def apply_ai_review_records(
@@ -679,9 +823,9 @@ def _run_primary_batches(
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ai-review") as executor:
         futures = {
             executor.submit(
-                _primary_batch,
+                _primary_batch_with_fallback,
                 batch,
-                model=models.sensitive if batch[0]["sensitive"] else models.review,
+                models=models,
                 translator=translator,
                 retry=retry,
             ): batch
@@ -712,6 +856,34 @@ def _run_primary_batches(
                 "total": progress_total,
             })
     return results
+
+
+def _primary_batch_with_fallback(
+    items: list[dict[str, Any]],
+    *,
+    models: AIReviewModels,
+    translator: TranslateFunc,
+    retry: bool,
+) -> dict[int, dict[str, Any]]:
+    """Retry a primary batch on configured alternate models after request/protocol failure."""
+    sensitive = bool(items[0].get("sensitive"))
+    candidates = (
+        [models.sensitive, models.sensitive_verifier, models.verifier, models.review]
+        if sensitive
+        else [models.review, models.verifier, models.sensitive, models.sensitive_verifier]
+    )
+    attempted: list[str] = []
+    last_error: Exception | None = None
+    for model in candidates:
+        if not model or model in attempted:
+            continue
+        attempted.append(model)
+        try:
+            return _primary_batch(items, model=model, translator=translator, retry=retry)
+        except Exception as exc:
+            last_error = exc
+    attempted_text = ", ".join(attempted)
+    raise RuntimeError(f"AI primary models failed ({attempted_text}): {last_error}") from last_error
 
 
 def _primary_batch(
@@ -1164,6 +1336,9 @@ def _primary_prompt(*, retry: bool) -> str:
         "__SYM_*, __TERM_*, and __PERSON_* placeholder exactly once. Replace meaningful Japanese kana and vocalizations "
         "with natural Chinese sounds; small っ/ッ may be omitted or localized, but do not copy lexical kana. "
         "Translate adult content faithfully without refusal or sanitization. "
+        "A common-noun role or occupation followed by a Japanese honorific is not automatically a person name; "
+        "translate the role and render its respect naturally in Chinese instead of retaining Japanese kana. "
+        "When read-only context includes a translated standalone occurrence of that role, use it as terminology evidence. "
         "Return JSON only: {\"items\":[{\"i\":0,\"decision\":\"keep|revise|unable\",\"t\":\"translation\"}]}. "
         "Use t=current translation when keeping, the new translation when revising, and an empty t only when unable.\n/no_think"
     )

@@ -46,6 +46,7 @@ class AIReviewTask:
         items: list[dict[str, Any]],
         models: AIReviewModels,
         auto_apply: bool = True,
+        auto_retry: bool = True,
         translator: TranslateFunc | None = None,
         reclassification_records: list[dict[str, Any]] | None = None,
     ):
@@ -54,6 +55,7 @@ class AIReviewTask:
         self.items = list(items)
         self.models = models
         self.auto_apply = bool(auto_apply)
+        self.auto_retry = bool(auto_retry)
         self.translator = translator
         self.reclassification_records = [dict(record) for record in reclassification_records or []]
         self.status = "idle"
@@ -81,6 +83,8 @@ class AIReviewTask:
         self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
         self._persisted_phase = ""
+        self.retry_rounds = 0
+        self.no_progress_rounds = 0
 
     def start(self) -> None:
         with self._lock:
@@ -96,6 +100,7 @@ class AIReviewTask:
                 models=self.models,
                 items=self.items,
                 auto_apply=self.auto_apply,
+                auto_retry=self.auto_retry,
             )
             self._persisted_phase = "preparing"
             self._thread = threading.Thread(target=self._run, daemon=True, name=f"ai-review-{self.task_id}")
@@ -127,6 +132,9 @@ class AIReviewTask:
                 "eta_seconds": round(remaining / rate, 1) if rate > 0 and self.status in AI_REVIEW_ACTIVE_STATUSES else None,
                 "models": self.models.as_dict(),
                 "counts": dict(self.counts),
+                "auto_retry": self.auto_retry,
+                "retry_rounds": self.retry_rounds,
+                "no_progress_rounds": self.no_progress_rounds,
                 "token_usage": dict(self.token_usage),
                 "error": self.error,
                 "started_at": self.started_at,
@@ -144,6 +152,8 @@ class AIReviewTask:
             self.total = max(0, int(payload.get("total", self.total) or 0))
             self.percentage = min(99.9, (self.current / self.total * 100.0) if self.total else 0.0)
             self.updated_at = time.time()
+            self.retry_rounds = max(0, int(payload.get("retry_rounds", self.retry_rounds) or 0))
+            self.no_progress_rounds = max(0, int(payload.get("no_progress_rounds", self.no_progress_rounds) or 0))
             if self.phase != self._persisted_phase:
                 self._persisted_phase = self.phase
                 persist_status = self.phase
@@ -163,6 +173,7 @@ class AIReviewTask:
                 cancelled=self._cancel_event.is_set,
                 translator=self.translator,
                 auto_apply=self.auto_apply,
+                auto_retry=self.auto_retry,
                 reclassification_records=self.reclassification_records,
             )
             from app.services.review import invalidate_review_cache
@@ -170,6 +181,8 @@ class AIReviewTask:
             invalidate_review_cache(self.file_path)
             with self._lock:
                 self.counts = dict(result.get("counts", self.counts))
+                self.retry_rounds = int(result.get("retry_rounds", self.retry_rounds) or 0)
+                self.no_progress_rounds = int(result.get("no_progress_rounds", self.no_progress_rounds) or 0)
                 self.status = "completed"
                 self.phase = "completed"
                 self.total = int(result.get("total", self.total) or 0)
@@ -303,6 +316,29 @@ def _related_translation_examples(
         key=len,
         reverse=True,
     )
+    honorific_phrases = sorted(
+        set(re.findall(
+            r"[\u3400-\u9fff]{1,8}(?:\u3055(?:\u30fc|\u301c|\uff5e)*\u3093|\u3061\u3083\u3093|\u304f\u3093|\u69d8|\u3055\u307e)",
+            source,
+        )),
+        key=len,
+        reverse=True,
+    )
+    current_translation = str(translated_texts[row]) if row < len(translated_texts) else ""
+    unresolved_honorifics = {
+        term for term in honorific_phrases if term in current_translation
+    }
+    honorific_bases = {
+        re.sub(
+            r"(?:\u3055(?:\u30fc|\u301c|\uff5e)*\u3093|\u3061\u3083\u3093|\u304f\u3093|\u69d8|\u3055\u307e)$",
+            "",
+            term,
+        )
+        for term in honorific_phrases
+    }
+    honorific_bases = {
+        base for base in honorific_bases if len(re.findall(r"[\u3400-\u9fff]", base)) >= 2
+    }
     stripped_source = source.strip()
     short_name = (
         stripped_source
@@ -328,6 +364,16 @@ def _related_translation_examples(
             if term in candidate_source:
                 similarity = int(SequenceMatcher(None, source, candidate_source).ratio() * 50)
                 score = max(score, 20 + len(term) + similarity)
+        for term in honorific_phrases:
+            if term in candidate_source:
+                similarity = int(SequenceMatcher(None, source, candidate_source).ratio() * 50)
+                priority = 200 if term in unresolved_honorifics else 80
+                score = max(score, priority + len(term) + similarity)
+        for base in honorific_bases:
+            if base in candidate_source:
+                exact_base = candidate_source.strip() == base
+                priority = 320 if exact_base else 160
+                score = max(score, priority + len(base))
         if score:
             ranked.append((score, candidate_row))
     ranked.sort(key=lambda item: (-item[0], abs(item[1] - row), item[1]))
@@ -446,6 +492,7 @@ def start_ai_review_task(
     verifier_model: str | None,
     sensitive_model: str | None,
     auto_apply: bool,
+    auto_retry: bool = True,
     translator: TranslateFunc | None = None,
 ) -> AIReviewTask:
     existing = active_ai_review_for_file(registry, file_path)
@@ -478,6 +525,7 @@ def start_ai_review_task(
         items=items,
         models=models,
         auto_apply=auto_apply,
+        auto_retry=auto_retry,
         translator=translator,
         reclassification_records=reclassification_records,
     )
@@ -554,6 +602,9 @@ def persisted_ai_review_progress(file_path: str) -> dict[str, Any] | None:
         "updated_at": session.get("updated_at", ""),
         "can_resume": interrupted and bool(items),
         "can_rollback": counts["applied"] > 0 and not session.get("rolled_back_at"),
+        "auto_retry": bool(request.get("auto_retry", True)),
+        "retry_rounds": int((session.get("retry") or {}).get("rounds", 0) or 0),
+        "no_progress_rounds": int((session.get("retry") or {}).get("no_progress_rounds", 0) or 0),
     }
 
 
@@ -585,6 +636,7 @@ def resume_ai_review_task(
             str(model_data.get("sensitive_verifier", "")),
         ),
         auto_apply=bool(request.get("auto_apply", True)),
+        auto_retry=bool(request.get("auto_retry", True)),
         translator=translator,
         reclassification_records=build_reclassification_records(file_path),
     )
