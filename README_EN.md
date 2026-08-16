@@ -117,7 +117,18 @@ tools\run_tests.ps1 -q
 tools\build.ps1
 ```
 
-The portable output is written to `build/dist/`.
+Development builds are written to isolated
+`build/dist/MToolTranslator-dev-<timestamp>-windows-x64/` directories. A release
+build must run from a clean `master` matching `origin/master`:
+
+```powershell
+tools\build.ps1 -Version 0.2.5
+```
+
+Release output is written to
+`build/dist/MToolTranslator-v0.2.5-windows-x64/` and initially contains only
+`MToolTranslator.exe`. Existing output directories and their runtime files are
+never overwritten or cleaned automatically.
 
 ## Current status
 

@@ -129,6 +129,7 @@ def test_test_and_build_commands_use_dedicated_workspaces():
     assert '"test_work\\pytest"' in test_script
     assert 'Join-Path $BuildRoot "work"' in build_script
     assert 'Join-Path $BuildRoot "dist"' in build_script
+    assert "$DistPath = Join-Path $DistRoot $ArtifactDirectoryName" in build_script
     assert "--workpath $WorkPath --distpath $DistPath" in build_script
 
 
@@ -139,6 +140,31 @@ def test_build_script_never_packages_or_overwrites_dotenv():
     assert ".env" not in build_script
     assert "PortableEnvPath" not in build_script
     assert "PortableEnvTemplate" not in build_script
+
+
+def test_build_script_uses_unique_isolated_artifact_directories():
+    root = Path(__file__).resolve().parents[1]
+    build_script = (root / "tools" / "build.ps1").read_text(encoding="utf-8")
+
+    assert '[string]$Version = ""' in build_script
+    assert '"MToolTranslator-$VersionTag-windows-x64"' in build_script
+    assert '"MToolTranslator-dev-$Timestamp-windows-x64"' in build_script
+    assert "if (Test-Path -LiteralPath $DistPath)" in build_script
+    assert "will not be overwritten" in build_script
+    assert 'Join-Path $DistPath "MToolTranslator.exe"' in build_script
+    assert "$Artifacts.Count -ne 1" in build_script
+    assert "must contain only MToolTranslator.exe" in build_script
+
+
+def test_release_build_requires_clean_synced_master():
+    root = Path(__file__).resolve().parents[1]
+    build_script = (root / "tools" / "build.ps1").read_text(encoding="utf-8")
+
+    assert '@("branch", "--show-current")' in build_script
+    assert '$CurrentBranch -ne "master"' in build_script
+    assert '@("status", "--porcelain")' in build_script
+    assert '@("rev-parse", "origin/master")' in build_script
+    assert "$HeadCommit -ne $RemoteMasterCommit" in build_script
 
 
 def test_glossary_delegates_candidate_policy_and_storage_to_focused_modules():
