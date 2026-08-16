@@ -43,6 +43,9 @@ the goals, authorized tests, selected approaches, and accepted results. The
 project has not received a complete professional code review, security audit,
 or production-grade validation. Read and verify the code before relying on it.
 
+Before contributing, read the [contribution guide](CONTRIBUTING.md). Routine
+development takes place on `dev`; `master` is reserved for stable releases.
+
 ## Usage
 
 ### Portable Windows build
