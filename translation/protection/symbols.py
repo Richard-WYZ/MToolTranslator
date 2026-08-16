@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 
 
-SYMBOL_PROTECTION_VERSION = "protected-symbols-exactly-once-v4-linguistic-angle-brackets"
+SYMBOL_PROTECTION_VERSION = "protected-symbols-exactly-once-v5-internal-position-guard"
 
 SYMBOL_RE = re.compile(
     r"[\u2661\u2665\u2764\U0001f495\U0001f496\U0001f497\U0001f498"
@@ -75,6 +75,12 @@ def restore_symbols(
     source_parts = re.split(r"__SYM_\d+__", protected_text)
     if len(source_parts) <= 1:
         return cleaned + "".join(t.symbol for t in tokens), warnings
+
+    if source_parts[0] and source_parts[-1]:
+        warnings.append({
+            "type": "symbol_preservation",
+            "message": "Internal protected symbols were omitted, so their translated-text position cannot be rebuilt safely.",
+        })
 
     rebuilt = cleaned
     leading = ""

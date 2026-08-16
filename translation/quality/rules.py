@@ -14,7 +14,7 @@ from translation.protection.runtime import (
 )
 
 
-QUALITY_RULES_VERSION = "quality-rules-v11-linguistic-angle-and-fragments"
+QUALITY_RULES_VERSION = "quality-rules-v14-empty-symbol-pairs"
 FIXED_TRANSLATIONS: dict[str, str] = {
     "continue": "继续",
     "new game": "新游戏",
@@ -101,6 +101,10 @@ RESOURCE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_$+./:-]+$")
 COPYRIGHT_RE = re.compile(r"^(?:\(?[cC]\)|©|copyright\b)", re.IGNORECASE)
 ENCODED_BLOB_RE = re.compile(r"^[A-Za-z0-9+/=_-]{50,}$")
 STYLE_COMMAND_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*(?:\s*,\s*[0-9０-９]+)+\s*$")
+CSS_DECLARATION_LIST_RE = re.compile(
+    r"^\s*(?:--)?[A-Za-z][A-Za-z0-9-]*\s*:[^;\r\n]+;"
+    r"(?:\s*(?:--)?[A-Za-z][A-Za-z0-9-]*\s*:[^;\r\n]+;)+\s*$"
+)
 SOURCE_VERSION_TOKEN_RE = re.compile(r"(?<![A-Za-z])ver(?:sion)?\.?(?![A-Za-z])", re.IGNORECASE)
 VERSION_MARKER_RE = re.compile(r"(?<![A-Za-z])(?:ver(?:sion)?\.?|version)\s*[0-9][0-9A-Za-z._-]*", re.IGNORECASE)
 RESOURCE_FILE_RE = re.compile(
@@ -112,6 +116,9 @@ ANGLE_CONFIG_FRAGMENT_RE = re.compile(r"^\s*<[^<>\r\n]{1,200}>\s*$")
 GRAMMATICAL_FRAGMENT_TRANSLATIONS = {
     "ます。": "。",
 }
+CLOSING_DELIMITER_OBJECT_PARTICLE_RE = re.compile(
+    r"^(?P<space>\s*)(?P<delimiter>[〉》」』】）〕］])を(?P<trailing>\s*)$"
+)
 NUMERIC_ASSIGNMENT_RE = re.compile(
     r"^\s*[^=\r\n]{1,80}\s*=\s*[-+]?[0-9\uff10-\uff19]+(?:\.[0-9\uff10-\uff19]+)?\s*$"
 )
@@ -141,6 +148,13 @@ SERIALIZED_KEY_RE = re.compile(r"(?<![A-Za-z0-9_$])[A-Za-z_$][A-Za-z0-9_$]*\s*:"
 KANA_RE = re.compile(
     "[\\u3041-\\u3098\\u309d-\\u309f"
     "\\u30a1-\\u30fa\\u30fd-\\u30ff]"
+)
+INVENTORY_KANA_RE = re.compile(
+    "[\u3041-\u309f\u30a1-\u30ff\u31f0-\u31ff]"
+)
+SMALL_OR_EXTENSION_KANA_RE = re.compile(
+    "[\u3041\u3043\u3045\u3047\u3049\u3063\u3083\u3085\u3087\u308e\u3095\u3096"
+    "\u30a1\u30a3\u30a5\u30a7\u30a9\u30c3\u30e3\u30e5\u30e7\u30ee\u30f5\u30f6\u31f0-\u31ff]"
 )
 SMALL_TSU_RE = re.compile("[\\u3063\\u30c3]+")
 LEADING_MEMBER_CALL_FRAGMENT_RE = re.compile(
@@ -287,10 +301,12 @@ def exact_nonlinguistic_translation(text: str) -> str:
         NUMERIC_ONLY_RE.fullmatch(text)
         or CODE_LIKE_RE.fullmatch(text)
         or _is_nonlexical_vocalization(text)
+        or _looks_like_character_inventory(text)
     ):
         return text
     if (
         RESOURCE_FILE_RE.fullmatch(text)
+        or CSS_DECLARATION_LIST_RE.fullmatch(text)
         or _looks_like_angle_config_fragment(text)
         or NUMERIC_ASSIGNMENT_RE.fullmatch(text)
         or _looks_like_source_code_or_serialized_fragment(text)
@@ -301,12 +317,39 @@ def exact_nonlinguistic_translation(text: str) -> str:
     return ""
 
 
+def _looks_like_character_inventory(text: str) -> bool:
+    """Preserve dense character-set samples that enumerate glyphs rather than words."""
+    stripped = str(text or "").strip()
+    if len(stripped) < 24 or re.search(r"[\sA-Za-z0-9０-９\u3400-\u9fff]", stripped):
+        return False
+    kana = [char for char in stripped if INVENTORY_KANA_RE.fullmatch(char)]
+    if len(kana) < 20 or len(set(kana)) / len(kana) < 0.8:
+        return False
+    if sum(bool(SMALL_OR_EXTENSION_KANA_RE.fullmatch(char)) for char in kana) / len(kana) < 0.6:
+        return False
+    return all(
+        INVENTORY_KANA_RE.fullmatch(char)
+        or unicodedata.category(char)[:1] in {"P", "S"}
+        or unicodedata.category(char) in {"Lm", "Mn"}
+        for char in stripped
+    )
+
+
 def exact_grammatical_fragment_translation(text: str) -> str:
     """Translate standalone Japanese grammar tails that carry only sentence closure."""
     value = str(text or "")
     stripped = value.strip()
     translated = GRAMMATICAL_FRAGMENT_TRANSLATIONS.get(stripped, "")
-    return value.replace(stripped, translated, 1) if translated else ""
+    if translated:
+        return value.replace(stripped, translated, 1)
+    closing_particle = CLOSING_DELIMITER_OBJECT_PARTICLE_RE.fullmatch(value)
+    if closing_particle:
+        return (
+            closing_particle.group("space")
+            + closing_particle.group("delimiter")
+            + closing_particle.group("trailing")
+        )
+    return ""
 
 
 def _looks_like_angle_config_fragment(text: str) -> bool:
@@ -321,8 +364,22 @@ def _looks_like_angle_config_fragment(text: str) -> bool:
 def _looks_like_source_code_or_serialized_fragment(text: str) -> bool:
     """Preserve high-confidence executable or serialized records as opaque source."""
     stripped = str(text or "").strip()
-    if not stripped or "\n" in stripped or "\r" in stripped:
+    if not stripped:
         return False
+    if "\n" in stripped or "\r" in stripped:
+        code_lines = 0
+        for line in stripped.splitlines():
+            candidate = line.strip()
+            if not candidate or CODE_COMMENT_RE.match(candidate):
+                continue
+            if (
+                CALLABLE_STATEMENT_RE.fullmatch(candidate)
+                or CODE_ASSIGNMENT_RE.fullmatch(candidate)
+                or CODE_CONTROL_FRAGMENT_RE.fullmatch(candidate)
+                or re.search(r"\bfunction\s*\([^\r\n)]*\)\s*\{\s*$", candidate)
+            ):
+                code_lines += 1
+        return code_lines >= 2
     if (
         CALLABLE_STATEMENT_RE.fullmatch(stripped)
         or LEADING_MEMBER_CALL_FRAGMENT_RE.fullmatch(stripped)
@@ -500,6 +557,15 @@ def translation_issues(original: str, translated: str, short_label: bool = False
             "type": "untranslated_japanese",
             "message": "Japanese kana remain in the translated text.",
         })
+
+    for opening, closing in (("「", "」"), ("『", "』"), ("【", "】")):
+        source_match = re.search(re.escape(opening) + r".+?" + re.escape(closing), original)
+        if source_match and opening + closing in translated:
+            issues.append({
+                "type": "symbol_preservation",
+                "message": "A non-empty protected symbol pair from the source became empty in the translation.",
+            })
+            break
 
     leaked_term_placeholders = LEAKED_TERM_PLACEHOLDER_RE.findall(translated)
     if leaked_term_placeholders:

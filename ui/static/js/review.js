@@ -97,6 +97,8 @@ function renderReviewStats(stats) {
 }
 
 function populateAIReviewModels() {
+    var savedAutoRetry = localStorage.getItem("lgt.aiAutoRetry");
+    if (savedAutoRetry !== null) el("ai-auto-retry").checked = savedAutoRetry !== "0";
     var models = (state.models || []).map(function (item) { return item.id || item.name || ""; }).filter(Boolean);
     [
         ["ai-review-model", "自动选择（推荐）"],

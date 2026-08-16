@@ -5,8 +5,8 @@ import re
 
 JP_NAME_RE = re.compile("[\u30a1-\u30fa\u30fc]{2,20}|[\u3400-\u4dbf\u4e00-\u9fff]{2,8}")
 JP_HONORIFIC_EVIDENCE_RE = re.compile(
-    r"(?:\u3055\u3093|\u3061\u3083\u3093|\u304f\u3093|\u69d8|\u3055\u307e|"
-    r"\u305d\u306e\u65b9|\u3042\u306e\u65b9|\u3053\u306e\u65b9)"
+    r"(?:\u3055(?:\u3041|\u3042|\u30fc|\u301c|\uff5e)*\u3093|\u3061\u3083(?:\u3041|\u3042|\u30fc|\u301c|\uff5e)*\u3093|"
+    r"\u304f\u3093|\u69d8|\u3055\u307e|\u305d\u306e(?:\u65b9|\u304b\u305f)|\u3042\u306e(?:\u65b9|\u304b\u305f)|\u3053\u306e(?:\u65b9|\u304b\u305f))"
 )
 JP_PARTICLE_RE = re.compile("(\u306f|\u304c|\u3092|\u306b|\u3078|\u3068|\u3067|\u306e|\u3082|\u3084|\u304b|\u304b\u3089|\u307e\u3067|\u3088\u308a)")
 CN_HAN_RE = re.compile("[\u4e00-\u9fff]")
@@ -169,6 +169,9 @@ def _target_honorific_names(text: str) -> list[str]:
             if idx < 0:
                 break
             prefix = _han_prefix(text[:idx])
+            if suffix == "\u5927\u4eba" and prefix.endswith(("\u662f", "\u4e3a", "\u4f4d", "\u4e2a", "\u4e9b", "\u7684")):
+                start = idx + len(suffix)
+                continue
             for length in range(min(4, len(prefix)), 1, -1):
                 candidate = prefix[-length:]
                 if candidate and candidate not in COMMON_CN_TITLES:

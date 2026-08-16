@@ -105,6 +105,9 @@ function bindEvents() {
     ["ai-review-model", "ai-verifier-model", "ai-sensitive-model"].forEach(function (id) {
         el(id).addEventListener("change", function () { localStorage.setItem("lgt." + id, this.value); });
     });
+    el("ai-auto-retry").addEventListener("change", function () {
+        localStorage.setItem("lgt.aiAutoRetry", this.checked ? "1" : "0");
+    });
 
     el("glossary-search").addEventListener("input", function () { state.glossary.search = this.value; renderGlossary(); });
     el("glossary-tabs").addEventListener("click", function (event) {

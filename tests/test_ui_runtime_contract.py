@@ -39,6 +39,7 @@ def test_model_ids_preserve_provider_identity(monkeypatch):
 
 def test_ai_review_defaults_to_required_entries():
     assert AIReviewRequest(file_path="fixture.json").scope == "required"
+    assert AIReviewRequest(file_path="fixture.json").auto_retry is True
 
 
 def test_quality_profile_matches_validated_route():
@@ -262,6 +263,8 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert "model_test_statuses" in script
     assert 'id="ai-review-model"' in html
     assert 'id="ai-verifier-model"' in html
+    assert 'id="ai-auto-retry"' in html
+    assert 'id="ai-auto-retry" type="checkbox" checked' in html
     assert 'id="btn-ai-review-start"' in html
     assert 'id="btn-ai-review-resume"' in html
     assert '<option value="required" selected>仅必须复核</option>' in html
@@ -276,7 +279,10 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert 'id="review-busy-label"' in html
     assert "/review/ai/preflight" in script
     assert "/review/ai/start" in script
-    assert "system_corrections" in script
+    assert "auto_retry" in script
+    ai_review_script = (root / "ui" / "static" / "js" / "ai-review.js").read_text(encoding="utf-8")
+    start_review_body = ai_review_script.split("async function startAIReview", 1)[1].split("async function loadCurrentAIReview", 1)[0]
+    assert "window.confirm" not in start_review_body
     assert "counts.reclassified" in script
     assert "/rollback" in script
     assert "/export/status" in script

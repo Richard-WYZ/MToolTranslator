@@ -2476,6 +2476,22 @@ def test_symbol_restore_discards_unknown_placeholder_during_rebuild():
     assert issues == []
 
 
+def test_symbol_restore_flags_omitted_internal_quote_position():
+    from translation.protection import protect_symbols, restore_symbols
+
+    source = "她是直接击破「最后５人」之一的魔法少女。"
+    protected, tokens = protect_symbols(source)
+    restored, issues = restore_symbols(
+        source,
+        protected,
+        "她是直接击破最后５人之一的魔法少女。",
+        tokens,
+    )
+
+    assert restored.endswith("「」")
+    assert [issue["type"] for issue in issues] == ["symbol_preservation"]
+
+
 def test_mtool_batch_finish_does_not_add_or_truncate_line_breaks():
     from translation.batching import finish_batch_translation, prepare_model_candidate
     from translation.terminology import Glossary

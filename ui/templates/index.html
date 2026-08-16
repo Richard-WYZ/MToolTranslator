@@ -247,7 +247,7 @@
                 </div>
                 <section class="panel ai-review-panel" id="ai-review-panel">
                     <div class="ai-review-heading">
-                        <div><h2>AI 模型复核</h2><p>先判断现有译文，必要时重译，再由第二模型验证；只自动应用通过硬性校验的结果。</p></div>
+                        <div><h2>AI 模型复核</h2><p>先判断现有译文，必要时重译，再由第二模型验证；未解决项可自动重试。</p></div>
                         <span id="ai-review-status" class="status-badge neutral">未开始</span>
                     </div>
                     <div class="ai-review-controls">
@@ -255,6 +255,7 @@
                         <div class="field"><label for="ai-review-model">主复核模型</label><select id="ai-review-model"><option value="auto">自动选择（推荐）</option></select></div>
                         <div class="field"><label for="ai-verifier-model">验证模型</label><select id="ai-verifier-model"><option value="auto">自动选择不同模型</option></select></div>
                         <details class="ai-review-advanced"><summary>敏感内容模型</summary><div class="field"><label for="ai-sensitive-model">敏感文本</label><select id="ai-sensitive-model"><option value="auto">自动选择已测试模型</option></select></div></details>
+                        <label class="check-row ai-review-retry"><input id="ai-auto-retry" type="checkbox" checked><span><strong>自动重试</strong><small>只重试未解决项；连续 3 轮无成功后停止</small></span></label>
                     </div>
                     <div class="ai-review-actions">
                         <button id="btn-ai-review-start" class="btn btn-primary">开始 AI 复核</button>

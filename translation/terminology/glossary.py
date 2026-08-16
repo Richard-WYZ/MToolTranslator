@@ -452,10 +452,21 @@ class Glossary:
             info = self.candidates.get(source, {}) or {}
             if not isinstance(info, dict) or str(info.get("type") or "") != "person":
                 continue
+            proposed_target = str(info.get("target") or "").strip()
+            if proposed_target and not self._source_target_compatible(source, proposed_target, "person"):
+                continue
             if int(info.get("count", 0) or 0) < 2:
                 continue
             evidence = {str(item) for item in info.get("evidence", []) or []}
-            if "person_like" not in evidence or not stripped.startswith(source):
+            strong_name_evidence = (
+                {"speaker_position", "standalone_line"} <= evidence
+                or {"speaker_position", "quoted_name"} <= evidence
+            )
+            if (
+                "person_like" not in evidence
+                or not strong_name_evidence
+                or not stripped.startswith(source)
+            ):
                 continue
             suffix = stripped[-suffix_length:]
             if (

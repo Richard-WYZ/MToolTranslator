@@ -15,7 +15,7 @@ from translation.quality.refusal import has_japanese
 
 
 SHORT_LABEL_MAX_CHARS = 40
-CLASSIFICATION_VERSION = "classification-v6-opaque-resources-and-fragments"
+CLASSIFICATION_VERSION = "classification-v8-code-and-fragments"
 SOURCE_JAPANESE_RE = re.compile("[\\u3041-\\u309f\\u30a1-\\u30fa\\u30fd-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff]")
 PURE_CJK_RE = re.compile(r"^[\u3400-\u4dbf\u4e00-\u9fff\u3005\u3006\u3024]+$")
 LONG_FORM_MARKERS = ("\u3002", "\u300c", "\u300d", "\u300e", "\u300f")

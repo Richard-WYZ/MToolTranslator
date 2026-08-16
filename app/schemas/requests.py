@@ -142,6 +142,7 @@ class AIReviewRequest(BaseModel):
     verifier_model: Optional[str] = "auto"
     sensitive_model: Optional[str] = "auto"
     auto_apply: bool = True
+    auto_retry: bool = True
 
 
 class AIReviewActionRequest(BaseModel):

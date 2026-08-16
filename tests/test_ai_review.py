@@ -122,6 +122,117 @@ def test_ai_review_batches_and_confirms_existing_translations(tmp_path, isolated
     assert session["work"]["verifier_complete"] is True
 
 
+def test_ai_review_auto_retry_only_reprocesses_unresolved_rows(tmp_path, isolated_checkpoint_dir):
+    source_path, output_path, items = _write_source_and_output(tmp_path, 2)
+    primary_payloads: list[list[int]] = []
+    verifier_calls = 0
+
+    def fake_translate(model, text, system_prompt, options):
+        nonlocal verifier_calls
+        payload = json.loads(text)
+        rows = [int(item["i"]) for item in payload["items"]]
+        if "independent" in system_prompt:
+            verifier_calls += 1
+            return json.dumps({
+                "items": [
+                    {
+                        "i": row,
+                        "choice": "current" if row == 0 or verifier_calls > 1 else "unresolved",
+                        "resolved": ["style_review"] if row == 0 or verifier_calls > 1 else [],
+                    }
+                    for row in rows
+                ],
+            })
+        primary_payloads.append(rows)
+        return json.dumps({
+            "items": [
+                {"i": row, "decision": "keep", "t": f"你好{row}"}
+                for row in rows
+            ],
+        }, ensure_ascii=False)
+
+    models = AIReviewModels("api:review", "api:verify", "api:adult", "api:adult-verify")
+    from translation.review.ai import begin_ai_review_session
+
+    begin_ai_review_session(
+        task_id="auto-retry-task",
+        file_path=source_path,
+        models=models,
+        items=items,
+        auto_apply=True,
+        auto_retry=True,
+    )
+    result = run_ai_review(
+        task_id="auto-retry-task",
+        file_path=source_path,
+        items=items,
+        models=models,
+        output_path=output_path,
+        progress=lambda payload: None,
+        cancelled=lambda: False,
+        translator=fake_translate,
+        auto_retry=True,
+    )
+
+    assert primary_payloads == [[0, 1], [1]]
+    assert result["retry_rounds"] == 2
+    assert result["no_progress_rounds"] == 0
+    assert result["remaining"] == 0
+    assert result["counts"]["confirmed"] == 2
+    assert result["counts"]["applied"] == 2
+    session = get_ai_review_session(source_path, "auto-retry-task")
+    assert session and session["retry"] == {
+        "enabled": True,
+        "rounds": 2,
+        "no_progress_rounds": 0,
+        "remaining": 0,
+    }
+
+
+def test_ai_review_auto_retry_stops_after_three_no_progress_rounds(tmp_path, isolated_checkpoint_dir):
+    source_path, output_path, items = _write_source_and_output(tmp_path, 1)
+    verifier_calls = 0
+
+    def fake_translate(model, text, system_prompt, options):
+        nonlocal verifier_calls
+        if "independent" in system_prompt:
+            verifier_calls += 1
+            return json.dumps({"items": [{"i": 0, "choice": "unresolved", "resolved": []}]})
+        return json.dumps({
+            "items": [{"i": 0, "decision": "keep", "t": "你好0"}],
+        }, ensure_ascii=False)
+
+    models = AIReviewModels("api:review", "api:verify", "api:adult", "api:adult-verify")
+    from translation.review.ai import begin_ai_review_session
+
+    begin_ai_review_session(
+        task_id="no-progress-task",
+        file_path=source_path,
+        models=models,
+        items=items,
+        auto_apply=True,
+        auto_retry=True,
+    )
+    result = run_ai_review(
+        task_id="no-progress-task",
+        file_path=source_path,
+        items=items,
+        models=models,
+        output_path=output_path,
+        progress=lambda payload: None,
+        cancelled=lambda: False,
+        translator=fake_translate,
+        auto_retry=True,
+    )
+
+    assert verifier_calls == 3
+    assert result["retry_rounds"] == 3
+    assert result["no_progress_rounds"] == 3
+    assert result["remaining"] == 1
+    assert result["counts"]["unresolved"] == 1
+    assert result["counts"]["applied"] == 0
+
+
 def test_ai_review_rejects_candidate_with_hard_issue_even_if_verifier_selects_it(tmp_path, isolated_checkpoint_dir):
     source_path, output_path, items = _write_source_and_output(tmp_path, 1)
 
@@ -511,6 +622,69 @@ def test_ai_review_related_examples_use_translated_occurrences_only():
     assert examples[0]["position"] == "related_occurrence"
 
 
+def test_ai_review_related_examples_find_translated_role_honorific_occurrences():
+    from app.services.ai_review_tasks import _related_translation_examples
+
+    sources = [
+        "『女将さん』があらわれる。",
+        "女将さんには感謝してもしきれないんです♡",
+        "女将さんの濡れスケ……スケスケで♡",
+        "女将",
+    ]
+    translated = [
+        "『女将さん』出现了。",
+        "对老板娘感激不尽♡",
+        "老板娘湿透的衣服若隐若现♡",
+        "老板娘",
+    ]
+
+    examples = _related_translation_examples(0, sources[0], sources, translated)
+
+    assert examples[0]["row"] == 3
+    assert {item["row"] for item in examples} == {2, 3}
+    assert all("女将さん" not in item["translated"] for item in examples)
+
+
+def test_glossary_does_not_protect_role_candidate_as_a_person_name():
+    from translation.terminology import Glossary
+
+    glossary = Glossary.in_memory()
+    glossary.candidates["女将"] = {
+        "count": 9,
+        "targets": {"老板娘": 1},
+        "target": "老板娘",
+        "status": "candidate",
+        "type": "person",
+        "score": 0.85,
+        "evidence": ["person_like", "quoted_name", "standalone_line"],
+    }
+    glossary.candidates["賢士郎"] = {
+        "count": 20,
+        "targets": {"贤士郎": 2},
+        "target": "贤士郎",
+        "status": "candidate",
+        "type": "person",
+        "score": 0.8,
+        "evidence": ["person_like", "speaker_position", "standalone_line"],
+    }
+    glossary.candidates["賢士郎さん"] = {
+        "count": 8,
+        "targets": {},
+        "target": "",
+        "status": "candidate",
+        "type": "person",
+        "score": 0.4,
+        "evidence": ["person_like"],
+    }
+    glossary.thaw()
+
+    assert not glossary.is_identified_person_name("女将さん")
+    assert glossary.is_identified_person_name("賢士郎さん")
+    protected, tokens = glossary.protect_terms("女将さんと賢士郎さん")
+    assert protected.startswith("女将さんと__PERSON_0__")
+    assert tokens[0][1] == "賢士郎さん"
+
+
 def test_reclassification_preserves_evidence_backed_mixed_script_person_name():
     from translation.terminology import Glossary
 
@@ -523,7 +697,7 @@ def test_reclassification_preserves_evidence_backed_mixed_script_person_name():
         "status": "candidate",
         "type": "person",
         "score": 0.3,
-        "evidence": ["person_like"],
+        "evidence": ["person_like", "speaker_position", "standalone_line"],
     }
 
     records = build_deterministic_reclassification_records(
@@ -546,6 +720,28 @@ def test_reclassification_preserves_evidence_backed_mixed_script_person_name():
 
     assert glossary.is_identified_person_name("陽向葵ゅか")
     assert not glossary.is_identified_person_name("陽向葵ゅかなり")
+
+
+def test_glossary_does_not_protect_ordinary_inflected_phrases_as_people():
+    from translation.terminology import Glossary
+
+    glossary = Glossary.in_memory()
+    for source in ("魔法少女", "協力し", "気持ち", "思い出", "大好き", "怪人た", "能力"):
+        glossary.candidates[source] = {
+            "count": 20,
+            "targets": {},
+            "target": "",
+            "status": "candidate",
+            "type": "person",
+            "score": 0.3,
+            "evidence": ["person_like"],
+        }
+
+    text = "魔法少女だ。協力して、気持ちよく思い出した。大好きな怪人たちの能力だ。"
+    protected, tokens = glossary.protect_terms(text)
+
+    assert protected == text
+    assert tokens == []
 
 
 def test_reclassification_applies_safe_source_conditioned_angle_label_repair():
@@ -614,6 +810,54 @@ def test_ai_review_retries_verification_with_sensitive_primary_when_verifier_fai
     assert result["counts"]["applied"] == 1
     assert result["records"][0]["verifier_model"] == "api:adult"
     assert json.loads(Path(output_path).read_text(encoding="utf-8"))["こんにちは0"] == "您好0"
+
+
+def test_ai_review_retries_primary_with_configured_fallback_model(
+    tmp_path,
+    isolated_checkpoint_dir,
+):
+    source_path, output_path, items = _write_source_and_output(tmp_path, 1)
+    calls: list[tuple[str, str]] = []
+
+    def fake_translate(model, text, system_prompt, options):
+        payload = json.loads(text)
+        if "independent" in system_prompt:
+            calls.append(("verifier", model))
+            return json.dumps({
+                "items": [{"i": 0, "choice": "candidate", "resolved": ["style_review"]}],
+            })
+        calls.append(("primary", model))
+        if model == "api:review":
+            raise RuntimeError("temporary primary transport failure")
+        return json.dumps({
+            "items": [{"i": 0, "decision": "revise", "t": "您好__KEEP_0__"}],
+        }, ensure_ascii=False)
+
+    models = AIReviewModels("api:review", "api:verify", "api:adult", "api:adult-verify")
+    from translation.review.ai import begin_ai_review_session
+
+    begin_ai_review_session(
+        task_id="primary-fallback-task",
+        file_path=source_path,
+        models=models,
+        items=items,
+        auto_apply=True,
+    )
+    result = run_ai_review(
+        task_id="primary-fallback-task",
+        file_path=source_path,
+        items=items,
+        models=models,
+        output_path=output_path,
+        progress=lambda payload: None,
+        cancelled=lambda: False,
+        translator=fake_translate,
+    )
+
+    assert ("primary", "api:review") in calls
+    assert ("primary", "api:verify") in calls
+    assert result["counts"]["fixed"] == 1
+    assert result["records"][0]["review_model"] == "api:verify"
 
 
 def test_ai_review_verifier_receives_blocking_and_advisory_candidate_issues(
