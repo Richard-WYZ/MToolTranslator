@@ -3069,6 +3069,51 @@ def test_pollution_validator_accepts_honorific_names_supported_by_source():
         assert "unsupported_proper_name" not in issue_types
 
 
+def test_pollution_validator_accepts_stretched_honorific_evidence():
+    from translation.pollution import translation_pollution_issues
+
+    issues = translation_pollution_issues("「へんたいさーん♡」", "「变态先生♡」")
+
+    assert "unsupported_proper_name" not in {issue["type"] for issue in issues}
+
+
+def test_pollution_validator_does_not_mistake_lexical_adult_or_supported_title_for_name():
+    from translation.pollution import translation_pollution_issues
+
+    pairs = [
+        ("おにいさぁんっ", "哥哥大人——"),
+        ("あのかたが、私を守ってくれているから……", "因为那位大人在保护我……"),
+        ("おとなの人でも", "即使是大人"),
+    ]
+    for source, translated in pairs:
+        assert "unsupported_proper_name" not in {
+            issue["type"] for issue in translation_pollution_issues(source, translated)
+        }
+
+
+def test_dense_kana_character_inventory_is_preserved_as_nonlinguistic():
+    from translation.classification import deterministic_translation
+    from translation.quality import exact_nonlinguistic_translation, translation_issues
+
+    source = "｠»ゝゞーァィゥェォッャュョヮヵヶぁぃぅぇぉっゃゅょゎゕゖㇰㇱㇲㇳㇴㇵㇶㇷㇸㇹㇷ゚ㇺㇻㇼㇽㇾㇿ々〻‐゠–〜～"
+
+    assert exact_nonlinguistic_translation(source) == source
+    assert deterministic_translation(source) == source
+    assert translation_issues(source, source) == []
+
+
+def test_natural_kana_sentences_are_not_character_inventories():
+    from translation.quality import exact_nonlinguistic_translation
+
+    samples = [
+        "「あ、あとは、こっちでもやれることをしましょう」",
+        "こんなことでは、のぼせて……オーバーヒート・モードに",
+        "どんなにエッチなコトしても♡だいじょーぶです♡」",
+    ]
+
+    assert all(exact_nonlinguistic_translation(sample) == "" for sample in samples)
+
+
 def test_pollution_validator_keeps_clear_context_contamination_actionable():
     from translation.pollution import translation_pollution_issues
     from translation.quality import status_for_output
@@ -3186,6 +3231,38 @@ def test_japanese_source_code_and_serialized_fragments_are_preserved_unchanged()
 
     assert [deterministic_translation(source) for source in sources] == sources
     assert deterministic_translation("入口の前で金髪女性に声を掛けられる") == ""
+
+
+def test_css_and_multiline_executable_code_are_preserved_unchanged():
+    from translation.classification import deterministic_translation
+
+    css = 'color:#eee;font-size:12px;font-family:"Meiryo UI","游ゴシック UI",sans-serif;'
+    script = """// 画面内で右クリックされた時
+$('.layer_menu').off('contextmenu.menuAudio').on('contextmenu.menuAudio', function(e){
+    e.preventDefault();
+    $('.menu_close').click();"""
+
+    assert deterministic_translation(css) == css
+    assert deterministic_translation(script) == script
+    assert deterministic_translation("画面内で右クリックされた時、メニューを閉じる") == ""
+
+
+def test_closing_delimiter_object_particle_fragment_is_deterministic():
+    from translation.classification import deterministic_translation
+
+    assert deterministic_translation("》を") == "》"
+    assert deterministic_translation("  」を  ") == "  」  "
+
+
+def test_empty_internal_quote_pair_is_a_blocking_symbol_issue():
+    from translation.quality import status_for_output, translation_issues
+
+    source = "彼女は直接撃破した「最後の５人」の一人だ。"
+    translated = "她是直接击破灾厄的最后５人之一。「」"
+    issues = translation_issues(source, translated)
+
+    assert "symbol_preservation" in {issue["type"] for issue in issues}
+    assert status_for_output(source, translated, issues) == "translated_needs_review"
 
 
 def test_leading_member_calls_and_compact_character_ranges_are_preserved():

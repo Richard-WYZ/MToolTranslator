@@ -5,7 +5,7 @@ from collections import Counter
 from typing import Any
 
 
-CANDIDATE_POLICY_VERSION = "term-candidates-v2-speaker-dialogue-evidence"
+CANDIDATE_POLICY_VERSION = "term-candidates-v4-strong-name-evidence"
 JP_RE = re.compile("[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]+")
 KANJI_RE = re.compile("[\u3400-\u4dbf\u4e00-\u9fff]")
 KATAKANA_NAME_RE = re.compile("[\u30a1-\u30fa\u30fc]{2,20}")
