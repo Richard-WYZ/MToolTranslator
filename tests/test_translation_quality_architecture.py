@@ -132,6 +132,15 @@ def test_test_and_build_commands_use_dedicated_workspaces():
     assert "--workpath $WorkPath --distpath $DistPath" in build_script
 
 
+def test_build_script_never_packages_or_overwrites_dotenv():
+    root = Path(__file__).resolve().parents[1]
+    build_script = (root / "tools" / "build.ps1").read_text(encoding="utf-8")
+
+    assert ".env" not in build_script
+    assert "PortableEnvPath" not in build_script
+    assert "PortableEnvTemplate" not in build_script
+
+
 def test_glossary_delegates_candidate_policy_and_storage_to_focused_modules():
     root = Path(__file__).resolve().parents[1]
     glossary_text = (root / "translation" / "terminology" / "glossary.py").read_text(encoding="utf-8")
