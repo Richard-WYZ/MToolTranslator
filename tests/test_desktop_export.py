@@ -17,6 +17,7 @@ from app.services.files import (
     export_mtool_json,
     load_session_metadata,
     save_mtool_upload,
+    session_project_info,
     translation_output_state,
 )
 from translation.output import default_output_path
@@ -203,6 +204,7 @@ def test_import_route_associates_a_trusted_dragged_source_path(tmp_path):
     payload = response.json()
     assert payload["original_path"] == str(original.resolve())
     assert load_session_metadata(payload["saved_path"])["original_path"] == str(original.resolve())
+    assert session_project_info(payload["saved_path"])["project_display_name"] == "original"
     assert desktop_source_registry.consume(token) is None
 
 
@@ -313,6 +315,256 @@ def test_history_delete_rejects_active_task(tmp_path):
     assert response.status_code == 409
     assert output.is_file()
     assert "active-task" in tasks
+
+
+def test_history_delete_purges_only_an_internal_working_copy(tmp_path):
+    from app.routes.translation_state import create_router
+
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    source, output = _write_translation_pair(uploads)
+    api = FastAPI()
+    api.include_router(create_router(tasks={}, batches={}, ai_review_tasks={}, upload_dir=uploads))
+
+    response = TestClient(api).delete("/api/history/session", params={"file_path": str(source)})
+
+    assert response.status_code == 200
+    assert response.json()["removed_working_source"] is True
+    assert not source.exists()
+    assert not output.exists()
+    assert not source.parent.exists()
+
+
+def test_clear_history_deletes_finished_sessions_and_skips_active_ones(tmp_path):
+    from types import SimpleNamespace
+
+    from app.routes.translation_state import create_router
+    from translation import checkpoint
+
+    finished = tmp_path / "finished.json"
+    active = tmp_path / "active.json"
+    for source in (finished, active):
+        source.write_text(json.dumps({"一": "一"}, ensure_ascii=False), encoding="utf-8")
+    original_checkpoint_dir = checkpoint.CHECKPOINT_DIR
+    checkpoint.CHECKPOINT_DIR = str(tmp_path / "checkpoints")
+    try:
+        for source in (finished, active):
+            checkpoint.init_checkpoint(str(source), total=1, model="api:test", file_type="json")
+            checkpoint.save_progress(str(source), 0, 0, "一", "一", status="preserved")
+        tasks = {
+            "finished": SimpleNamespace(file_path=str(finished), status="completed", has_unexported_result=False),
+            "active": SimpleNamespace(file_path=str(active), status="running", has_unexported_result=True),
+        }
+        api = FastAPI()
+        api.include_router(create_router(tasks=tasks, batches={}, ai_review_tasks={}))
+
+        response = TestClient(api).post("/api/history/clear")
+
+        payload = response.json()
+        assert response.status_code == 200
+        assert payload["deleted"] == 1
+        assert payload["skipped"] == 1
+        assert payload["failed"] == 0
+        assert "finished" not in tasks
+        assert "active" in tasks
+        assert not Path(checkpoint.get_checkpoint_path(str(finished))).exists()
+        assert Path(checkpoint.get_checkpoint_path(str(active))).exists()
+        assert finished.is_file() and active.is_file()
+    finally:
+        checkpoint.CHECKPOINT_DIR = original_checkpoint_dir
+
+
+def test_desktop_exit_state_only_blocks_active_work(tmp_path):
+    from types import SimpleNamespace
+
+    from app.routes.translation_state import create_router
+
+    source = tmp_path / "saved.json"
+    tasks = {
+        "completed": SimpleNamespace(
+            task_id="completed", file_path=str(source), status="completed", has_unexported_result=True,
+        )
+    }
+    api = FastAPI()
+    api.include_router(create_router(tasks=tasks, batches={}, ai_review_tasks={}))
+    client = TestClient(api)
+
+    assert client.get("/api/desktop/exit-state").json()["requires_confirmation"] is False
+
+    tasks["active"] = SimpleNamespace(
+        task_id="active", file_path=str(source), status="running", has_unexported_result=True,
+    )
+    payload = client.get("/api/desktop/exit-state").json()
+    assert payload["requires_confirmation"] is True
+    assert [item["task_id"] for item in payload["states"]] == ["active"]
+
+
+def test_export_auto_finalizes_only_after_review_is_complete(tmp_path):
+    from translation import checkpoint
+
+    source, _output = _write_translation_pair(tmp_path)
+    destination = tmp_path / "result.json"
+    finalized = []
+    original_checkpoint_dir = checkpoint.CHECKPOINT_DIR
+    checkpoint.CHECKPOINT_DIR = str(tmp_path / "checkpoints")
+    try:
+        checkpoint.init_checkpoint(str(source), total=1, model="api:test", file_type="json")
+        checkpoint.save_progress(
+            str(source), 0, 0, "こんにちは", "你好", status="translated_needs_review",
+        )
+        api = FastAPI()
+        api.include_router(create_files_router(
+            upload_dir=tmp_path,
+            tasks={},
+            get_task_for_file=lambda _path: None,
+            ai_review_tasks={},
+            finalize_completed_session=lambda path: finalized.append(path) or {"ok": True},
+        ))
+        client = TestClient(api)
+        request = {
+            "session_id": source.parent.name,
+            "file_path": str(source),
+            "file_type": "json",
+            "column_mappings": [],
+            "output_path": str(destination),
+        }
+
+        pending = client.post("/api/export", json=request)
+        assert pending.status_code == 200
+        assert pending.json()["finalization"]["eligible"] is False
+        assert finalized == []
+
+        checkpoint.save_progress(str(source), 0, 0, "こんにちは", "你好", status="translated")
+        completed = client.post("/api/export", json=request)
+        assert completed.status_code == 200
+        finalization = completed.json()["finalization"]
+        assert finalization["confirmation_required"] is True
+        assert finalized == []
+
+        cleanup = client.post("/api/export/finalize", json={
+            "cleanup_token": finalization["cleanup_token"],
+            "cleanup": True,
+        })
+        assert cleanup.status_code == 200
+        assert cleanup.json()["cleaned"] is True
+        assert finalized == [str(source)]
+    finally:
+        checkpoint.CHECKPOINT_DIR = original_checkpoint_dir
+
+
+def test_browser_export_defers_final_cleanup_until_download_finishes(tmp_path):
+    from translation import checkpoint
+
+    source, _output = _write_translation_pair(tmp_path)
+    finalized = []
+    original_checkpoint_dir = checkpoint.CHECKPOINT_DIR
+    checkpoint.CHECKPOINT_DIR = str(tmp_path / "checkpoints")
+    try:
+        checkpoint.init_checkpoint(str(source), total=1, model="api:test", file_type="json")
+        checkpoint.save_progress(str(source), 0, 0, "こんにちは", "你好", status="translated")
+        api = FastAPI()
+        api.include_router(create_files_router(
+            upload_dir=tmp_path,
+            tasks={},
+            get_task_for_file=lambda _path: None,
+            ai_review_tasks={},
+            finalize_completed_session=lambda path: finalized.append(path) or {"ok": True},
+        ))
+        client = TestClient(api)
+
+        exported = client.post("/api/export", json={
+            "session_id": source.parent.name,
+            "file_path": str(source),
+            "file_type": "json",
+            "column_mappings": [],
+        })
+        finalization = exported.json()["finalization"]
+        assert finalization["pending_download"] is True
+        assert finalized == []
+
+        confirmed = client.post("/api/export/finalize", json={
+            "cleanup_token": finalization["cleanup_token"],
+            "cleanup": True,
+        })
+        assert confirmed.status_code == 200
+        assert confirmed.json()["pending_download"] is True
+
+        downloaded = client.get("/api/download", params={
+            "path": exported.json()["export_path"],
+            "cleanup_token": finalization["cleanup_token"],
+        })
+        assert downloaded.status_code == 200
+        assert finalized == [str(source)]
+    finally:
+        checkpoint.CHECKPOINT_DIR = original_checkpoint_dir
+
+
+def test_export_cleanup_can_be_declined_and_history_is_kept(tmp_path):
+    from translation import checkpoint
+
+    source, _output = _write_translation_pair(tmp_path)
+    finalized = []
+    original_checkpoint_dir = checkpoint.CHECKPOINT_DIR
+    checkpoint.CHECKPOINT_DIR = str(tmp_path / "checkpoints")
+    try:
+        checkpoint.init_checkpoint(str(source), total=1, model="api:test", file_type="json")
+        checkpoint.save_progress(str(source), 0, 0, "こんにちは", "你好", status="translated")
+        api = FastAPI()
+        api.include_router(create_files_router(
+            upload_dir=tmp_path,
+            tasks={},
+            get_task_for_file=lambda _path: None,
+            ai_review_tasks={},
+            finalize_completed_session=lambda path: finalized.append(path) or {"ok": True},
+        ))
+        client = TestClient(api)
+        exported = client.post("/api/export", json={
+            "session_id": source.parent.name,
+            "file_path": str(source),
+            "file_type": "json",
+            "column_mappings": [],
+            "output_path": str(tmp_path / "kept.json"),
+        }).json()
+
+        declined = client.post("/api/export/finalize", json={
+            "cleanup_token": exported["finalization"]["cleanup_token"],
+            "cleanup": False,
+        })
+
+        assert declined.status_code == 200
+        assert declined.json()["kept"] is True
+        assert finalized == []
+        assert source.is_file()
+    finally:
+        checkpoint.CHECKPOINT_DIR = original_checkpoint_dir
+
+
+def test_history_project_name_uses_original_directory_and_supports_custom_name(tmp_path):
+    from app.routes.translation_state import create_router
+
+    original = tmp_path / "MyGame" / "ManualTransFile.json"
+    original.parent.mkdir()
+    content = json.dumps({"一": "一"}, ensure_ascii=False).encode("utf-8")
+    original.write_bytes(content)
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    imported = save_mtool_upload(uploads, original.name, content, original_path=str(original))
+    source = imported["saved_path"]
+    api = FastAPI()
+    api.include_router(create_router(tasks={}, batches={}, ai_review_tasks={}, upload_dir=uploads))
+    client = TestClient(api)
+
+    renamed = client.put("/api/history/session/name", json={
+        "file_path": source,
+        "project_name": "魔王城测试版",
+    })
+
+    assert renamed.status_code == 200
+    assert renamed.json()["project_display_name"] == "魔王城测试版"
+    assert renamed.json()["project_name_source"] == "custom"
+    reset = client.put("/api/history/session/name", json={"file_path": source, "project_name": ""})
+    assert reset.json()["project_display_name"] == "MyGame"
+    assert reset.json()["project_name_source"] == "directory"
 
 
 def test_export_status_allows_safe_snapshot_without_manual_review(tmp_path):

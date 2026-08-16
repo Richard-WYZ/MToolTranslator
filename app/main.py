@@ -22,7 +22,11 @@ from app.routes.models import router as models_router
 from app.routes.review import create_router as create_review_router
 from app.routes.ai_review import create_router as create_ai_review_router
 from app.routes.settings import create_router as create_settings_router
-from app.routes.translation_state import cleanup_translation_state, create_router as create_translation_state_router
+from app.routes.translation_state import (
+    cleanup_translation_state,
+    create_router as create_translation_state_router,
+    delete_history_session,
+)
 from app.routes.translation_tasks import create_router as create_translation_tasks_router
 from app.schemas import CleanupRequest
 from app.services import BatchTranslationManager, TranslationTask
@@ -96,13 +100,34 @@ def cleanup_translation(req: CleanupRequest):
     return cleanup_translation_state(req, tasks=_tasks)
 
 
+def _finalize_exported_session(file_path: str):
+    return delete_history_session(
+        file_path,
+        tasks=_tasks,
+        ai_review_tasks=_ai_review_tasks,
+        upload_dir=UPLOAD_DIR,
+        purge_working_source=True,
+    )
+
+
 app.include_router(create_glossary_router(base_dir=BASE_DIR, tasks=_tasks, ai_review_tasks=_ai_review_tasks))
-app.include_router(create_files_router(upload_dir=UPLOAD_DIR, tasks=_tasks, get_task_for_file=_get_task_for_file, ai_review_tasks=_ai_review_tasks))
+app.include_router(create_files_router(
+    upload_dir=UPLOAD_DIR,
+    tasks=_tasks,
+    get_task_for_file=_get_task_for_file,
+    ai_review_tasks=_ai_review_tasks,
+    finalize_completed_session=_finalize_exported_session,
+))
 app.include_router(create_translation_tasks_router(tasks=_tasks, ai_review_tasks=_ai_review_tasks))
 app.include_router(create_settings_router(tasks=_tasks, ai_review_tasks=_ai_review_tasks))
 app.include_router(create_review_router(tasks=_tasks, ai_review_tasks=_ai_review_tasks))
 app.include_router(create_ai_review_router(translation_tasks=_tasks, ai_review_tasks=_ai_review_tasks))
-app.include_router(create_translation_state_router(tasks=_tasks, batches=_batches, ai_review_tasks=_ai_review_tasks))
+app.include_router(create_translation_state_router(
+    tasks=_tasks,
+    batches=_batches,
+    ai_review_tasks=_ai_review_tasks,
+    upload_dir=UPLOAD_DIR,
+))
 
 
 if __name__ == "__main__":

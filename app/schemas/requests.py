@@ -106,6 +106,16 @@ class ExportRequest(BaseModel):
     overwrite_original: bool = False
 
 
+class ExportFinalizeRequest(BaseModel):
+    cleanup_token: str
+    cleanup: bool = True
+
+
+class HistoryProjectNameRequest(BaseModel):
+    file_path: str
+    project_name: str = ""
+
+
 class DesktopImportRequest(BaseModel):
     source_token: str
 

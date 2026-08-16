@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import os
+import threading
+import uuid
 from pathlib import Path
-from typing import Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
-from app.schemas import DesktopImportRequest, ExportRequest
+from app.schemas import DesktopImportRequest, ExportFinalizeRequest, ExportRequest
 from app.services.desktop_sources import desktop_source_registry, validate_desktop_source
 from app.services.files import export_mtool_json, preview_mtool_json, save_mtool_upload, translation_output_state
 
@@ -23,8 +26,31 @@ def create_router(
     tasks: Mapping[str, TaskLike],
     get_task_for_file: Callable[[str], TaskLike | None],
     ai_review_tasks: Mapping[str, TaskLike] | None = None,
+    finalize_completed_session: Callable[[str], dict[str, Any]] | None = None,
 ) -> APIRouter:
     router = APIRouter()
+    pending_finalizations: dict[str, tuple[str, str, bool]] = {}
+    pending_finalization_lock = threading.Lock()
+
+    def completed_review(file_path: str) -> bool:
+        from translation.review import build_review_summary
+
+        summary = build_review_summary(file_path)
+        return bool(
+            summary.total > 0
+            and summary.pending == 0
+            and summary.review_required == 0
+            and summary.translated_needs_review == 0
+        )
+
+    def finalize_safely(file_path: str) -> dict[str, Any]:
+        if not finalize_completed_session:
+            return {"cleaned": False, "error": "Automatic cleanup is not configured"}
+        try:
+            cleanup_result = finalize_completed_session(file_path)
+            return {"cleaned": True, "cleanup_result": cleanup_result}
+        except Exception as exc:
+            return {"cleaned": False, "error": str(exc)}
 
     def ensure_import_available() -> None:
         if any(task.status in ("running", "paused", "stopping") for task in tasks.values()) or any(
@@ -103,7 +129,45 @@ def create_router(
         if task:
             task.has_unexported_result = False
 
+        eligible = completed_review(source_path)
+        finalization: dict[str, Any] = {
+            "eligible": eligible,
+            "pending_download": False,
+            "cleaned": False,
+            "confirmation_required": False,
+        }
+        if eligible and finalize_completed_session:
+            browser_download = not (req.overwrite_original or req.output_path or req.output_dir)
+            cleanup_token = uuid.uuid4().hex
+            with pending_finalization_lock:
+                pending_finalizations[cleanup_token] = (
+                    os.path.abspath(str(result["export_path"])),
+                    source_path,
+                    browser_download,
+                )
+            finalization.update({
+                "confirmation_required": True,
+                "pending_download": browser_download,
+                "cleanup_token": cleanup_token,
+            })
+
+        result["finalization"] = finalization
+
         return result
+
+    @router.post("/api/export/finalize")
+    def finalize_export(req: ExportFinalizeRequest):
+        with pending_finalization_lock:
+            pending = pending_finalizations.get(req.cleanup_token)
+            if not pending:
+                raise HTTPException(status_code=409, detail="Export cleanup token is invalid or expired")
+            if not req.cleanup:
+                pending_finalizations.pop(req.cleanup_token, None)
+                return {"ok": True, "cleaned": False, "kept": True, "pending_download": False}
+            if pending[2]:
+                return {"ok": True, "cleaned": False, "kept": False, "pending_download": True}
+            pending_finalizations.pop(req.cleanup_token, None)
+        return {"ok": True, "kept": False, "pending_download": False, **finalize_safely(pending[1])}
 
     @router.get("/api/export/status")
     def export_status(file_path: str = Query(...)):
@@ -124,12 +188,29 @@ def create_router(
         }
 
     @router.get("/api/download")
-    def download_file(path: str = Query(...), filename: str | None = Query(None)):
+    def download_file(
+        path: str = Query(...),
+        filename: str | None = Query(None),
+        cleanup_token: str | None = Query(None),
+    ):
         """Download a file by its path."""
         if not os.path.isfile(path):
             raise HTTPException(status_code=404, detail=f"File does not exist: {path}")
         download_name = Path(filename).name if filename else Path(path).name
-        return FileResponse(path, filename=download_name, media_type="application/octet-stream")
+        background = None
+        if cleanup_token:
+            with pending_finalization_lock:
+                pending = pending_finalizations.get(cleanup_token)
+                if not pending or not pending[2] or pending[0] != os.path.abspath(path):
+                    raise HTTPException(status_code=409, detail="Download cleanup token is invalid or expired")
+                pending_finalizations.pop(cleanup_token, None)
+            background = BackgroundTask(finalize_safely, pending[1])
+        return FileResponse(
+            path,
+            filename=download_name,
+            media_type="application/octet-stream",
+            background=background,
+        )
 
     return router
 

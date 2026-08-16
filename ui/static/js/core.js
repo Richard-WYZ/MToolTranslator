@@ -71,6 +71,12 @@ var state = {
     pollingFailures: 0,
     hasUnexportedResult: false,
     exportReady: false,
+    history: {
+        loading: false,
+        clearingAll: false,
+        deletingPaths: new Set(),
+        candidatePaths: new Set(),
+    },
     review: {
         stats: null,
         filter: "required",

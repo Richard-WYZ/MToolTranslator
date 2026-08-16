@@ -370,7 +370,8 @@
                     <div id="recovery-list" class="history-list"><div class="empty-state compact">正在检查断点</div></div>
                 </section>
                 <section class="panel">
-                    <div class="panel-heading simple"><div><h2>翻译历史</h2><p>本机检查点和当前应用会话</p></div><button id="btn-refresh-history" class="btn btn-secondary btn-sm">刷新</button></div>
+                    <div class="panel-heading simple"><div><h2>翻译历史</h2><p>本机检查点和当前应用会话</p></div><div class="history-heading-actions"><button id="btn-clear-history" class="btn btn-danger-ghost btn-sm" disabled>一键清除</button><button id="btn-refresh-history" class="btn btn-secondary btn-sm">刷新</button></div></div>
+                    <div id="history-busy-status" class="history-busy-status" role="status" aria-live="polite" hidden><span class="review-busy-spinner"></span><span>正在处理历史记录…</span></div>
                     <div id="history-list" class="history-list"><div class="empty-state compact">正在加载历史</div></div>
                 </section>
             </div>

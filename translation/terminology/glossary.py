@@ -146,7 +146,7 @@ class Glossary:
                     if alias_src and alias_tgt and alias_src != src:
                         mappings.append((str(alias_src), str(alias_tgt), src, typ))
         for source in self.candidates:
-            if source not in self.terms and self.is_identified_kanji_name(source):
+            if source not in self.terms and self.is_identified_person_name(source):
                 mappings.append((source, source, source, "person"))
         mappings.sort(key=lambda item: len(item[0]), reverse=True)
         self._mapping_cache = mappings
@@ -414,7 +414,7 @@ class Glossary:
             for source, target in sorted(self.terms.items())
         }
         identified_kanji_names = sorted(
-            source for source in self.candidates if self.is_identified_kanji_name(source)
+            source for source in self.candidates if self.is_identified_person_name(source)
         )
         if not enforced and not identified_kanji_names:
             return "0"
@@ -437,6 +437,34 @@ class Glossary:
             {"speaker_position", "standalone_line"} <= evidence
             or {"speaker_position", "quoted_name"} <= evidence
         )
+
+    def is_identified_person_name(self, text: str) -> bool:
+        """Recognize evidence-backed standalone names without inventing kana readings."""
+        stripped = (text or "").strip()
+        if not stripped or len(stripped) > 12 or re.search(r"[\s\r\n、。！？!?]", stripped):
+            return False
+        if self.is_identified_kanji_name(stripped):
+            return True
+        for suffix_length in (1, 2):
+            if len(stripped) <= suffix_length:
+                continue
+            source = stripped[:-suffix_length]
+            info = self.candidates.get(source, {}) or {}
+            if not isinstance(info, dict) or str(info.get("type") or "") != "person":
+                continue
+            if int(info.get("count", 0) or 0) < 2:
+                continue
+            evidence = {str(item) for item in info.get("evidence", []) or []}
+            if "person_like" not in evidence or not stripped.startswith(source):
+                continue
+            suffix = stripped[-suffix_length:]
+            if (
+                0 < len(suffix) <= 2
+                and re.fullmatch(r"[\u3040-\u309f]+", suffix)
+                and len(re.findall(r"[\u3400-\u9fff]", source)) >= 2
+            ):
+                return True
+        return False
 
     def prune_invalid_terms(self) -> int:
         removed = 0

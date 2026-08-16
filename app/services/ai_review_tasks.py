@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 import uuid
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, Mapping, MutableMapping
 
@@ -12,6 +14,7 @@ from app.services.model_status import public_model_statuses
 from app.services.models import available_models
 from app.services.review import load_review_context, matching_review_rows
 from app.services.runtime_profiles import QUALITY_FAST_MODEL, QUALITY_PRIMARY_MODEL, canonical_model_id
+from translation import checkpoint
 from translation.classification import has_explicit_adult_content
 from translation.review.ai import (
     AI_REVIEW_ACTIVE_STATUSES,
@@ -28,6 +31,7 @@ from translation.review.ai import (
 )
 from translation.usage import diff as usage_diff
 from translation.usage import snapshot as usage_snapshot
+from translation.terminology import Glossary
 
 
 TranslateFunc = Callable[[str, str, str, dict[str, Any] | None], str]
@@ -249,6 +253,12 @@ def build_ai_review_items(
                 "original": ctx["source_texts"][neighbor_row],
                 "translated": ctx["translated_texts"][neighbor_row],
             })
+        related = _related_translation_examples(
+            row,
+            source,
+            ctx["source_texts"],
+            ctx["translated_texts"],
+        )
         items.append({
             "row": row,
             "source": source,
@@ -257,6 +267,7 @@ def build_ai_review_items(
             "issues": issues,
             "issue_types": sorted({str(issue.get("type", "")) for issue in issues if isinstance(issue, dict)}),
             "neighbors": neighbors,
+            "related": related,
             "entry_classification": str(column.get("entry_classification", "")),
             "model_identifier": str(column.get("model_identifier", "")),
             "sensitive": has_explicit_adult_content(source) or any(
@@ -269,11 +280,66 @@ def build_ai_review_items(
 
 def build_reclassification_records(file_path: str) -> list[dict[str, Any]]:
     ctx = load_review_context(file_path)
+    glossary = Glossary(file_path=checkpoint.get_glossary_path(file_path))
     return build_deterministic_reclassification_records(
         list(ctx["source_texts"]),
         list(ctx["translated_texts"]),
         dict(ctx["cp_entries"]),
+        glossary=glossary,
     )
+
+
+def _related_translation_examples(
+    row: int,
+    source: str,
+    source_texts: list[str],
+    translated_texts: list[str],
+    *,
+    limit: int = 2,
+) -> list[dict[str, Any]]:
+    """Find bounded current-file examples for repeated names and near-duplicate text."""
+    distinctive = sorted(
+        set(re.findall(r"[A-Za-z]?[\u30a1-\u30fa\u30fc]{4,}", source)),
+        key=len,
+        reverse=True,
+    )
+    stripped_source = source.strip()
+    short_name = (
+        stripped_source
+        if (
+            2 <= len(stripped_source) <= 16
+            and re.fullmatch(r"[\u3040-\u30ff\u3400-\u9fff]+", stripped_source)
+            and len(re.findall(r"[\u3400-\u9fff]", stripped_source)) >= 2
+            and re.search(r"[\u3040-\u30ff]", stripped_source)
+        )
+        else ""
+    )
+    ranked: list[tuple[int, int]] = []
+    for candidate_row, candidate_source in enumerate(source_texts):
+        if candidate_row == row:
+            continue
+        translated = str(translated_texts[candidate_row])
+        if not translated or translated == candidate_source or re.search(r"[\u3040-\u30ff]", translated):
+            continue
+        score = 0
+        if short_name and short_name in candidate_source:
+            score = max(score, 100 + len(short_name))
+        for term in distinctive:
+            if term in candidate_source:
+                similarity = int(SequenceMatcher(None, source, candidate_source).ratio() * 50)
+                score = max(score, 20 + len(term) + similarity)
+        if score:
+            ranked.append((score, candidate_row))
+    ranked.sort(key=lambda item: (-item[0], abs(item[1] - row), item[1]))
+    return [
+        {
+            "row": candidate_row,
+            "position": "related_occurrence",
+            "original": source_texts[candidate_row],
+            "translated": translated_texts[candidate_row],
+        }
+        for _score, candidate_row in ranked[:limit]
+    ]
 
 
 def ai_review_preflight(

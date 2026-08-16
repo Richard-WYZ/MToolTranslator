@@ -106,11 +106,14 @@
 .inline-term-input { height: 31px; }
 
 .history-grid { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 15px; align-items: start; }
+.history-heading-actions, .history-busy-status { display: flex; align-items: center; gap: 8px; }
+.history-busy-status { margin: 10px 20px 0; color: var(--muted); font-size: 10px; }
 .history-list { display: flex; flex-direction: column; gap: 8px; padding: 16px 20px 20px; }
 .history-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 13px; padding: 12px; border: 1px solid var(--line); border-radius: 11px; }
 .history-main { min-width: 0; }
 .history-main strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .history-main > span { color: var(--muted); font-size: 9px; }
+.history-main > .history-source { display: block; overflow: hidden; margin-top: 2px; text-overflow: ellipsis; white-space: nowrap; }
 .history-progress { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
 .mini-progress { height: 5px; flex: 1; overflow: hidden; border-radius: 999px; background: #edf0f4; }
 .mini-progress i { display: block; height: 100%; background: var(--primary); }

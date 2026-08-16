@@ -478,6 +478,99 @@ def test_ai_review_repairs_multiline_runtime_text_line_by_line(
     assert json.loads(Path(output_path).read_text(encoding="utf-8"))[source] == expected
 
 
+def test_ai_review_validation_respects_authoritative_source_layout():
+    from translation.review.ai import _validate_translation
+
+    source = "一行目です。\n二行目です。\n三行目です。\n四行目です。\n五行目です。"
+    translated = "第一行。\n第二行。\n第三行。\n第四行。\n第五行。"
+
+    issues = _validate_translation(source, translated, [], short_label=False)
+
+    assert "too_many_lines" not in {issue["type"] for issue in issues}
+
+
+def test_ai_review_related_examples_use_translated_occurrences_only():
+    from app.services.ai_review_tasks import _related_translation_examples
+
+    sources = [
+        "アイテムとして使用するとQホイーミを覚える。",
+        "アイテムとして使用するQホイーミを覚える。",
+        "Qホイーミの書",
+        "別の文章",
+    ]
+    translated = [
+        sources[0],
+        "作为道具使用时，学会Q霍伊米。",
+        "Qホイーミ之书",
+        "另一段文字",
+    ]
+
+    examples = _related_translation_examples(0, sources[0], sources, translated)
+
+    assert [item["row"] for item in examples] == [1]
+    assert examples[0]["position"] == "related_occurrence"
+
+
+def test_reclassification_preserves_evidence_backed_mixed_script_person_name():
+    from translation.terminology import Glossary
+
+    source = "陽向葵ゅか"
+    glossary = Glossary.in_memory()
+    glossary.candidates["陽向葵ゅ"] = {
+        "count": 2,
+        "targets": {},
+        "target": "",
+        "status": "candidate",
+        "type": "person",
+        "score": 0.3,
+        "evidence": ["person_like"],
+    }
+
+    records = build_deterministic_reclassification_records(
+        [source],
+        [source],
+        {
+            "0_0": {
+                "translated": source,
+                "status": "review_required",
+                "issues": [{"type": "untranslated_japanese"}],
+                "entry_classification": "short_label",
+            }
+        },
+        glossary=glossary,
+    )
+
+    assert len(records) == 1
+    assert records[0]["after"] == source
+    assert records[0]["final_status"] == "preserved"
+
+    assert glossary.is_identified_person_name("陽向葵ゅか")
+    assert not glossary.is_identified_person_name("陽向葵ゅかなり")
+
+
+def test_reclassification_applies_safe_source_conditioned_angle_label_repair():
+    source = "Aには-2に<すべて>の項目"
+    current = "A包含-2至<すべて>的项目"
+
+    records = build_deterministic_reclassification_records(
+        [source],
+        [current],
+        {
+            "0_0": {
+                "translated": current,
+                "status": "review_required",
+                "issues": [{"type": "untranslated_japanese"}],
+                "entry_classification": "multiline",
+            }
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0]["after"] == "A包含-2至<全部>的项目"
+    assert records[0]["entry_classification"] == "deterministic_quality_repair"
+    assert records[0]["final_status"] == "translated"
+
+
 def test_ai_review_retries_verification_with_sensitive_primary_when_verifier_fails(
     tmp_path,
     isolated_checkpoint_dir,

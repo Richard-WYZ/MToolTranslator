@@ -14,6 +14,7 @@ function bindEvents() {
     el("btn-refresh-models").addEventListener("click", function () { loadModels(true); });
     bindSettingsEvents();
     el("btn-refresh-history").addEventListener("click", loadHistory);
+    el("btn-clear-history").addEventListener("click", clearAllHistory);
 
     var zone = el("upload-zone");
     zone.addEventListener("click", function () { if (!zone.classList.contains("disabled")) chooseSourceFile(); });
@@ -125,18 +126,22 @@ function bindEvents() {
     el("recovery-list").addEventListener("click", function (event) {
         var remove = event.target.closest("[data-delete-history-path]");
         var resume = event.target.closest("[data-resume-path]");
+        var rename = event.target.closest("[data-rename-history-path]");
         if (remove) deleteHistory(remove.dataset.deleteHistoryPath);
         else if (resume) resumeHistory(resume.dataset.resumePath);
+        else if (rename) renameHistoryProject(rename.dataset.renameHistoryPath, rename.dataset.projectName, rename.dataset.projectDisplayName);
     });
     el("history-list").addEventListener("click", function (event) {
         var remove = event.target.closest("[data-delete-history-path]");
         var open = event.target.closest("[data-open-path]");
+        var rename = event.target.closest("[data-rename-history-path]");
         if (remove) deleteHistory(remove.dataset.deleteHistoryPath);
         else if (open) adoptHistoryFile(open.dataset.openPath);
+        else if (rename) renameHistoryProject(rename.dataset.renameHistoryPath, rename.dataset.projectName, rename.dataset.projectDisplayName);
     });
     window.addEventListener("beforeunload", function (event) {
         if (window.pywebview && window.pywebview.api) return;
-        if (state.settingsDirty || state.hasUnexportedResult || ["starting", "running", "paused", "stopping", "finalizing"].includes(state.taskStatus) || aiReviewIsActive()) {
+        if (state.settingsDirty || ["starting", "running", "paused", "stopping", "finalizing"].includes(state.taskStatus) || aiReviewIsActive()) {
             event.preventDefault();
             event.returnValue = "";
         }

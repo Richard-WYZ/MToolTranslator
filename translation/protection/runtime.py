@@ -17,14 +17,23 @@ KEY_NAMES = {
 AMBIGUOUS_KEY_NAMES = {"start", "select"}
 
 VARIABLE_RE = re.compile(
-    r"(%[A-Za-z0-9_]+%|\{[^{}\n]{1,40}\}|\\\\[A-Za-z]+\[[^\]]+\]|<[^>\n]{1,80}>|https?://\S+)"
+    r"(%[A-Za-z0-9_]+%|\{[^{}\n]{1,40}\}|\\\\[A-Za-z]+\[[^\]]+\]|https?://\S+)"
 )
+ANGLE_FRAGMENT_RE = re.compile(r"<[^<>\n]{1,80}>")
 RESOURCE_REFERENCE_RE = re.compile(
-    r"(?<![A-Za-z0-9_\u3040-\u30ff\u3400-\u9fff])"
+    r"(?<![A-Za-z0-9_])"
+    r"(?:"
     r"(?:[A-Za-z]:[\\/]|\.{1,2}[\\/])?"
-    r"(?:[A-Za-z0-9_$@+.\-\u3040-\u30ff\u3400-\u9fff]+[\\/])*"
+    r"(?:[A-Za-z0-9_$@+.-][A-Za-z0-9_$@+.\-\u3040-\u30ff\u3400-\u9fff]*[\\/])+"
     r"[A-Za-z0-9_$@+\-\u3040-\u30ff\u3400-\u9fff]+"
+    r"|[A-Za-z0-9_$@+.-]+"
+    r")"
     r"\.(?:png|jpg|jpeg|webp|gif|ogg|mp3|wav|dat|json|csv|js|css|txt)"
+    r"(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+RESOURCE_EXTENSION_RE = re.compile(
+    r"(?<![A-Za-z0-9_])\.(?:png|jpg|jpeg|webp|gif|ogg|mp3|wav|dat|json|csv|js|css|txt)"
     r"(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
@@ -67,6 +76,22 @@ def normalize_fixed_key(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
 
 
+def is_runtime_angle_fragment(value: str) -> bool:
+    """Return whether an angle fragment is syntax rather than translatable UI text."""
+    if not ANGLE_FRAGMENT_RE.fullmatch(value or ""):
+        return False
+    inner = value[1:-1].strip()
+    if not inner:
+        return True
+    if not re.search(r"[\u3040-\u30ff\u3400-\u9fff]", inner):
+        return True
+    return bool(
+        inner.startswith(("/", "!", "?"))
+        or re.search(r"(?:^|\s)[A-Za-z_:][A-Za-z0-9_.:-]*\s*=", inner)
+        or re.search(r"[=:]", inner)
+    )
+
+
 def protect_runtime_tokens(text: str) -> tuple[str, list[ProtectedToken]]:
     if not text:
         return text, []
@@ -85,7 +110,14 @@ def protect_runtime_tokens(text: str) -> tuple[str, list[ProtectedToken]]:
         return token
 
     protected = VARIABLE_RE.sub(lambda m: add_token(m.group(0)), text)
+    protected = ANGLE_FRAGMENT_RE.sub(
+        lambda match: add_token(match.group(0))
+        if is_runtime_angle_fragment(match.group(0))
+        else match.group(0),
+        protected,
+    )
     protected = RESOURCE_REFERENCE_RE.sub(lambda m: add_token(m.group(0)), protected)
+    protected = RESOURCE_EXTENSION_RE.sub(lambda m: add_token(m.group(0)), protected)
     protected = CODE_EXPRESSION_RE.sub(lambda m: add_token(m.group(0)), protected)
     protected = CODE_IDENTIFIER_RE.sub(lambda m: add_token(m.group(0)), protected)
     protected = LINE_BREAK_RE.sub(lambda m: add_token(m.group(0)), protected)
@@ -248,6 +280,7 @@ def validate_runtime_tokens(
 __all__ = [
     "ProtectedToken",
     "RUNTIME_PLACEHOLDER_RE",
+    "is_runtime_angle_fragment",
     "protect_runtime_tokens",
     "reconcile_line_break_placeholders",
     "restore_runtime_tokens",

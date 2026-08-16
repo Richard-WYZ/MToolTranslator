@@ -3,21 +3,30 @@ from __future__ import annotations
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Any, MutableMapping
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.schemas import CleanupRequest, RecoveryResumeRequest
+from app.schemas import CleanupRequest, HistoryProjectNameRequest, RecoveryResumeRequest
 from app.services.files import (
     require_mtool_json_file,
+    session_project_info,
     session_metadata_path,
     translated_path,
     translation_output_state,
+    update_session_project_name,
 )
 from app.services.translation_task_service import start_translation_task, task_for_file
 from app.services.translation_tasks import BatchTranslationManager, TranslationTask
+from common.files import is_path_inside
 from translation import checkpoint
 from translation.config import default_model
+
+
+_HISTORY_CLEANUP_LOCK = threading.RLock()
+_ACTIVE_TRANSLATION_STATUSES = {"starting", "running", "paused", "stopping", "finalizing"}
+_ACTIVE_AI_REVIEW_STATUSES = {"preparing", "reviewing", "verifying", "applying", "finalizing", "stopping"}
 
 
 def cleanup_translation_state(
@@ -71,11 +80,13 @@ def cleanup_translation_state(
     return {"ok": True, "deleted": deleted, "skipped": skipped}
 
 
-def delete_history_session(
+def _delete_history_session_unlocked(
     file_path: str,
     *,
     tasks: MutableMapping[str, TranslationTask],
     ai_review_tasks: MutableMapping[str, Any] | None = None,
+    upload_dir: str | Path | None = None,
+    purge_working_source: bool = False,
 ) -> dict[str, Any]:
     absolute_path = os.path.abspath(file_path)
     matching_tasks = [
@@ -83,7 +94,7 @@ def delete_history_session(
         for task_id, task in tasks.items()
         if os.path.abspath(task.file_path) == absolute_path
     ]
-    if any(task.status in {"running", "paused", "stopping", "finalizing"} for _task_id, task in matching_tasks):
+    if any(task.status in _ACTIVE_TRANSLATION_STATUSES for _task_id, task in matching_tasks):
         raise HTTPException(status_code=409, detail="Stop the translation task before deleting its history")
 
     matching_ai_tasks = [
@@ -92,7 +103,7 @@ def delete_history_session(
         if os.path.abspath(str(getattr(task, "file_path", ""))) == absolute_path
     ]
     if any(
-        task.status in {"preparing", "reviewing", "verifying", "applying", "finalizing", "stopping"}
+        task.status in _ACTIVE_AI_REVIEW_STATUSES
         for _task_id, task in matching_ai_tasks
     ):
         raise HTTPException(status_code=409, detail="Stop AI review before deleting its history")
@@ -106,11 +117,48 @@ def delete_history_session(
     from app.services.review import invalidate_review_cache
 
     invalidate_review_cache(file_path)
+
+    removed_working_source = False
+    removed_session_dir = False
+    if purge_working_source and upload_dir and is_path_inside(absolute_path, upload_dir):
+        source = Path(absolute_path)
+        upload_root = Path(upload_dir).resolve()
+        if source.resolve() != upload_root and source.is_file():
+            source.unlink()
+            result["deleted"].append(str(source))
+            removed_working_source = True
+        parent = source.parent.resolve()
+        if parent != upload_root and is_path_inside(parent, upload_root):
+            try:
+                parent.rmdir()
+                removed_session_dir = True
+            except OSError:
+                pass
     return {
         **result,
         "removed_tasks": len(matching_tasks),
         "removed_ai_review_tasks": len(matching_ai_tasks),
+        "removed_working_source": removed_working_source,
+        "removed_session_dir": removed_session_dir,
     }
+
+
+def delete_history_session(
+    file_path: str,
+    *,
+    tasks: MutableMapping[str, TranslationTask],
+    ai_review_tasks: MutableMapping[str, Any] | None = None,
+    upload_dir: str | Path | None = None,
+    purge_working_source: bool = False,
+) -> dict[str, Any]:
+    with _HISTORY_CLEANUP_LOCK:
+        return _delete_history_session_unlocked(
+            file_path,
+            tasks=tasks,
+            ai_review_tasks=ai_review_tasks,
+            upload_dir=upload_dir,
+            purge_working_source=purge_working_source,
+        )
 
 
 def create_router(
@@ -118,6 +166,7 @@ def create_router(
     tasks: MutableMapping[str, TranslationTask],
     batches: MutableMapping[str, BatchTranslationManager],
     ai_review_tasks: MutableMapping[str, Any] | None = None,
+    upload_dir: str | Path | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -144,6 +193,10 @@ def create_router(
 
         threading.Thread(target=exit_later, daemon=False).start()
 
+    def enrich_history_session(session: dict[str, Any]) -> dict[str, Any]:
+        file_path = str(session.get("file_path") or "")
+        return {**session, **session_project_info(file_path)} if file_path else session
+
     @router.post("/api/desktop/shutdown")
     def shutdown_desktop():
         """Stop in-process services and exit the desktop app without deleting temp files."""
@@ -153,19 +206,121 @@ def create_router(
 
     @router.get("/api/recovery/sessions")
     def get_recovery_sessions():
-        return {"sessions": checkpoint.list_recovery_sessions()}
+        return {"sessions": [enrich_history_session(item) for item in checkpoint.list_recovery_sessions()]}
 
     @router.get("/api/history/sessions")
     def get_history_sessions():
-        return {"sessions": checkpoint.list_translation_sessions(include_completed=True)}
+        sessions = checkpoint.list_translation_sessions(include_completed=True)
+        known_paths = {
+            os.path.normcase(os.path.abspath(str(item.get("file_path") or "")))
+            for item in sessions
+            if item.get("file_path")
+        }
+        for task in tasks.values():
+            normalized_path = os.path.normcase(os.path.abspath(task.file_path))
+            if normalized_path in known_paths:
+                continue
+            sessions.append({
+                "file_path": task.file_path,
+                "file_exists": os.path.isfile(task.file_path),
+                "file_name": getattr(task, "file_name", "") or os.path.basename(task.file_path),
+                "model": getattr(task, "model", ""),
+                "completed": int(getattr(task, "progress", {}).get("current", 0) or 0),
+                "total": int(getattr(task, "progress", {}).get("total", 0) or 0),
+                "updated_at": getattr(task, "finished_at", None) or getattr(task, "started_at", None),
+                "status": task.status,
+                "review_queue_size": 0,
+            })
+        sessions.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+        return {"sessions": [enrich_history_session(item) for item in sessions]}
+
+    @router.put("/api/history/session/name")
+    def rename_history_project(req: HistoryProjectNameRequest):
+        if upload_dir and not is_path_inside(req.file_path, upload_dir):
+            raise HTTPException(status_code=400, detail="Only internal translation sessions can be renamed")
+        with _HISTORY_CLEANUP_LOCK:
+            return {"ok": True, **update_session_project_name(req.file_path, req.project_name)}
+
+    @router.get("/api/desktop/exit-state")
+    def get_desktop_exit_state():
+        states: list[dict[str, Any]] = []
+        for task in tasks.values():
+            if task.status in _ACTIVE_TRANSLATION_STATUSES:
+                states.append({
+                    "task_id": task.task_id,
+                    "file_path": task.file_path,
+                    "status": task.status,
+                    "kind": "translation",
+                })
+        for batch_id, batch in batches.items():
+            if batch.status in _ACTIVE_TRANSLATION_STATUSES:
+                states.append({"task_id": batch_id, "status": batch.status, "kind": "batch"})
+        for task in (ai_review_tasks or {}).values():
+            if task.status in _ACTIVE_AI_REVIEW_STATUSES:
+                states.append({
+                    "task_id": task.task_id,
+                    "file_path": task.file_path,
+                    "status": task.status,
+                    "kind": "ai_review",
+                })
+        return {"requires_confirmation": bool(states), "states": states}
 
     @router.delete("/api/history/session")
     def delete_history(file_path: str = Query(...)):
-        return delete_history_session(
-            file_path,
-            tasks=tasks,
-            ai_review_tasks=ai_review_tasks,
-        )
+        with _HISTORY_CLEANUP_LOCK:
+            return delete_history_session(
+                file_path,
+                tasks=tasks,
+                ai_review_tasks=ai_review_tasks,
+                upload_dir=upload_dir,
+                purge_working_source=True,
+            )
+
+    @router.post("/api/history/clear")
+    def clear_history():
+        candidates: dict[str, str] = {}
+        for session in checkpoint.list_translation_sessions(include_completed=True):
+            file_path = str(session.get("file_path", ""))
+            if file_path:
+                candidates[os.path.normcase(os.path.abspath(file_path))] = file_path
+        for task in tasks.values():
+            if task.file_path:
+                candidates[os.path.normcase(os.path.abspath(task.file_path))] = task.file_path
+        for task in (ai_review_tasks or {}).values():
+            file_path = str(getattr(task, "file_path", ""))
+            if file_path:
+                candidates[os.path.normcase(os.path.abspath(file_path))] = file_path
+
+        deleted_paths: list[str] = []
+        skipped: list[dict[str, str]] = []
+        failed: list[dict[str, str]] = []
+        with _HISTORY_CLEANUP_LOCK:
+            for file_path in candidates.values():
+                try:
+                    delete_history_session(
+                        file_path,
+                        tasks=tasks,
+                        ai_review_tasks=ai_review_tasks,
+                        upload_dir=upload_dir,
+                        purge_working_source=True,
+                    )
+                    deleted_paths.append(file_path)
+                except HTTPException as exc:
+                    if exc.status_code == 409:
+                        skipped.append({"file_path": file_path, "reason": str(exc.detail)})
+                    else:
+                        failed.append({"file_path": file_path, "reason": str(exc.detail)})
+                except Exception as exc:
+                    failed.append({"file_path": file_path, "reason": str(exc)})
+        return {
+            "ok": not failed,
+            "deleted": len(deleted_paths),
+            "skipped": len(skipped),
+            "failed": len(failed),
+            "deleted_paths": deleted_paths,
+            "skipped_items": skipped,
+            "failed_items": failed,
+        }
 
     @router.post("/api/recovery/resume")
     def resume_recovery_session(req: RecoveryResumeRequest):

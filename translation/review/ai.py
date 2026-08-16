@@ -38,7 +38,7 @@ from translation.review import write_review_report
 from translation.terminology import Glossary
 
 
-AI_REVIEW_VERSION = "ai-review-v7-deterministic-reclassification"
+AI_REVIEW_VERSION = "ai-review-v8-source-layout-and-related-context"
 AI_REVIEW_ACTIVE_STATUSES = {"preparing", "reviewing", "verifying", "applying", "finalizing"}
 AI_REVIEW_TERMINAL_STATUSES = {"completed", "cancelled", "error"}
 NON_WAIVABLE_ISSUE_TYPES = set(HARD_REVIEW_ISSUE_TYPES) | {
@@ -218,12 +218,24 @@ def build_deterministic_reclassification_records(
     source_texts: list[str],
     current_texts: list[str],
     checkpoint_entries: dict[Any, Any],
+    glossary: Glossary | None = None,
 ) -> list[dict[str, Any]]:
     """Build rollback-safe repairs for outputs made stale by newer deterministic rules."""
     records: list[dict[str, Any]] = []
     for row, source in enumerate(source_texts):
         current = current_texts[row] if row < len(current_texts) else source
-        deterministic = deterministic_translation(source)
+        deterministic = deterministic_translation(source, glossary=glossary)
+        deterministic_quality_repair = False
+        if not deterministic:
+            repaired = apply_source_conditioned_fixes(source, current)
+            repair_issues = translation_issues(
+                source,
+                repaired,
+                short_label=looks_like_short_label(source),
+            )
+            if repaired != current and not repair_issues:
+                deterministic = repaired
+                deterministic_quality_repair = True
         if not deterministic:
             continue
         cp_entry = checkpoint_entries.get(f"{row}_0", checkpoint_entries.get((row, 0), {}))
@@ -249,7 +261,11 @@ def build_deterministic_reclassification_records(
             "before_issues": before_issues,
             "before_model": str(cp_entry.get("model_identifier", "")),
             "before_entry_classification": str(cp_entry.get("entry_classification", "")),
-            "entry_classification": "deterministic",
+            "entry_classification": (
+                "deterministic_quality_repair"
+                if deterministic_quality_repair
+                else "deterministic"
+            ),
             "decision": "deterministic",
             "primary_decision": "deterministic",
             "result": "reclassified",
@@ -633,6 +649,7 @@ def _prepare_item(item: dict[str, Any], glossary: Glossary) -> dict[str, Any]:
         "issue_types": [str(value) for value in item.get("issue_types", []) or [] if str(value)],
         "issue_types_for_prompt": [str(value) for value in item.get("issue_types", []) or [] if str(value)],
         "neighbors": list(item.get("neighbors", []) or []),
+        "related": list(item.get("related", []) or []),
         "entry_classification": str(item.get("entry_classification", candidate["entry_classification"])),
         "sensitive": bool(item.get("sensitive")) or has_explicit_adult_content(source) or any(
             has_explicit_adult_content(str(neighbor.get("original", "")))
@@ -706,13 +723,15 @@ def _primary_batch(
 ) -> dict[int, dict[str, Any]]:
     payload_items = []
     for item in items:
+        context_rows = list(item.get("related", []) or [])[:2]
+        context_rows.extend(list(item.get("neighbors", []) or [])[: 4 - len(context_rows)])
         contexts = [
             {
                 "position": context.get("position", ""),
                 "source": str(context.get("original", "")),
                 "translation": str(context.get("translated", "")),
             }
-            for context in item.get("neighbors", [])[:4]
+            for context in context_rows
         ]
         payload_items.append({
             "i": item["row"],
@@ -1103,7 +1122,17 @@ def _validate_translation(
     result.extend(new_issues(result, translation_issues(source, translated, short_label=short_label)))
     result.extend(new_issues(result, translation_pollution_issues(source, translated)))
     max_chars, max_lines = output_constraints()
-    result.extend(new_issues(result, get_violations(translated, max_chars=max_chars, max_lines=max_lines)))
+    source_lines = source.split("\n")
+    effective_max_chars = max(max_chars, *(len(line) for line in source_lines))
+    effective_max_lines = max(max_lines, len(source_lines))
+    result.extend(new_issues(
+        result,
+        get_violations(
+            translated,
+            max_chars=effective_max_chars,
+            max_lines=effective_max_lines,
+        ),
+    ))
     return _dedupe_issues(result)
 
 

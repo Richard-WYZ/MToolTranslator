@@ -107,18 +107,18 @@ def build_close_handler(window, request_client=requests):
     def on_closing():
         try:
             resp = request_client.get(
-                "http://127.0.0.1:8000/api/translation/dirty-state",
+                "http://127.0.0.1:8000/api/desktop/exit-state",
                 timeout=1,
             )
             state = resp.json()
         except Exception:
-            state = {"dirty": False}
+            state = {"requires_confirmation": False}
 
-        if state.get("dirty"):
+        if state.get("requires_confirmation", state.get("dirty", False)):
             confirmed = window.create_confirmation_dialog(
                 "确认退出",
-                "当前存在未导出或未完成的翻译结果。退出会停止翻译服务和后台进程，"
-                "临时文件会保留，是否退出？",
+                "当前仍有翻译或 AI 复核正在运行。退出会停止后台任务，"
+                "已保存的断点与临时结果会保留，是否退出？",
             )
             if not confirmed:
                 return False

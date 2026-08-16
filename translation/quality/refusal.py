@@ -115,7 +115,10 @@ def assess_model_output(text: str, original: str = "") -> ModelOutputAssessment:
         )
 
     stripped = text.strip()
-    if _is_only_punctuation(stripped):
+    if _is_only_punctuation(stripped) and not re.fullmatch(
+        r"(?:\u307e\u3059)[\u3002\uff01\uff1f!?]",
+        str(original or "").strip(),
+    ):
         return ModelOutputAssessment(
             issue_type="empty_translation",
             severity="hard",

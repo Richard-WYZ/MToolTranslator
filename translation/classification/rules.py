@@ -7,6 +7,7 @@ from translation.quality.rules import (
     apply_fixed_translations,
     english_residue,
     exact_fixed_translation,
+    exact_grammatical_fragment_translation,
     exact_japanese_menu_translation,
     exact_nonlinguistic_translation,
 )
@@ -14,7 +15,7 @@ from translation.quality.refusal import has_japanese
 
 
 SHORT_LABEL_MAX_CHARS = 40
-CLASSIFICATION_VERSION = "classification-v5-opaque-code-fragments"
+CLASSIFICATION_VERSION = "classification-v6-opaque-resources-and-fragments"
 SOURCE_JAPANESE_RE = re.compile("[\\u3041-\\u309f\\u30a1-\\u30fa\\u30fd-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff]")
 PURE_CJK_RE = re.compile(r"^[\u3400-\u4dbf\u4e00-\u9fff\u3005\u3006\u3024]+$")
 LONG_FORM_MARKERS = ("\u3002", "\u300c", "\u300d", "\u300e", "\u300f")
@@ -79,6 +80,10 @@ def deterministic_translation(text: str, glossary: Any | None = None) -> str:
     if fixed_menu:
         return fixed_menu
 
+    grammatical_fragment = exact_grammatical_fragment_translation(text)
+    if grammatical_fragment:
+        return grammatical_fragment
+
     nonlinguistic = exact_nonlinguistic_translation(text)
     if nonlinguistic:
         return nonlinguistic
@@ -87,6 +92,12 @@ def deterministic_translation(text: str, glossary: Any | None = None) -> str:
         looks_like_kanji_proper_name(text)
         and glossary is not None
         and getattr(glossary, "is_identified_kanji_name", lambda _text: False)(text)
+    ):
+        return text
+
+    if (
+        glossary is not None
+        and getattr(glossary, "is_identified_person_name", lambda _text: False)(text)
     ):
         return text
 

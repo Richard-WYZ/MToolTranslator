@@ -14,7 +14,7 @@ from translation.protection.runtime import (
 )
 
 
-QUALITY_RULES_VERSION = "quality-rules-v10-small-tsu-localization"
+QUALITY_RULES_VERSION = "quality-rules-v11-linguistic-angle-and-fragments"
 FIXED_TRANSLATIONS: dict[str, str] = {
     "continue": "继续",
     "new game": "新游戏",
@@ -71,6 +71,8 @@ FIXED_TRANSLATIONS: dict[str, str] = {
     "観客": "观众",
     "天候等": "天气等",
     "オーク": "兽人",
+    "すべて": "全部",
+    "なし": "无",
     "メスガキ": "小恶女",
     "スパッツ": "运动短裤",
     "ショーツ": "内裤",
@@ -102,11 +104,14 @@ STYLE_COMMAND_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*(?:\s*,\s*[0-9０-９]+)+
 SOURCE_VERSION_TOKEN_RE = re.compile(r"(?<![A-Za-z])ver(?:sion)?\.?(?![A-Za-z])", re.IGNORECASE)
 VERSION_MARKER_RE = re.compile(r"(?<![A-Za-z])(?:ver(?:sion)?\.?|version)\s*[0-9][0-9A-Za-z._-]*", re.IGNORECASE)
 RESOURCE_FILE_RE = re.compile(
-    r"^\s*[^\s\r\n<>]+\.(?:png|jpe?g|gif|webp|bmp|ogg|wav|mp3|m4a|json|js|css|"
+    r"^\s*[^\r\n<>]+\.(?:png|jpe?g|gif|webp|bmp|ogg|wav|mp3|m4a|json|js|css|"
     r"glsl|vert|frag|rvdata2?|rpgmvp|rpgmvo|rpgmvm)\s*$",
     re.IGNORECASE,
 )
 ANGLE_CONFIG_FRAGMENT_RE = re.compile(r"^\s*<[^<>\r\n]{1,200}>\s*$")
+GRAMMATICAL_FRAGMENT_TRANSLATIONS = {
+    "ます。": "。",
+}
 NUMERIC_ASSIGNMENT_RE = re.compile(
     r"^\s*[^=\r\n]{1,80}\s*=\s*[-+]?[0-9\uff10-\uff19]+(?:\.[0-9\uff10-\uff19]+)?\s*$"
 )
@@ -286,7 +291,7 @@ def exact_nonlinguistic_translation(text: str) -> str:
         return text
     if (
         RESOURCE_FILE_RE.fullmatch(text)
-        or ANGLE_CONFIG_FRAGMENT_RE.fullmatch(text)
+        or _looks_like_angle_config_fragment(text)
         or NUMERIC_ASSIGNMENT_RE.fullmatch(text)
         or _looks_like_source_code_or_serialized_fragment(text)
     ):
@@ -294,6 +299,23 @@ def exact_nonlinguistic_translation(text: str) -> str:
     if _looks_like_non_japanese_resource(text):
         return text
     return ""
+
+
+def exact_grammatical_fragment_translation(text: str) -> str:
+    """Translate standalone Japanese grammar tails that carry only sentence closure."""
+    value = str(text or "")
+    stripped = value.strip()
+    translated = GRAMMATICAL_FRAGMENT_TRANSLATIONS.get(stripped, "")
+    return value.replace(stripped, translated, 1) if translated else ""
+
+
+def _looks_like_angle_config_fragment(text: str) -> bool:
+    match = ANGLE_CONFIG_FRAGMENT_RE.fullmatch(text or "")
+    if not match:
+        return False
+    from translation.protection.runtime import is_runtime_angle_fragment
+
+    return is_runtime_angle_fragment(str(text).strip())
 
 
 def _looks_like_source_code_or_serialized_fragment(text: str) -> bool:
@@ -359,6 +381,10 @@ def apply_source_conditioned_fixes(source: str, translated: str) -> str:
     result = normalize_small_tsu_residue(translated)
     if not source:
         return result
+    for label in ("すべて", "なし"):
+        source_label = f"<{label}>"
+        if source_label in source:
+            result = result.replace(source_label, f"<{FIXED_TRANSLATIONS[label]}>")
     if "メスガキ" in source:
         result = result.replace("女童", "小恶女")
         result = result.replace("幼女", "小恶女")
@@ -451,6 +477,7 @@ def translation_issues(original: str, translated: str, short_label: bool = False
         and TARGET_SCRIPT_RE.search(original)
         and not is_valid_identical_han_translation(original)
         and not exact_nonlinguistic_translation(original)
+        and translated != exact_grammatical_fragment_translation(original)
     ):
         issues.append({
             "type": "identical_japanese_source",
@@ -461,6 +488,7 @@ def translation_issues(original: str, translated: str, short_label: bool = False
         TARGET_SCRIPT_RE.search(original)
         and not re.search(r"[A-Za-z0-9\u3400-\u9fff]", translated)
         and not exact_nonlinguistic_translation(original)
+        and translated != exact_grammatical_fragment_translation(original)
     ):
         issues.append({
             "type": "model_refusal",
@@ -648,6 +676,7 @@ __all__ = [
     "apply_source_conditioned_fixes",
     "english_residue",
     "exact_fixed_translation",
+    "exact_grammatical_fragment_translation",
     "exact_japanese_menu_translation",
     "exact_nonlinguistic_translation",
     "normalize_small_tsu_residue",

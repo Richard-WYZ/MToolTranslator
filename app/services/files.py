@@ -6,6 +6,7 @@ import json
 import shutil
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +65,55 @@ def save_session_metadata(file_path: str | Path, metadata: dict[str, Any]) -> Pa
         if temp_path.exists():
             os.remove(temp_path)
     return destination
+
+
+def session_project_info(file_path: str | Path) -> dict[str, Any]:
+    metadata = load_session_metadata(file_path)
+    original_path = str(metadata.get("original_path") or "")
+    custom_name = str(metadata.get("project_name") or "").strip()
+    session_id = str(metadata.get("session_id") or Path(file_path).resolve().parent.name)
+    if custom_name:
+        display_name = custom_name
+        name_source = "custom"
+    elif original_path:
+        parent_name = Path(original_path).parent.name.strip()
+        display_name = parent_name or Path(original_path).stem or f"项目 {session_id[:6]}"
+        name_source = "directory"
+    else:
+        display_name = f"项目 {session_id[:6]}" if session_id else "未命名项目"
+        name_source = "session"
+    return {
+        "project_name": custom_name,
+        "project_display_name": display_name,
+        "project_name_source": name_source,
+        "original_path": original_path,
+        "session_id": session_id,
+        "created_at": str(metadata.get("created_at") or ""),
+    }
+
+
+def update_session_project_name(file_path: str | Path, project_name: str) -> dict[str, Any]:
+    clean_name = str(project_name or "").strip()
+    if len(clean_name) > 80:
+        raise HTTPException(status_code=400, detail="Project name must be 80 characters or fewer")
+    metadata = load_session_metadata(file_path)
+    if not metadata:
+        source = Path(file_path).resolve()
+        if not source.is_file():
+            raise HTTPException(status_code=404, detail="Session source file does not exist")
+        metadata = {
+            "version": 1,
+            "session_id": source.parent.name,
+            "working_path": str(source),
+            "original_path": "",
+            "original_import_sha256": "",
+            "original_last_known_sha256": "",
+            "last_exported_sha256": "",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    metadata["project_name"] = clean_name
+    save_session_metadata(file_path, metadata)
+    return session_project_info(file_path)
 
 
 def _atomic_copy(source: str | Path, destination: str | Path) -> None:
@@ -166,6 +216,8 @@ def save_mtool_upload(
         "original_import_sha256": content_hash if original_path else "",
         "original_last_known_sha256": content_hash if original_path else "",
         "last_exported_sha256": "",
+        "project_name": "",
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
     save_session_metadata(saved_path, metadata)
 

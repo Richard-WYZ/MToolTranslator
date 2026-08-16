@@ -1989,6 +1989,50 @@ def test_resource_protection_does_not_swallow_surrounding_japanese():
     assert restore_runtime_tokens(second_protected, second_tokens) == sources[1]
 
 
+def test_runtime_protection_translates_linguistic_angle_labels_and_keeps_extensions():
+    from translation.batching import prepare_model_candidate
+    from translation.protection import protect_runtime_tokens
+
+    action = prepare_model_candidate(
+        batch_i=0,
+        idx=0,
+        source="<アクション1>条件▼▼▼",
+    )
+    assert "アクション" in action["protected"]
+    assert "<" not in action["protected"]
+    assert ">" not in action["protected"]
+    assert [token.value for token in action["runtime_tokens"]] == ["1"]
+    assert [token.symbol for token in action["symbol_tokens"]] == ["<", ">"]
+
+    syntax, syntax_tokens = protect_runtime_tokens("<actor id=3>名前")
+    assert syntax.startswith("__KEEP_0__")
+    assert syntax_tokens[0].value == "<actor id=3>"
+
+    source = "cself[5]に.txtがついていなければ自動で付与"
+    protected, tokens = protect_runtime_tokens(source)
+    assert "に" in protected
+    assert [token.value for token in tokens] == ["5", ".txt"]
+
+
+def test_deterministic_rules_preserve_spaced_resource_paths_and_translate_grammar_tail():
+    from translation.classification import deterministic_translation
+    from translation.quality import translation_issues
+
+    resource = "BGM2/青い甲冑　ゴルゴンゾーラ.mp3"
+    assert deterministic_translation(resource) == resource
+    assert deterministic_translation("<すべて>") == ""
+    assert deterministic_translation("ます。") == "。"
+    assert deterministic_translation(" ます。 ") == " 。 "
+    assert translation_issues("ます。", "。") == []
+
+    from translation.quality import apply_source_conditioned_fixes
+
+    assert apply_source_conditioned_fixes(
+        "Aには-2に<すべて>の項目",
+        "A包含-2至<すべて>的项目",
+    ) == "A包含-2至<全部>的项目"
+
+
 def test_model_source_normalizes_generic_japanese_numeric_ordinals_before_protection():
     from translation.batching import prepare_model_candidate
     from translation.classification import normalize_model_source

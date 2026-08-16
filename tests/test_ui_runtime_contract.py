@@ -281,6 +281,13 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert "/rollback" in script
     assert "/export/status" in script
     assert "/history/session?file_path=" in script
+    assert 'id="btn-clear-history"' in html
+    assert 'id="history-busy-status"' in html
+    assert "/history/clear" in script
+    assert "cleanup_token" in script
+    assert "/export/finalize" in script
+    assert "/history/session/name" in script
+    assert "data-rename-history-path" in script
     assert "data-delete-history-path" in script
     assert "window.pywebview && window.pywebview.api" in script
     assert "save_file_dialog" in script
