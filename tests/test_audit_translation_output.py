@@ -81,3 +81,74 @@ def test_offline_audit_deduplicates_punctuation_only_refusal_issue(tmp_path):
 
     assert report["issue_entry_count"] == 1
     assert report["issue_counts"] == {"model_refusal": 1}
+
+
+def test_review_report_reconciles_quality_against_serialized_artifact(monkeypatch, tmp_path):
+    import translation.checkpoint as checkpoint
+    from translation.review import write_review_report
+
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", str(tmp_path / "checkpoints"))
+    source_path = tmp_path / "source.json"
+    output_path = tmp_path / "source.translated.json"
+    source = "一行目。\n二行目。"
+    source_path.write_text(json.dumps({source: source}, ensure_ascii=False), encoding="utf-8")
+    output_path.write_text(
+        json.dumps({source: "第一行。\n第二行。__KEEP__"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    checkpoint.init_checkpoint(str(source_path), total=1)
+    checkpoint.save_progress(
+        str(source_path),
+        0,
+        0,
+        source,
+        "第一行。\n第二行。",
+        status="translated",
+        issues=[],
+        json_key=source,
+    )
+
+    report_path = write_review_report(str(source_path), str(output_path))
+    report = json.loads(open(report_path, encoding="utf-8").read())
+
+    assert report["artifact_validation"]["reconciled_entry_count"] == 1
+    assert report["summary"]["review_required"] == 1
+    assert report["items"][0]["translation"].endswith("__KEEP__")
+    assert "internal_placeholder_leak" in {
+        issue["type"] for issue in report["items"][0]["issues"]
+    }
+
+    output_path.write_text(
+        json.dumps({source: "第一行。\n第二行。"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    repaired_report = json.loads(
+        open(write_review_report(str(source_path), str(output_path)), encoding="utf-8").read()
+    )
+    assert repaired_report["summary"]["review_required"] == 0
+    assert repaired_report["items"] == []
+
+
+def test_final_artifact_audit_does_not_trust_invalid_preserved_status(monkeypatch, tmp_path):
+    import translation.checkpoint as checkpoint
+    from translation.review import write_review_report
+
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", str(tmp_path / "checkpoints"))
+    source_path = tmp_path / "source.json"
+    output_path = tmp_path / "source.translated.json"
+    source = "いらっしゃい"
+    source_path.write_text(json.dumps({source: source}, ensure_ascii=False), encoding="utf-8")
+    output_path.write_text(json.dumps({source: source}, ensure_ascii=False), encoding="utf-8")
+    checkpoint.init_checkpoint(str(source_path), total=1)
+    checkpoint.save_progress(
+        str(source_path), 0, 0, source, source, status="preserved", issues=[], json_key=source
+    )
+
+    report_path = write_review_report(str(source_path), str(output_path))
+    report = json.loads(open(report_path, encoding="utf-8").read())
+
+    assert report["summary"]["review_required"] == 1
+    assert {
+        "identical_japanese_source",
+        "untranslated_japanese",
+    }.issubset({issue["type"] for issue in report["items"][0]["issues"]})

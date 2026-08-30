@@ -54,6 +54,10 @@ NUMERIC_TOKEN_RE = re.compile(
     r"(?![A-Za-z0-9_])"
 )
 RUNTIME_PLACEHOLDER_RE = re.compile(r"__KEEP_\d+__")
+FOREIGN_RUNTIME_PLACEHOLDER_RE = re.compile(
+    r"__KEEP(?:_[A-Za-z0-9]+)*__",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -222,8 +226,13 @@ def reconcile_line_break_placeholders(
 
 
 def strip_foreign_runtime_placeholders(text: str, source_text: str) -> str:
-    """Remove model-copied runtime markers while preserving literal source text."""
-    allowed = Counter(RUNTIME_PLACEHOLDER_RE.findall(source_text))
+    """Remove model-copied runtime markers while preserving literal source text.
+
+    Providers sometimes collapse ``__KEEP_0__`` into ``__KEEP__`` or copy a
+    marker from read-only context. Those malformed markers are still internal
+    protocol data and must never reach the exported translation.
+    """
+    allowed = Counter(FOREIGN_RUNTIME_PLACEHOLDER_RE.findall(source_text))
     retained: Counter[str] = Counter()
 
     def replace(match: re.Match[str]) -> str:
@@ -233,7 +242,7 @@ def strip_foreign_runtime_placeholders(text: str, source_text: str) -> str:
             return marker
         return ""
 
-    return RUNTIME_PLACEHOLDER_RE.sub(replace, text)
+    return FOREIGN_RUNTIME_PLACEHOLDER_RE.sub(replace, text)
 
 
 def validate_runtime_tokens(
