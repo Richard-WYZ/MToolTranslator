@@ -9,12 +9,13 @@ from translation.protection.runtime import (
     CODE_EXPRESSION_RE,
     CODE_IDENTIFIER_RE,
     KEY_NAMES,
+    RESOURCE_REFERENCE_RE,
     VARIABLE_RE,
     normalize_fixed_key,
 )
 
 
-QUALITY_RULES_VERSION = "quality-rules-v14-empty-symbol-pairs"
+QUALITY_RULES_VERSION = "quality-rules-v15-artifact-integrity"
 FIXED_TRANSLATIONS: dict[str, str] = {
     "continue": "继续",
     "new game": "新游戏",
@@ -169,6 +170,11 @@ HAN_RE = re.compile("[\u3400-\u4dbf\u4e00-\u9fff]")
 NORMALIZED_NUMERIC_VALUE_RE = re.compile(r"\d+(?:[.,]\d+)*")
 LEAKED_TERM_PLACEHOLDER_RE = re.compile(
     r"__(?:PERSON|TERM|KEEP|SYM)_\d+__",
+    re.IGNORECASE,
+)
+LEAKED_INTERNAL_PLACEHOLDER_RE = re.compile(
+    r"__(?:KEEP(?:_[A-Za-z0-9]+)*|SYM(?:_[A-Za-z0-9]+)*|"
+    r"TERM(?:_[A-Za-z0-9]+)*|PERSON(?:_[A-Za-z0-9]+)*)__",
     re.IGNORECASE,
 )
 HONORIFIC_SUFFIX_RE = re.compile(
@@ -575,6 +581,28 @@ def translation_issues(original: str, translated: str, short_label: bool = False
             + ", ".join(sorted(set(leaked_term_placeholders))[:5]),
         })
 
+    source_internal_placeholders = Counter(LEAKED_INTERNAL_PLACEHOLDER_RE.findall(original))
+    leaked_internal_placeholders = [
+        marker
+        for marker, count in Counter(LEAKED_INTERNAL_PLACEHOLDER_RE.findall(translated)).items()
+        if count > source_internal_placeholders[marker]
+        and marker not in leaked_term_placeholders
+    ]
+    if leaked_internal_placeholders:
+        issues.append({
+            "type": "internal_placeholder_leak",
+            "message": "Internal protection placeholders remain in the translated text: "
+            + ", ".join(sorted(set(leaked_internal_placeholders))[:5]),
+        })
+
+    source_resources = Counter(RESOURCE_REFERENCE_RE.findall(original))
+    target_resources = Counter(RESOURCE_REFERENCE_RE.findall(translated))
+    if source_resources != target_resources:
+        issues.append({
+            "type": "resource_identifier_preservation",
+            "message": "Resource or file references differ from the source.",
+        })
+
     if _honorific_rendering_needs_review(original, translated):
         issues.append({
             "type": "honorific_rendering_review",
@@ -621,6 +649,23 @@ def translation_issues(original: str, translated: str, short_label: bool = False
         issues.append({
             "type": "short_label_expansion",
             "message": "Short label was translated into an unusually long phrase.",
+        })
+
+    source_lines = [line.strip() for line in original.splitlines() if line.strip()]
+    target_lines = [line.strip() for line in translated.splitlines() if line.strip()]
+    repeated_target_lines = {
+        line
+        for line, count in Counter(target_lines).items()
+        if count > 1 and len(line) >= 8
+    }
+    if (
+        len(source_lines) == len(target_lines)
+        and repeated_target_lines
+        and not any(count > 1 for count in Counter(source_lines).values())
+    ):
+        issues.append({
+            "type": "context_contamination",
+            "message": "Distinct source lines collapsed into a duplicated translated line.",
         })
 
     if VERSION_MARKER_RE.search(original) and not VERSION_MARKER_RE.search(translated):

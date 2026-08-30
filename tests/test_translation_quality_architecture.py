@@ -129,7 +129,42 @@ def test_test_and_build_commands_use_dedicated_workspaces():
     assert '"test_work\\pytest"' in test_script
     assert 'Join-Path $BuildRoot "work"' in build_script
     assert 'Join-Path $BuildRoot "dist"' in build_script
+    assert "$DistPath = Join-Path $DistRoot $ArtifactDirectoryName" in build_script
     assert "--workpath $WorkPath --distpath $DistPath" in build_script
+
+
+def test_build_script_never_packages_or_overwrites_dotenv():
+    root = Path(__file__).resolve().parents[1]
+    build_script = (root / "tools" / "build.ps1").read_text(encoding="utf-8")
+
+    assert ".env" not in build_script
+    assert "PortableEnvPath" not in build_script
+    assert "PortableEnvTemplate" not in build_script
+
+
+def test_build_script_uses_unique_isolated_artifact_directories():
+    root = Path(__file__).resolve().parents[1]
+    build_script = (root / "tools" / "build.ps1").read_text(encoding="utf-8")
+
+    assert '[string]$Version = ""' in build_script
+    assert '"MToolTranslator-$VersionTag-windows-x64"' in build_script
+    assert '"MToolTranslator-dev-$Timestamp-windows-x64"' in build_script
+    assert "if (Test-Path -LiteralPath $DistPath)" in build_script
+    assert "will not be overwritten" in build_script
+    assert 'Join-Path $DistPath "MToolTranslator.exe"' in build_script
+    assert "$Artifacts.Count -ne 1" in build_script
+    assert "must contain only MToolTranslator.exe" in build_script
+
+
+def test_release_build_requires_clean_synced_master():
+    root = Path(__file__).resolve().parents[1]
+    build_script = (root / "tools" / "build.ps1").read_text(encoding="utf-8")
+
+    assert '@("branch", "--show-current")' in build_script
+    assert '$CurrentBranch -ne "master"' in build_script
+    assert '@("status", "--porcelain")' in build_script
+    assert '@("rev-parse", "origin/master")' in build_script
+    assert "$HeadCommit -ne $RemoteMasterCommit" in build_script
 
 
 def test_glossary_delegates_candidate_policy_and_storage_to_focused_modules():
@@ -2152,6 +2187,32 @@ def test_restore_protected_translation_strips_foreign_runtime_placeholder():
     assert missing_terms == []
 
 
+def test_restore_protected_translation_strips_malformed_runtime_placeholder():
+    from translation.protection import restore_protected_translation
+    from translation.protection.runtime import ProtectedToken
+
+    class FakeGlossary:
+        restore_terms = staticmethod(lambda text, tokens: text)
+        apply_post_translation = staticmethod(lambda original, translated: translated)
+        missing_hits = staticmethod(lambda original, translated, hits: [])
+
+    restored, issues, missing_terms = restore_protected_translation(
+        glossary=FakeGlossary(),
+        original_text="一行目。\n二行目。",
+        prepared_text="一行目。\n二行目。",
+        protected_text="一行目。__KEEP_0__二行目。",
+        translated="第一行。__KEEP_0__第二行。__KEEP__",
+        symbol_tokens=[],
+        term_tokens=[],
+        runtime_tokens=[ProtectedToken("__KEEP_0__", "\n")],
+        term_hits=[],
+    )
+
+    assert restored == "第一行。\n第二行。"
+    assert issues == []
+    assert missing_terms == []
+
+
 def test_quality_retry_accepts_english_residue_improvement():
     from translation.quality import retry_english_residue_translation
 
@@ -3263,6 +3324,39 @@ def test_empty_internal_quote_pair_is_a_blocking_symbol_issue():
 
     assert "symbol_preservation" in {issue["type"] for issue in issues}
     assert status_for_output(source, translated, issues) == "translated_needs_review"
+
+
+def test_quality_blocks_malformed_internal_placeholder_leaks():
+    from translation.quality import status_for_output, translation_issues
+
+    source = "一行目。\n二行目。"
+    translated = "第一行。\n第二行。__KEEP__"
+    issues = translation_issues(source, translated)
+
+    assert "internal_placeholder_leak" in {issue["type"] for issue in issues}
+    assert status_for_output(source, translated, issues) == "review_required"
+
+
+def test_quality_blocks_resource_reference_changes():
+    from translation.quality import status_for_output, translation_issues
+
+    source = "Map.jsonを読み込む"
+    translated = "读取地图.json"
+    issues = translation_issues(source, translated)
+
+    assert "resource_identifier_preservation" in {issue["type"] for issue in issues}
+    assert status_for_output(source, translated, issues) == "review_required"
+
+
+def test_quality_blocks_distinct_lines_collapsing_to_a_duplicate():
+    from translation.quality import status_for_output, translation_issues
+
+    source = "体を見せるためではない。\nそんなことはしない。"
+    translated = "我的身体不是给你看的。\n我的身体不是给你看的。"
+    issues = translation_issues(source, translated)
+
+    assert "context_contamination" in {issue["type"] for issue in issues}
+    assert status_for_output(source, translated, issues) == "review_required"
 
 
 def test_leading_member_calls_and_compact_character_ranges_are_preserved():

@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 
 
-SYMBOL_PROTECTION_VERSION = "protected-symbols-exactly-once-v5-internal-position-guard"
+SYMBOL_PROTECTION_VERSION = "protected-symbols-exactly-once-v6-no-empty-internal-rebuild"
 
 SYMBOL_RE = re.compile(
     r"[\u2661\u2665\u2764\U0001f495\U0001f496\U0001f497\U0001f498"
@@ -82,17 +82,22 @@ def restore_symbols(
             "message": "Internal protected symbols were omitted, so their translated-text position cannot be rebuilt safely.",
         })
 
-    rebuilt = cleaned
-    leading = ""
-    trailing = ""
-    for i, token in enumerate(tokens):
-        if i == 0 and not source_parts[0]:
-            leading += token.symbol
-        elif i == len(tokens) - 1 and not source_parts[-1]:
-            trailing += token.symbol
-        else:
-            trailing += token.symbol
-    return leading + rebuilt + trailing, warnings
+    # Only source-edge symbols have an unambiguous reconstruction position.
+    # Appending omitted internal quote pairs produced artifacts such as ``「」``
+    # at the end of otherwise readable translations. Keep the readable text,
+    # restore safe edge symbols, and leave the warning for review instead.
+    non_symbol_indexes = [
+        index
+        for index, character in enumerate(original_text)
+        if not SYMBOL_RE.fullmatch(character)
+    ]
+    if not non_symbol_indexes:
+        return "".join(token.symbol for token in tokens), warnings
+    first_text_index = min(non_symbol_indexes)
+    last_text_index = max(non_symbol_indexes)
+    leading = "".join(token.symbol for token in tokens if token.index < first_text_index)
+    trailing = "".join(token.symbol for token in tokens if token.index > last_text_index)
+    return leading + cleaned + trailing, warnings
 
 
 __all__ = [

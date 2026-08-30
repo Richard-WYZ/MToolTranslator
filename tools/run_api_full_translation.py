@@ -411,13 +411,13 @@ def main() -> int:
         ))
     finally:
         elapsed = time.perf_counter() - started
-        cp = checkpoint.load_checkpoint(str(source))
         review_path = review_report_path(str(source), str(output))
         review_report_error = ""
         try:
             review_path = write_review_report(str(source), str(output))
         except Exception as exc:
             review_report_error = f"{type(exc).__name__}: {exc}"
+        cp = checkpoint.load_checkpoint(str(source))
         usage = token_usage.snapshot()
         entries = list(cp.get("entries", {}).values())
         statuses: dict[str, int] = {}

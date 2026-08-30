@@ -2488,7 +2488,7 @@ def test_symbol_restore_flags_omitted_internal_quote_position():
         tokens,
     )
 
-    assert restored.endswith("「」")
+    assert restored == "她是直接击破最后５人之一的魔法少女。"
     assert [issue["type"] for issue in issues] == ["symbol_preservation"]
 
 

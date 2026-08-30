@@ -79,7 +79,15 @@ tools\run_tests.ps1 -q
 tools\build.ps1
 ```
 
-便携输出位于 `build/dist/`。
+普通构建会写入独立的 `build/dist/MToolTranslator-dev-<时间戳>-windows-x64/`
+目录。正式发布须在与 `origin/master` 一致的干净 `master` 上执行：
+
+```powershell
+tools\build.ps1 -Version 0.2.5
+```
+
+正式输出位于 `build/dist/MToolTranslator-v0.2.5-windows-x64/`，初始仅包含
+`MToolTranslator.exe`；已有输出目录及其中的运行时文件不会被覆盖或自动清理。
 
 ## 当前状态
 

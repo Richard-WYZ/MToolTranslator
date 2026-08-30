@@ -12,11 +12,11 @@ class ReviewPreparationStage:
     def run(self, context: TranslationWorkflowContext) -> TranslationWorkflowContext:
         if context.result is None:
             raise RuntimeError("Review preparation requires a translation result")
-        summary = build_review_summary(context.request.file_path).as_dict()
         report_path = write_review_report(
             context.request.file_path,
             context.result.output_path,
         )
+        summary = build_review_summary(context.request.file_path).as_dict()
         context.analysis["review"] = summary
         context.analysis["review_report_path"] = report_path
         context.result.review_summary = summary

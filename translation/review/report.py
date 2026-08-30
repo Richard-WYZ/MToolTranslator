@@ -7,6 +7,7 @@ from typing import Any
 
 import translation.checkpoint as checkpoint
 from translation.output import default_output_path
+from translation.review.final_audit import reconcile_final_artifact
 from translation.review.summary import build_review_summary
 
 
@@ -92,8 +93,12 @@ def build_review_report(file_path: str, output_path: str | None = None) -> dict[
 def write_review_report(file_path: str, output_path: str | None = None) -> str:
     target = Path(review_report_path(file_path, output_path))
     target.parent.mkdir(parents=True, exist_ok=True)
+    translated_path = str(Path(output_path or default_output_path(file_path)))
+    artifact_validation = reconcile_final_artifact(file_path, translated_path)
+    payload = build_review_report(file_path, output_path)
+    payload["artifact_validation"] = artifact_validation
     target.write_text(
-        json.dumps(build_review_report(file_path, output_path), ensure_ascii=False, indent=2),
+        json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     return str(target)
