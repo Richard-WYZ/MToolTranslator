@@ -18,6 +18,13 @@ HARD_REVIEW_ISSUE_TYPES = {
     "unsupported_proper_name",
 }
 
+OPERATIONAL_DIAGNOSTIC_ISSUE_TYPES = {
+    "api_content_filter_fallback",
+    "api_parallel_batch_retry_failed",
+    "api_request_fallback",
+    "batch_fallback",
+}
+
 
 def status_for_output(source: str, translated: str, issues: list[dict[str, Any]] | None = None) -> str:
     """Return the final translation state for a source/output pair."""
@@ -28,11 +35,12 @@ def status_for_output(source: str, translated: str, issues: list[dict[str, Any]]
         for issue in issues or []
         if isinstance(issue, dict)
     }
-    if issue_types.intersection(HARD_REVIEW_ISSUE_TYPES):
+    review_issue_types = issue_types - OPERATIONAL_DIAGNOSTIC_ISSUE_TYPES
+    if review_issue_types.intersection(HARD_REVIEW_ISSUE_TYPES):
         return "review_required"
     if translated == source:
-        return "translated_needs_review" if issues else "preserved"
-    return "translated_needs_review" if issues else "translated"
+        return "translated_needs_review" if review_issue_types else "preserved"
+    return "translated_needs_review" if review_issue_types else "translated"
 
 
 def progress_status(status: str) -> str:
@@ -44,6 +52,7 @@ def progress_status(status: str) -> str:
 
 __all__ = [
     "HARD_REVIEW_ISSUE_TYPES",
+    "OPERATIONAL_DIAGNOSTIC_ISSUE_TYPES",
     "progress_status",
     "status_for_output",
 ]

@@ -205,6 +205,7 @@ LEXICALIZED_HONORIFIC_ENDINGS = (
     "\u6a21\u69d8",
     "\u4ed5\u69d8",
     "\u591a\u69d8",
+    "\u4e09\u8005\u4e09\u69d8",
     "\u7570\u69d8",
     "\u6298\u89d2\u541b",
     "\u51fa\u3055\u3093",
@@ -212,6 +213,10 @@ LEXICALIZED_HONORIFIC_ENDINGS = (
     "\u79c1\u3061\u3083\u3093",
 )
 NATURAL_HONORIFIC_EQUIVALENTS = (
+    (
+        ("\u8cb4\u65b9\u69d8",),
+        re.compile("\u60a8"),
+    ),
     (
         ("\u7236\u3055\u3093",),
         re.compile("\u7238\u7238|\u8001\u7238|\u7236\u4eb2|\u8001\u7239|\u7239"),

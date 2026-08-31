@@ -102,6 +102,39 @@ def test_composition_accepts_identical_han_parent_without_duplicate_review():
     assert records[0]["issues"] == []
 
 
+def test_composition_normalizes_small_tsu_residue_after_joining_children():
+    from translation.analysis import apply_mtool_compositions, build_mtool_composition_plan
+
+    items = [
+        ("……っ…………？", "……っ…………？"),
+        ("つい立ち寄ってしまった……", "不知不觉就走过来了……"),
+        ("……っ…………？\nつい立ち寄ってしまった……", ""),
+    ]
+    plan = build_mtool_composition_plan(items)
+    records: list[dict] = []
+
+    apply_mtool_compositions(
+        plan,
+        translated_items=items,
+        checkpoint_entries={
+            (0, 0): {"status": "preserved"},
+            (1, 0): {"status": "translated"},
+        },
+        file_path="game.json",
+        progress_records=records,
+        processed_targets=2,
+        total_targets=3,
+        progress_callback=None,
+        save_record=lambda _path, target, **record: target.append(record),
+        mark_dirty=lambda: None,
+        emit_progress=lambda *args, **kwargs: None,
+        progress_status=lambda status: status,
+    )
+
+    assert items[2][1] == "………………？\n不知不觉就走过来了……"
+    assert records[0]["status"] == "translated"
+
+
 def test_composition_plan_rejects_ambiguous_normalized_standalone_keys():
     from translation.analysis import build_mtool_composition_plan
 

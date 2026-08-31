@@ -1249,7 +1249,9 @@ def test_line_structural_failure_retries_the_whole_batch_as_json():
 
         @staticmethod
         def _status_for_output(source, translated, issues):
-            return "translated_needs_review" if issues else "translated"
+            from translation.quality import status_for_output
+
+            return status_for_output(source, translated, issues)
 
     error = BatchTranslationError(
         "missing line batch indexes: 1",
@@ -1304,7 +1306,9 @@ def test_structural_single_fallback_keeps_the_explicit_job_model():
 
         @staticmethod
         def _status_for_output(source, translated, issues):
-            return "translated_needs_review" if issues else "translated"
+            from translation.quality import status_for_output
+
+            return status_for_output(source, translated, issues)
 
         @staticmethod
         def _translate_cell_with_meta(*args, **kwargs):
@@ -1321,7 +1325,7 @@ def test_structural_single_fallback_keeps_the_explicit_job_model():
 
     assert FakePipeline.calls == ["api:minimax-m3"]
     assert payloads[0][0] == "\u300c\u6211\u8981\u5185\u5c04\u4e86\u300d"
-    assert payloads[0][1] == "translated_needs_review"
+    assert payloads[0][1] == "translated"
     assert {issue["type"] for issue in payloads[0][2]} == {"batch_fallback"}
 
 
@@ -2318,6 +2322,22 @@ def test_honorific_quality_check_accepts_natural_collective_rendering():
     assert not any(issue["type"] == "honorific_rendering_review" for issue in role_issues)
 
 
+def test_honorific_quality_check_accepts_lexicalized_phrase_and_polite_pronoun():
+    from translation.quality import translation_issues
+
+    lexicalized = translation_issues(
+        "促されるまま三者三様に挨拶を返す。",
+        "在对方的催促下，三人各自以不同的方式回礼。",
+    )
+    polite_pronoun = translation_issues(
+        "貴方様の強さがそんな形で現れるなんて…",
+        "您的强大竟以那种形式显现……",
+    )
+
+    assert not any(issue["type"] == "honorific_rendering_review" for issue in lexicalized)
+    assert not any(issue["type"] == "honorific_rendering_review" for issue in polite_pronoun)
+
+
 def test_honorific_quality_check_accepts_first_person_status_rendering():
     from translation.quality import translation_issues
 
@@ -2402,6 +2422,24 @@ def test_dialogue_brackets_are_protected_and_restored_exactly():
     )
 
     assert restored == "「你好」"
+    assert issues == []
+
+
+def test_narrative_parentheses_are_protected_and_restored_exactly():
+    from translation.protection import protect_symbols, restore_symbols
+
+    source = "(少女が振り返る。)"
+    protected, tokens = protect_symbols(source)
+
+    restored, issues = restore_symbols(
+        source,
+        protected,
+        "__SYM_0__少女回过头来。__SYM_1__",
+        tokens,
+    )
+
+    assert protected == "__SYM_0__少女が振り返る。__SYM_1__"
+    assert restored == "(少女回过头来。)"
     assert issues == []
 
 

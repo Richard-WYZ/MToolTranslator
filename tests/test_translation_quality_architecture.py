@@ -1171,6 +1171,8 @@ def test_translation_status_contract_is_shared_by_quality_and_pipeline():
     assert status_for_output("こんにちは", "你好") == "translated"
     assert status_for_output("こんにちは", "你好", issues) == "translated_needs_review"
     assert status_for_output("こんにちは", "你好", soft_issues) == "translated_needs_review"
+    operational_issues = [{"type": "api_request_fallback", "message": "fallback succeeded"}]
+    assert status_for_output("こんにちは", "你好", operational_issues) == "translated"
 
     assert TranslationPipeline._status_for_output("こんにちは", "你好", issues) == status_for_output("こんにちは", "你好", issues)
     assert progress_status("translated_needs_review") == "translated"

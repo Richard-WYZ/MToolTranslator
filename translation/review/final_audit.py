@@ -11,6 +11,40 @@ from translation.quality import new_issues, status_for_output, translation_issue
 from translation.terminology import Glossary
 
 
+# These issues describe the serialized output itself, so a terminal audit must
+# replace stale pipeline-era findings even when an older checkpoint did not
+# record which issue types came from a prior artifact audit. Operational
+# diagnostics are intentionally excluded and remain available for telemetry.
+RECOMPUTED_FINAL_ISSUE_TYPES = {
+    "composed_dependency_needs_review",
+    "composed_dependency_review_required",
+    "context_contamination",
+    "empty_translation",
+    "english_residue",
+    "glossary_pollution",
+    "glossary_proper_name_pollution",
+    "honorific_rendering_review",
+    "identical_japanese_source",
+    "internal_placeholder_leak",
+    "length_expansion",
+    "line_break_preservation",
+    "marker_lost",
+    "missing_output_key",
+    "model_refusal",
+    "numeric_preservation",
+    "resource_identifier_preservation",
+    "short_label_expansion",
+    "suspicious_artifact",
+    "symbol_preservation",
+    "term_placeholder_leak",
+    "term_preservation",
+    "unsupported_context_expansion",
+    "unsupported_proper_name",
+    "untranslated_japanese",
+    "version_marker_lost",
+}
+
+
 def reconcile_final_artifact(
     file_path: str,
     output_path: str,
@@ -60,7 +94,9 @@ def reconcile_final_artifact(
             dict(issue)
             for issue in entry.get("issues", []) or []
             if isinstance(issue, dict)
-            and str(issue.get("type", "")) not in previous_artifact_issue_types
+            and str(issue.get("type", "")) not in (
+                previous_artifact_issue_types | RECOMPUTED_FINAL_ISSUE_TYPES
+            )
         ]
         explicitly_preserved = (
             existing_status == "preserved"
@@ -164,4 +200,4 @@ def _load_mapping(path: Path) -> dict[str, Any]:
     return payload
 
 
-__all__ = ["reconcile_final_artifact"]
+__all__ = ["RECOMPUTED_FINAL_ISSUE_TYPES", "reconcile_final_artifact"]
