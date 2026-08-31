@@ -152,3 +152,37 @@ def test_final_artifact_audit_does_not_trust_invalid_preserved_status(monkeypatc
         "identical_japanese_source",
         "untranslated_japanese",
     }.issubset({issue["type"] for issue in report["items"][0]["issues"]})
+
+
+def test_final_artifact_audit_replaces_stale_output_issues_without_metadata(monkeypatch, tmp_path):
+    import translation.checkpoint as checkpoint
+    from translation.review import write_review_report
+
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", str(tmp_path / "checkpoints"))
+    source_path = tmp_path / "source.json"
+    output_path = tmp_path / "source.translated.json"
+    source = "王子様の口調だ。"
+    translated = "仍是王子殿下的口吻。"
+    source_path.write_text(json.dumps({source: source}, ensure_ascii=False), encoding="utf-8")
+    output_path.write_text(json.dumps({source: translated}, ensure_ascii=False), encoding="utf-8")
+    checkpoint.init_checkpoint(str(source_path), total=1)
+    checkpoint.save_progress(
+        str(source_path),
+        0,
+        0,
+        source,
+        translated,
+        status="translated_needs_review",
+        issues=[
+            {"type": "honorific_rendering_review", "message": "stale"},
+            {"type": "api_request_fallback", "message": "diagnostic"},
+        ],
+        json_key=source,
+    )
+
+    report = json.loads(open(write_review_report(str(source_path), str(output_path)), encoding="utf-8").read())
+    entry = checkpoint.load_checkpoint(str(source_path))["entries"]["0_0"]
+
+    assert report["items"] == []
+    assert entry["status"] == "translated"
+    assert entry["issues"] == [{"type": "api_request_fallback", "message": "diagnostic"}]

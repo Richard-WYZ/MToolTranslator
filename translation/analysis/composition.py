@@ -6,8 +6,9 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from translation.quality import apply_source_conditioned_fixes
 
-COMPOSITION_VERSION = "mtool-line-dependencies-v5-past-context-only"
+COMPOSITION_VERSION = "mtool-line-dependencies-v6-final-normalization"
 _LINE_BREAK_RE = re.compile(r"(\r\n|\r|\n)")
 _LAYOUT_WHITESPACE = " \t\u3000"
 
@@ -263,7 +264,10 @@ def apply_mtool_compositions(
                 + child_translation.strip(_LAYOUT_WHITESPACE)
                 + piece.suffix
             )
-        translated = "".join(output_parts)
+        translated = apply_source_conditioned_fixes(
+            entry.source,
+            "".join(output_parts),
+        )
 
         review_required_rows = [
             dependency["row"]

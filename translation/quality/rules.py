@@ -107,6 +107,7 @@ CSS_DECLARATION_LIST_RE = re.compile(
     r"(?:\s*(?:--)?[A-Za-z][A-Za-z0-9-]*\s*:[^;\r\n]+;)+\s*$"
 )
 SOURCE_VERSION_TOKEN_RE = re.compile(r"(?<![A-Za-z])ver(?:sion)?\.?(?![A-Za-z])", re.IGNORECASE)
+QUOTED_SOURCE_IDENTIFIER_RE = re.compile(r"[\"']([A-Za-z][A-Za-z0-9_.-]*)[\"']")
 VERSION_MARKER_RE = re.compile(r"(?<![A-Za-z])(?:ver(?:sion)?\.?|version)\s*[0-9][0-9A-Za-z._-]*", re.IGNORECASE)
 RESOURCE_FILE_RE = re.compile(
     r"^\s*[^\r\n<>]+\.(?:png|jpe?g|gif|webp|bmp|ogg|wav|mp3|m4a|json|js|css|"
@@ -205,6 +206,7 @@ LEXICALIZED_HONORIFIC_ENDINGS = (
     "\u6a21\u69d8",
     "\u4ed5\u69d8",
     "\u591a\u69d8",
+    "\u4e09\u8005\u4e09\u69d8",
     "\u7570\u69d8",
     "\u6298\u89d2\u541b",
     "\u51fa\u3055\u3093",
@@ -212,6 +214,10 @@ LEXICALIZED_HONORIFIC_ENDINGS = (
     "\u79c1\u3061\u3083\u3093",
 )
 NATURAL_HONORIFIC_EQUIVALENTS = (
+    (
+        ("\u8cb4\u65b9\u69d8",),
+        re.compile("\u60a8"),
+    ),
     (
         ("\u7236\u3055\u3093",),
         re.compile("\u7238\u7238|\u8001\u7238|\u7236\u4eb2|\u8001\u7239|\u7239"),
@@ -762,6 +768,9 @@ def _is_key_context(text: str, start: int, end: int, word: str) -> bool:
 def _preservable_source_tokens(original: str) -> set[str]:
     if not original:
         return set()
+    # Full-width Latin labels such as ``ＳＰ`` are the same source-backed
+    # identifier as their normalized output form ``SP``.
+    original = unicodedata.normalize("NFKC", original)
     tokens: set[str] = set()
     for match in SOURCE_VERSION_TOKEN_RE.finditer(original):
         tokens.update(ENGLISH_WORD_RE.findall(match.group(0)))
@@ -769,6 +778,8 @@ def _preservable_source_tokens(original: str) -> set[str]:
         tokens.update(ENGLISH_WORD_RE.findall(match.group(0)))
     for match in CODE_IDENTIFIER_RE.finditer(original):
         tokens.add(match.group(0))
+    for match in QUOTED_SOURCE_IDENTIFIER_RE.finditer(original):
+        tokens.add(match.group(1))
     for token in ENGLISH_WORD_RE.findall(original):
         if (
             any(character.isdigit() for character in token)

@@ -4,12 +4,12 @@ import re
 from dataclasses import dataclass
 
 
-SYMBOL_PROTECTION_VERSION = "protected-symbols-exactly-once-v6-no-empty-internal-rebuild"
+SYMBOL_PROTECTION_VERSION = "protected-symbols-exactly-once-v7-parentheses"
 
 SYMBOL_RE = re.compile(
     r"[\u2661\u2665\u2764\U0001f495\U0001f496\U0001f497\U0001f498"
     r"\u266a\u266b\u266c\u2605\u2606\u203b\u2640\u2642"
-    r"\u300c\u300d\u300e\u300f\u3010\u3011\u3014\u3015<>]"
+    r"\u300c\u300d\u300e\u300f\u3010\u3011\u3014\u3015()\uff08\uff09<>]"
 )
 SYMBOL_PLACEHOLDER_RE = re.compile(r"__SYM_\d+__")
 
