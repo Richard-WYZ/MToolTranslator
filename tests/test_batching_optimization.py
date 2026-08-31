@@ -2338,6 +2338,13 @@ def test_honorific_quality_check_accepts_lexicalized_phrase_and_polite_pronoun()
     assert not any(issue["type"] == "honorific_rendering_review" for issue in polite_pronoun)
 
 
+def test_english_residue_accepts_nfkc_equivalent_source_identifier():
+    from translation.quality import english_residue
+
+    assert english_residue("最大SP", original="最大ＳＰ") == []
+    assert english_residue('复制"save"文件夹', original='"save"フォルダ') == []
+
+
 def test_honorific_quality_check_accepts_first_person_status_rendering():
     from translation.quality import translation_issues
 
