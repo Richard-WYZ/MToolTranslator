@@ -122,11 +122,11 @@ Development builds are written to isolated
 build must run from a clean `master` matching `origin/master`:
 
 ```powershell
-tools\build.ps1 -Version 0.2.5
+tools\build.ps1 -Version 0.2.6
 ```
 
 Release output is written to
-`build/dist/MToolTranslator-v0.2.5-windows-x64/` and initially contains only
+`build/dist/MToolTranslator-v0.2.6-windows-x64/` and initially contains only
 `MToolTranslator.exe`. Existing output directories and their runtime files are
 never overwritten or cleaned automatically.
 
