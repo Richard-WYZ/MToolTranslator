@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextvars import copy_context
+
 import time
 import heapq
 from concurrent.futures import (
@@ -280,7 +282,7 @@ def run_concurrent_batches(
         for job in queued:
             if check_stop:
                 check_stop()
-            future = executor.submit(_run_with_retries, job, translate_job, retries, backoff, check_stop)
+            future = executor.submit(copy_context().run, _run_with_retries, job, translate_job, retries, backoff, check_stop)
             future_map[future] = job.batch_id
 
         for future in as_completed(future_map):
@@ -356,6 +358,7 @@ def run_dynamic_batches(
                 if admission_policy is not None:
                     admission_policy.submitted(job)
                 future = executor.submit(
+                    copy_context().run,
                     _run_with_retries,
                     job,
                     translate_job,

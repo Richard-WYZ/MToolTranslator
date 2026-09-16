@@ -124,9 +124,13 @@ def test_test_and_build_commands_use_dedicated_workspaces():
     build_script = (root / "tools" / "build.ps1").read_text(encoding="utf-8")
 
     assert "cache_dir = test_work/pytest/cache" in pytest_config
-    assert "--basetemp=test_work/pytest/tmp" in pytest_config
+    assert "basetemp" not in pytest_config
+    assert "testpaths = tests translator" in pytest_config
     assert 'PYTHONDONTWRITEBYTECODE = "1"' in test_script
     assert '"test_work\\pytest"' in test_script
+    assert 'NewGuid' in test_script
+    assert '$RunRoot' in test_script
+    assert '--basetemp="$BaseTemp"' in test_script
     assert 'Join-Path $BuildRoot "work"' in build_script
     assert 'Join-Path $BuildRoot "dist"' in build_script
     assert "$DistPath = Join-Path $DistRoot $ArtifactDirectoryName" in build_script
@@ -835,7 +839,7 @@ def test_runtime_uses_public_pipeline_token_usage_adapter(monkeypatch):
 
     usage.reset()
     usage.record("api", "model", {"total_tokens": 4})
-    assert TranslationPipeline().token_usage()["total_tokens"] == 4
+    assert TranslationPipeline().token_usage()["total_tokens"] == 0
     usage.reset()
 
 
@@ -1668,7 +1672,7 @@ def test_runtime_model_and_scheduler_facades_back_pipeline_imports():
     import translator.usage as legacy_usage
     import translator.pipeline as pipeline_mod
     from translation.batching import BatchJob, run_concurrent_batches
-    from translation.models import chunk_translate, fallback_translate, retry_short_label_translation, retry_with_fallback
+    from translation.quality import chunk_translate, fallback_translate, retry_short_label_translation, retry_with_fallback
     from translation.models.router import translate as routed_translate
     from translation.quality import has_japanese, is_refusal
     from translator import model_router as legacy_model_router
@@ -2451,7 +2455,8 @@ def test_workflow_pipeline_delegates_cell_translation_to_cell_module(monkeypatch
     assert "Quality retry: translate ordinary English words into Chinese" in cell_text
     assert "translate_cell_with_meta(" in pipeline_text
     assert "CellTranslationServices(" not in pipeline_text
-    assert "build_cell_translation_services(self, globals())" in pipeline_text
+    assert "globals()" not in pipeline_text
+    assert "cell_services.CellDependencies(" in pipeline_text
     assert "CellTranslationServices(" in cell_services_text
     assert "class CellTranslationServices" in cell_text
 
@@ -2532,7 +2537,8 @@ def test_workflow_pipeline_delegates_api_parallel_batch_flow_to_parallel_module(
     json_parallel_text = (root / "translation" / "workflow" / "json_parallel.py").read_text(encoding="utf-8")
 
     assert "api_parallel_batch_retry_failed" not in workflow_pipeline_text
-    assert "api_parallel_batch_retry_failed" in json_parallel_text
+    assert "api_parallel_batch_retry_failed" not in json_parallel_text
+    assert "api_parallel_batch_retry_failed" in (root / "translation" / "workflow" / "parallel_support.py").read_text(encoding="utf-8")
     assert "translate_json_batched_parallel_workflow(" in workflow_pipeline_text
     assert "def _run_concurrent_batches" in workflow_pipeline_text
 

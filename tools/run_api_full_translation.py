@@ -21,7 +21,8 @@ from translation.config import (
     set_model_provider,
 )
 from translation.review import review_report_path, write_review_report
-from translation.translate import TranslationRequest, translate
+from translation.translate import TranslationRequest
+from translation.runtime import TranslationRuntime
 
 
 def main() -> int:
@@ -374,7 +375,7 @@ def main() -> int:
     Path(args.checkpoint_dir).mkdir(parents=True, exist_ok=True)
 
     started = time.perf_counter()
-    token_usage.reset()
+    runtime = None
     last_emit = 0.0
     last_payload: dict[str, object] = {}
 
@@ -402,13 +403,14 @@ def main() -> int:
         }, ensure_ascii=False), flush=True)
 
     try:
-        translate(TranslationRequest(
+        runtime = TranslationRuntime(TranslationRequest(
             file_path=str(source),
             output_path=str(output),
             model=args.model,
             progress_callback=progress,
             glossary_path=args.glossary,
         ))
+        runtime.translate_file(progress_callback=progress, translate_columns=None)
     finally:
         elapsed = time.perf_counter() - started
         review_path = review_report_path(str(source), str(output))
@@ -418,7 +420,7 @@ def main() -> int:
         except Exception as exc:
             review_report_error = f"{type(exc).__name__}: {exc}"
         cp = checkpoint.load_checkpoint(str(source))
-        usage = token_usage.snapshot()
+        usage = runtime.token_usage() if runtime is not None else token_usage.UsageTracker().snapshot()
         entries = list(cp.get("entries", {}).values())
         statuses: dict[str, int] = {}
         issues: dict[str, int] = {}

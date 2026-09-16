@@ -150,6 +150,9 @@ function formatDate(value) {
 function modelLabel(modelId) {
     return String(modelId || "").replace(/^api:/, "").replace(/^ollama:/, "");
 }
+function activeFilePath() {
+    return state.sourceFilePath || state.filePath;
+}
 function toast(message, type) {
     var node = document.createElement("div");
     node.className = "toast " + (type || "");

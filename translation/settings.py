@@ -194,7 +194,20 @@ def _dotenv_candidates(path: str | Path = ".env") -> list[Path]:
 
 
 def _load_dotenv(path: str | Path = ".env") -> dict[str, str]:
-    env_path = next((candidate for candidate in _dotenv_candidates(path) if candidate.exists()), None)
+    requested = Path(path)
+    candidates = _dotenv_candidates(path)
+    # Tests may create a temporary cwd .env to exercise loading behavior, but
+    # must never fall through to the developer's project-root credentials.
+    if (
+        os.environ.get("LOCAL_GAME_TRANSLATOR_TEST_MODE") == "1"
+        and not requested.is_absolute()
+        and str(requested) == ".env"
+    ):
+        candidates = []
+        if getattr(sys, "frozen", False):
+            candidates.append(Path(sys.executable).resolve().parent / requested)
+        candidates.append(Path.cwd() / requested)
+    env_path = next((candidate for candidate in candidates if candidate.exists()), None)
     if env_path is None:
         return {}
 
@@ -381,7 +394,14 @@ def _apply_dotenv(
 
 def reload_settings_from_env(path: str | Path = ".env") -> dict:
     """Reload settings in place so new tasks see saved configuration."""
-    env = _load_dotenv(path)
+    # Test runners set this marker so importing the module cannot consume a
+    # developer's project-root .env. Explicit paths remain usable by settings
+    # unit tests and by callers that intentionally select a credentials file.
+    requested = Path(path)
+    if os.environ.get("LOCAL_GAME_TRANSLATOR_TEST_MODE") == "1" and not requested.is_absolute() and str(requested) == ".env":
+        env: dict[str, str] = {}
+    else:
+        env = _load_dotenv(path)
     env.update(os.environ)
     refreshed = deepcopy(_BASE_DEFAULT_CONFIG)
     _apply_dotenv(refreshed, env)
