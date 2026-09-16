@@ -68,6 +68,16 @@ def apply_batch_translation_results(
             record["parent_first_index"] = int(
                 candidate.get("parent_first_index", -1)
             )
+        source_normalization = candidate.get("source_normalization")
+        if (
+            isinstance(source_normalization, dict)
+            and source_normalization.get("mixed_kana")
+        ):
+            record["model_source"] = candidate.get(
+                "model_source",
+                candidate["source"],
+            )
+            record["source_normalization"] = source_normalization
         context_kinds = sorted({
             str(context.get("context_kind", "composition"))
             for context in candidate.get("contexts", []) or []
