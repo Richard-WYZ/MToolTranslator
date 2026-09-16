@@ -14,6 +14,7 @@ from app.services.model_status import public_model_statuses
 from app.services.models import available_models
 from app.services.review import load_review_context, matching_review_rows
 from app.services.runtime_profiles import QUALITY_FAST_MODEL, QUALITY_PRIMARY_MODEL, canonical_model_id
+from app.services.task_coordinator import TaskCoordinator, default_task_coordinator
 from translation import checkpoint
 from translation.classification import has_explicit_adult_content
 from translation.review.ai import (
@@ -31,7 +32,9 @@ from translation.review.ai import (
 )
 from translation.usage import diff as usage_diff
 from translation.usage import snapshot as usage_snapshot
+from translation.usage import UsageTracker, use_tracker
 from translation.terminology import Glossary
+from translation.models.transport import connection_scope
 
 
 TranslateFunc = Callable[[str, str, str, dict[str, Any] | None], str]
@@ -76,6 +79,7 @@ class AIReviewTask:
             "applied": 0,
         }
         self.token_usage: dict[str, Any] = {}
+        self._usage_tracker = UsageTracker()
         self.started_at = 0.0
         self.finished_at = 0.0
         self.updated_at = 0.0
@@ -88,7 +92,7 @@ class AIReviewTask:
 
     def start(self) -> None:
         with self._lock:
-            if self.status in AI_REVIEW_ACTIVE_STATUSES:
+            if self.status in AI_REVIEW_ACTIVE_STATUSES and self._thread:
                 return
             self.status = "preparing"
             self.phase = "preparing"
@@ -116,6 +120,7 @@ class AIReviewTask:
 
     def progress(self) -> dict[str, Any]:
         with self._lock:
+            live_usage = self._usage_tracker.snapshot()
             now = self.finished_at or time.time()
             elapsed = max(0.0, now - self.started_at) if self.started_at else 0.0
             rate = self.current / elapsed if elapsed > 0 else 0.0
@@ -135,7 +140,7 @@ class AIReviewTask:
                 "auto_retry": self.auto_retry,
                 "retry_rounds": self.retry_rounds,
                 "no_progress_rounds": self.no_progress_rounds,
-                "token_usage": dict(self.token_usage),
+                "token_usage": dict(self.token_usage or live_usage),
                 "error": self.error,
                 "started_at": self.started_at,
                 "finished_at": self.finished_at,
@@ -161,7 +166,13 @@ class AIReviewTask:
             update_ai_review_session_status(self.file_path, self.task_id, persist_status)
 
     def _run(self) -> None:
-        usage_before = usage_snapshot()
+        # Keep both usage accounting and provider sessions local to this task.
+        # ``run_ai_review`` fans out to worker threads; its copied context then
+        # carries the same tracker and transport scope into each model call.
+        with use_tracker(self._usage_tracker), connection_scope():
+            self._run_scoped()
+
+    def _run_scoped(self) -> None:
         try:
             result = run_ai_review(
                 task_id=self.task_id,
@@ -207,7 +218,7 @@ class AIReviewTask:
             update_ai_review_session_status(self.file_path, self.task_id, "error", error=str(exc))
         finally:
             with self._lock:
-                self.token_usage = usage_diff(usage_before)
+                self.token_usage = self._usage_tracker.snapshot()
             update_ai_review_session_status(
                 self.file_path,
                 self.task_id,
@@ -494,10 +505,9 @@ def start_ai_review_task(
     auto_apply: bool,
     auto_retry: bool = True,
     translator: TranslateFunc | None = None,
+    translation_tasks: Mapping[str, Any] | None = None,
+    coordinator: TaskCoordinator | None = None,
 ) -> AIReviewTask:
-    existing = active_ai_review_for_file(registry, file_path)
-    if existing:
-        raise RuntimeError(f"An AI review task is already active for this file: {existing.task_id}")
     items = build_ai_review_items(file_path, scope=scope, rows=rows, filter_name=filter_name)
     reclassification_records = build_reclassification_records(file_path)
     if not items and not reclassification_records:
@@ -529,7 +539,19 @@ def start_ai_review_task(
         translator=translator,
         reclassification_records=reclassification_records,
     )
-    registry[task.task_id] = task
+    coordinator = coordinator or default_task_coordinator()
+    try:
+        with coordinator.admission(
+            file_path=file_path,
+            translation_tasks=translation_tasks,
+            ai_review_tasks=registry,
+            kind="ai_review",
+        ):
+            # Reserve the file before the background thread is started.
+            task.status = "preparing"
+            registry[task.task_id] = task
+    except RuntimeError:
+        raise
     task.start()
     return task
 
@@ -538,10 +560,11 @@ def active_ai_review_for_file(
     registry: Mapping[str, AIReviewTask],
     file_path: str,
 ) -> AIReviewTask | None:
-    absolute = os.path.abspath(file_path)
+    absolute = os.path.normcase(os.path.abspath(file_path))
     matches = [
         task for task in registry.values()
-        if task.file_path == absolute and task.status in AI_REVIEW_ACTIVE_STATUSES | {"stopping"}
+        if os.path.normcase(os.path.abspath(task.file_path)) == absolute
+        and task.status in AI_REVIEW_ACTIVE_STATUSES | {"stopping"}
     ]
     return max(matches, key=lambda task: task.started_at, default=None)
 
@@ -550,8 +573,11 @@ def latest_ai_review_for_file(
     registry: Mapping[str, AIReviewTask],
     file_path: str,
 ) -> AIReviewTask | None:
-    absolute = os.path.abspath(file_path)
-    matches = [task for task in registry.values() if task.file_path == absolute]
+    absolute = os.path.normcase(os.path.abspath(file_path))
+    matches = [
+        task for task in registry.values()
+        if os.path.normcase(os.path.abspath(task.file_path)) == absolute
+    ]
     return max(matches, key=lambda task: task.started_at, default=None)
 
 
@@ -614,9 +640,9 @@ def resume_ai_review_task(
     file_path: str,
     task_id: str,
     translator: TranslateFunc | None = None,
+    translation_tasks: Mapping[str, Any] | None = None,
+    coordinator: TaskCoordinator | None = None,
 ) -> AIReviewTask:
-    if active_ai_review_for_file(registry, file_path):
-        raise RuntimeError("An AI review task is already active for this file")
     session = get_ai_review_session(file_path, task_id)
     if not session:
         raise ValueError(f"AI review session not found: {task_id}")
@@ -640,7 +666,15 @@ def resume_ai_review_task(
         translator=translator,
         reclassification_records=build_reclassification_records(file_path),
     )
-    registry[task_id] = task
+    coordinator = coordinator or default_task_coordinator()
+    with coordinator.admission(
+        file_path=file_path,
+        translation_tasks=translation_tasks,
+        ai_review_tasks=registry,
+        kind="ai_review",
+    ):
+        task.status = "preparing"
+        registry[task_id] = task
     task.start()
     return task
 
@@ -658,10 +692,10 @@ def rollback_ai_review_task(task: AIReviewTask) -> dict[str, Any]:
 
 
 def translation_task_is_active(tasks: Mapping[str, Any], file_path: str) -> bool:
-    absolute = os.path.abspath(file_path)
+    absolute = os.path.normcase(os.path.abspath(file_path))
     return any(
-        os.path.abspath(str(getattr(task, "file_path", ""))) == absolute
-        and str(getattr(task, "status", "")) in {"running", "paused", "stopping", "finalizing"}
+        os.path.normcase(os.path.abspath(str(getattr(task, "file_path", "")))) == absolute
+        and str(getattr(task, "status", "")) in {"starting", "running", "paused", "stopping", "finalizing"}
         for task in tasks.values()
     )
 

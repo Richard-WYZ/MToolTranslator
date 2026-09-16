@@ -35,6 +35,7 @@ def create_router(*, tasks: MutableMapping[str, TranslationTask], ai_review_task
             translate_columns=[1],
             execution_profile=req.execution_profile,
             profile_options=req.profile_options,
+            ai_review_tasks=ai_review_tasks,
         )
 
     @router.post("/api/translate/{task_id}/pause")

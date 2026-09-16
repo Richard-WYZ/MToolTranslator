@@ -103,10 +103,17 @@ def translate(
     think: Any = None,
     response_format: Any = None,
 ) -> str:
+    """Dispatch one physical model request.
+
+    Retry and fallback policy belongs to ``translation.quality.retry``.  The
+    old client-level ``translate`` methods may retain their legacy retry
+    behavior for direct callers, but the canonical router path uses the
+    single-request entry point so one quality budget maps to one request.
+    """
     provider = _provider_for_model(model)
     clean_model = _clean_model(model)
     client = api_client if provider == "api" else ollama_client
-    return client.translate(
+    return client.translate_once(
         clean_model,
         text,
         system_prompt=system_prompt,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextvars import copy_context
+
 import json
 import os
 import re
@@ -822,7 +824,7 @@ def _run_primary_batches(
     workers = min(4, max(1, len(batches)))
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ai-review") as executor:
         futures = {
-            executor.submit(
+            executor.submit(copy_context().run,
                 _primary_batch_with_fallback,
                 batch,
                 models=models,
@@ -962,7 +964,7 @@ def _run_verifier_batches(
     workers = min(4, max(1, len(batches)))
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ai-verify") as executor:
         futures = {
-            executor.submit(
+            executor.submit(copy_context().run,
                 _verifier_batch_with_fallback,
                 batch,
                 primary=primary,

@@ -129,6 +129,10 @@ function renderHistory(checkpoints, tasks) {
 }
 
 async function adoptHistoryFile(path) {
+    stopAIReviewPolling();
+    state.review.aiTaskId = "";
+    state.review.aiTaskStatus = "idle";
+    state.review.aiProgress = null;
     state.filePath = path;
     state.sourceFilePath = path;
     state.originalFilePath = "";

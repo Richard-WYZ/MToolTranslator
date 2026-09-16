@@ -10,6 +10,7 @@ import requests
 
 from translation.config import third_party_api_config
 import translation.usage as token_usage
+from translation.models.transport import connection_scope, request as transport_request
 
 
 OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
@@ -217,7 +218,7 @@ def discover_models(timeout: int = 30) -> list[dict[str, Any]]:
         }
     else:
         headers = {"Authorization": f"Bearer {key}"}
-    response = requests.get(
+    response = transport_request("api", "get",
         _endpoint_url(base_url, "models"),
         headers=headers,
         timeout=(10, timeout),
@@ -283,7 +284,7 @@ def _openai_translate_once(
 
     request_started = token_usage.record_request_start("api", model_id)
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=(10, timeout))
+        resp = transport_request("api", "post", url, headers=headers, json=payload, timeout=(10, timeout))
     finally:
         token_usage.record_response_received("api", model_id, request_started)
     _raise_for_status_with_body(resp)
@@ -338,7 +339,7 @@ def _anthropic_translate_once(
 
     request_started = token_usage.record_request_start("api", model_id)
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=(10, timeout))
+        resp = transport_request("api", "post", url, headers=headers, json=payload, timeout=(10, timeout))
     finally:
         token_usage.record_response_received("api", model_id, request_started)
     _raise_for_status_with_body(resp)
@@ -431,13 +432,16 @@ def translate(
             if getattr(exc, "retryable", True) is False:
                 break
             if attempt < 2:
-                time.sleep(2 ** attempt)
+                retry_after = getattr(exc, "retry_after_seconds", None)
+                delay = retry_after if retry_after is not None else 2 ** attempt
+                time.sleep(max(0.0, float(delay)))
     raise last_error or RuntimeError("Third-party API translation failed")
 
 
 __all__ = [
     "APIRequestError",
     "OPENCODE_GO_MODELS",
+    "connection_scope",
     "list_models",
     "translate",
     "translate_once",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import threading
+import time
 from typing import Any
 
 from translation.output.json_io import serialize_json_items
@@ -36,9 +37,12 @@ class TranslationWriter:
         self._flush_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._updates = 0
+        self._thread_error: BaseException | None = None
 
     def start(self) -> None:
         if not self.periodic_enabled:
+            return
+        if self._stop.is_set():
             return
         if self._thread and self._thread.is_alive():
             return
@@ -71,12 +75,20 @@ class TranslationWriter:
         return updated
 
     def flush(self) -> None:
-        with self._lock:
-            snapshot = list(self.data_ref)
-            self._updates = 0
-            self._dirty.clear()
         with self._flush_lock:
-            self._write_atomic(snapshot)
+            # Snapshot and write in the same serialization domain. Otherwise
+            # an older snapshot can acquire the write lock after a newer one.
+            with self._lock:
+                snapshot = list(self.data_ref)
+                self._updates = 0
+                self._dirty.clear()
+            try:
+                self._write_atomic(snapshot)
+            except BaseException:
+                with self._lock:
+                    self._updates = max(1, self._updates)
+                    self._dirty.set()
+                raise
 
     def stop(self) -> None:
         self._stop.set()
@@ -84,21 +96,60 @@ class TranslationWriter:
         if self._thread:
             self._thread.join(timeout=5)
             if self._thread.is_alive():
-                return
+                raise RuntimeError("TranslationWriter thread did not stop")
+            if self._thread_error is not None:
+                error = self._thread_error
+                self._thread_error = None
+                raise error
         if self.flush_on_stop:
-            self.flush()
+            with self._lock:
+                pending = self._updates > 0
+            if pending:
+                self.flush()
+
+    def is_alive(self) -> bool:
+        """Return whether the periodic writer thread is still running."""
+        return bool(self._thread and self._thread.is_alive())
 
     def _run(self) -> None:
-        while not self._stop.is_set():
-            self._dirty.wait(self.flush_interval)
-            if not self._dirty.is_set():
-                continue
-            if self.file_type == "json":
+        deadline: float | None = None
+        try:
+            while True:
+                should_flush = False
+                wait_timeout: float | None = None
                 with self._lock:
-                    should_flush = self._updates >= self.json_every
-                if not should_flush and not self._stop.is_set():
+                    updates = self._updates
+                    stopping = self._stop.is_set()
+                    if stopping:
+                        should_flush = self.flush_on_stop and updates > 0
+                        if not should_flush:
+                            return
+                    elif updates <= 0:
+                        deadline = None
+                        self._dirty.clear()
+                    elif self.file_type != "json" or updates >= self.json_every:
+                        should_flush = True
+                    else:
+                        # Event.wait() returns immediately while set. Clear it
+                        # before waiting so a small batch does not busy-spin.
+                        if deadline is None:
+                            deadline = time.monotonic() + self.flush_interval
+                        wait_timeout = deadline - time.monotonic()
+                        if wait_timeout <= 0:
+                            should_flush = True
+                        else:
+                            self._dirty.clear()
+                if should_flush:
+                    self.flush()
+                    deadline = None
+                    if self._stop.is_set():
+                        return
                     continue
-            self.flush()
+                self._dirty.wait(wait_timeout)
+        except BaseException as exc:
+            self._thread_error = exc
+            self._stop.set()
+            self._dirty.set()
 
     def _write_atomic(self, data_ref: Any | None = None) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(self.output_path)) or ".", exist_ok=True)

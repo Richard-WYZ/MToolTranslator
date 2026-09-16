@@ -42,13 +42,8 @@ from translation.config import (
 )
 from translation.input import is_mtool_items, source_text
 from translation.models import (
-    call_translate_with_options,
-    chunk_translate,
-    fallback_translate,
     list_models,
     model_configuration,
-    retry_short_label_translation,
-    retry_with_fallback,
     translate,
     translate_once,
 )
@@ -64,6 +59,11 @@ from translation.protection import (
     restore_symbols,
 )
 from translation.quality import (
+    call_translate_with_options,
+    chunk_translate,
+    fallback_translate,
+    retry_short_label_translation,
+    retry_with_fallback,
     apply_fixed_translations,
     apply_output_constraints,
     apply_source_conditioned_fixes,
@@ -125,7 +125,8 @@ class TranslationPipeline:
         self._last_progress: dict[str, Any] = {}
         self._writer: TranslationWriter | None = None
         self._short_label_options = {"temperature": 0, "num_predict": 32}
-        self._token_usage: dict[str, Any] = token_usage.snapshot()
+        self._usage_tracker = token_usage.UsageTracker()
+        self._token_usage: dict[str, Any] = self._usage_tracker.snapshot()
         self._resume_context: dict[str, Any] = {
             "translation_direction": "ja-Hans",
             "prompt_version": "default",
@@ -430,7 +431,27 @@ class TranslationPipeline:
         )
 
     def _cell_translation_services(self) -> CellTranslationServices:
-        return cell_services.build_cell_translation_services(self, globals())
+        return cell_services.build_cell_translation_services(
+            self,
+            cell_services.CellDependencies(
+                deterministic_translation=deterministic_translation,
+                prepare_model_candidate=prepare_model_candidate,
+                is_unusable_model_output=is_unusable_model_output,
+                assess_model_output=assess_model_output,
+                english_residue=english_residue,
+                retry_english_residue_translation=retry_english_residue_translation,
+                protect_runtime_tokens=protect_runtime_tokens,
+                protect_symbols=protect_symbols,
+                retry_missing_terms_translation=retry_missing_terms_translation,
+                translate=translate,
+                apply_fixed_translations=apply_fixed_translations,
+                apply_source_conditioned_fixes=apply_source_conditioned_fixes,
+                translation_issues=translation_issues,
+                output_constraints=output_constraints,
+                apply_output_constraints=apply_output_constraints,
+                has_japanese=has_japanese,
+            ),
+        )
 
     def _restore_protected_translation(
         self,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 
 import translation.checkpoint as checkpoint
 from translation.batching import (
@@ -21,11 +21,15 @@ from translation.output import default_output_path
 from translation.repair import strip_source_echo
 
 
+if TYPE_CHECKING:
+    from translation.workflow.pipeline import TranslationPipeline
+
+
 ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 def resolve_batch_protocol(
-    pipeline: Any,
+    pipeline: TranslationPipeline,
     configured_protocol: str,
     translated_items: list[tuple[Any, Any]],
     mtool: bool,
@@ -44,7 +48,7 @@ def resolve_batch_protocol(
 
 
 def collect_batch_window(
-    pipeline: Any,
+    pipeline: TranslationPipeline,
     translated_items: list[tuple[Any, Any]],
     start_idx: int,
     mtool: bool,
@@ -87,7 +91,7 @@ def collect_batch_window(
 
 
 def collect_batch_candidates(
-    pipeline: Any,
+    pipeline: TranslationPipeline,
     translated_items: list[tuple[Any, Any]],
     start_idx: int,
     mtool: bool,
@@ -134,14 +138,14 @@ def batch_translate_call(
     )
 
 
-def translate_api_batch_job(pipeline: Any, job: BatchJob) -> dict[int, str]:
+def translate_api_batch_job(pipeline: TranslationPipeline, job: BatchJob) -> dict[int, str]:
     batch_cfg = pipeline._batch_translation_config()
     batch_options = job.options or default_batch_options(batch_cfg)
     return pipeline._translate_json_candidate_batch_raw(job.candidates, batch_options, job.protocol, model=job.model)
 
 
 def translate_candidate_batch_raw_for_pipeline(
-    pipeline: Any,
+    pipeline: TranslationPipeline,
     candidates: list[dict[str, Any]],
     batch_options: dict[str, Any],
     batch_protocol: str = "json",
@@ -157,7 +161,7 @@ def translate_candidate_batch_raw_for_pipeline(
 
 
 def translate_candidates_for_pipeline(
-    pipeline: Any,
+    pipeline: TranslationPipeline,
     candidates: list[dict[str, Any]],
     file_path: str,
     batch_options: dict[str, Any],
@@ -183,7 +187,7 @@ def translate_candidates_for_pipeline(
 
 
 def translate_single_candidate_after_batch_failure(
-    pipeline: Any,
+    pipeline: TranslationPipeline,
     candidate: dict[str, Any],
     file_path: str,
     exc: Exception,
@@ -242,7 +246,7 @@ def translate_single_candidate_after_batch_failure(
     return {candidate["idx"]: (translated, status, issues)}
 
 
-def finish_batch_candidate(pipeline: Any, candidate: dict[str, Any], translated: str) -> tuple[str, str, list[dict[str, Any]]]:
+def finish_batch_candidate(pipeline: TranslationPipeline, candidate: dict[str, Any], translated: str) -> tuple[str, str, list[dict[str, Any]]]:
     return finish_batch_translation(
         candidate,
         translated,

@@ -9,15 +9,16 @@ from fastapi import HTTPException
 from app.services.files import require_mtool_json_file, translated_path
 from app.services.runtime_profiles import resolve_execution_profile
 from app.services.translation_tasks import TranslationTask
+from app.services.task_coordinator import TaskCoordinator, default_task_coordinator
 
 
 TaskRegistry = MutableMapping[str, TranslationTask]
 
 
 def task_for_file(tasks: TaskRegistry, file_path: str) -> TranslationTask | None:
-    abs_path = os.path.abspath(file_path)
+    abs_path = os.path.normcase(os.path.abspath(file_path))
     for task in reversed(list(tasks.values())):
-        if os.path.abspath(task.file_path) == abs_path:
+        if os.path.normcase(os.path.abspath(task.file_path)) == abs_path:
             return task
     return None
 
@@ -32,14 +33,12 @@ def start_translation_task(
     translate_columns: list[int] | None = None,
     execution_profile: str = "quality_first",
     profile_options: dict | None = None,
+    ai_review_tasks: MutableMapping[str, object] | None = None,
+    coordinator: TaskCoordinator | None = None,
 ) -> dict:
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
     require_mtool_json_file(file_path)
-    for task in tasks.values():
-        if task.status in ("running", "paused", "stopping", "finalizing"):
-            raise HTTPException(status_code=409, detail="A translation task is already active")
-
     task_id = uuid.uuid4().hex[:12]
     model_name, batch_config, profile_summary = resolve_execution_profile(
         execution_profile,
@@ -47,17 +46,29 @@ def start_translation_task(
         provider,
         profile_options,
     )
-    task = TranslationTask(
-        task_id=task_id,
-        file_path=file_path,
-        model=model_name,
-        prompt_style=prompt_style,
-        translate_columns=translate_columns or [1],
-        execution_profile=execution_profile,
-        profile_summary=profile_summary,
-        batch_config_override=batch_config,
-    )
-    tasks[task_id] = task
+    coordinator = coordinator or default_task_coordinator()
+    try:
+        with coordinator.admission(
+            file_path=file_path,
+            translation_tasks=tasks,
+            ai_review_tasks=ai_review_tasks,
+            kind="translation",
+        ):
+            task = TranslationTask(
+                task_id=task_id,
+                file_path=file_path,
+                model=model_name,
+                prompt_style=prompt_style,
+                translate_columns=translate_columns or [1],
+                execution_profile=execution_profile,
+                profile_summary=profile_summary,
+                batch_config_override=batch_config,
+            )
+            # Reserve the global translation slot before releasing admission.
+            task.status = "starting"
+            tasks[task_id] = task
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     task.start()
     return {
         "task_id": task_id,

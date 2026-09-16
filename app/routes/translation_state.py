@@ -19,6 +19,7 @@ from app.services.files import (
 )
 from app.services.translation_task_service import start_translation_task, task_for_file
 from app.services.translation_tasks import BatchTranslationManager, TranslationTask
+from app.services.task_coordinator import TaskCoordinator, default_task_coordinator
 from common.files import is_path_inside
 from translation import checkpoint
 from translation.config import default_model
@@ -29,26 +30,115 @@ _ACTIVE_TRANSLATION_STATUSES = {"starting", "running", "paused", "stopping", "fi
 _ACTIVE_AI_REVIEW_STATUSES = {"preparing", "reviewing", "verifying", "applying", "finalizing", "stopping"}
 
 
+def _path_key(file_path: str) -> str:
+    return os.path.normcase(os.path.abspath(str(file_path)))
+
+
+def _tasks_for_file(tasks: MutableMapping[str, TranslationTask], file_path: str) -> list[TranslationTask]:
+    target = _path_key(file_path)
+    return [task for task in tasks.values() if _path_key(task.file_path) == target]
+
+
+def _wait_for_task_stop(task: Any, timeout: float = 5.0) -> bool:
+    waiter = getattr(task, "wait_for_stop", None)
+    if callable(waiter):
+        return bool(waiter(timeout=timeout))
+    thread = getattr(task, "_thread", None)
+    if thread is not None:
+        thread.join(timeout=max(0.0, timeout))
+        if thread.is_alive():
+            return False
+    runtime = getattr(task, "runtime", None)
+    writer_stopped = getattr(runtime, "writer_stopped", None)
+    return bool(writer_stopped()) if callable(writer_stopped) else True
+
+
+def _cleanup_task_for_request(
+    req: CleanupRequest,
+    tasks: MutableMapping[str, TranslationTask],
+) -> TranslationTask | None:
+    matching = _tasks_for_file(tasks, req.file_path)
+    selected = tasks.get(req.task_id) if req.task_id else None
+    if selected is not None and _path_key(selected.file_path) != _path_key(req.file_path):
+        raise HTTPException(status_code=409, detail="Task does not belong to the requested file")
+    if selected is not None and selected not in matching:
+        matching.append(selected)
+    return selected or (matching[-1] if matching else None)
+
+
 def cleanup_translation_state(
     req: CleanupRequest,
     *,
     tasks: MutableMapping[str, TranslationTask],
+    ai_review_tasks: MutableMapping[str, Any] | None = None,
+    coordinator: TaskCoordinator | None = None,
+    _reservation_held: bool = False,
 ):
+    coordinator = coordinator or default_task_coordinator()
+    if _reservation_held:
+        return _cleanup_translation_state_unreserved(
+            req,
+            tasks=tasks,
+            ai_review_tasks=ai_review_tasks,
+            coordinator=coordinator,
+        )
     if req.fast:
-        task = tasks.get(req.task_id) if req.task_id else task_for_file(tasks, req.file_path)
-        if task and task.status in ("running", "paused", "stopping"):
-            task.cancel()
-            task.has_unexported_result = False
-        return {"ok": True, "scheduled": False, "deleted": [], "skipped": [], "cancelled": bool(task)}
+        try:
+            reservation = coordinator.cleanup_reservation(req.file_path)
+            reservation.__enter__()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        try:
+            if ai_review_tasks and coordinator.active_review(ai_review_tasks, req.file_path):
+                raise HTTPException(status_code=409, detail="Stop AI review before cleaning translation state")
+            task = _cleanup_task_for_request(req, tasks)
+            if task and task.status in ("starting", "running", "paused", "stopping", "finalizing"):
+                task.cancel()
+                task.has_unexported_result = False
+            return {"ok": True, "scheduled": False, "deleted": [], "skipped": [], "cancelled": bool(task)}
+        finally:
+            reservation.__exit__(None, None, None)
 
-    task = tasks.get(req.task_id) if req.task_id else task_for_file(tasks, req.file_path)
+    try:
+        reservation = coordinator.cleanup_reservation(req.file_path)
+        reservation.__enter__()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    try:
+        return _cleanup_translation_state_unreserved(
+            req,
+            tasks=tasks,
+            ai_review_tasks=ai_review_tasks,
+            coordinator=coordinator,
+        )
+    finally:
+        reservation.__exit__(None, None, None)
+
+
+def _cleanup_translation_state_unreserved(
+    req: CleanupRequest,
+    *,
+    tasks: MutableMapping[str, TranslationTask],
+    ai_review_tasks: MutableMapping[str, Any] | None,
+    coordinator: TaskCoordinator,
+):
+    task = _cleanup_task_for_request(req, tasks)
+    if ai_review_tasks and coordinator.active_review(ai_review_tasks, req.file_path):
+        raise HTTPException(status_code=409, detail="Stop AI review before cleaning translation state")
     deleted: list[str] = []
     skipped: list[str] = []
 
-    if task and task.status in ("running", "paused", "stopping"):
-        task.cancel()
-        if task._thread:
-            task._thread.join(timeout=5)
+    matching_tasks = _tasks_for_file(tasks, req.file_path)
+    if task is not None and task not in matching_tasks:
+        matching_tasks.append(task)
+    for candidate in matching_tasks:
+        if candidate.status in ("starting", "running", "paused", "stopping", "finalizing"):
+            candidate.cancel()
+        if not _wait_for_task_stop(candidate, timeout=5):
+            raise HTTPException(
+                status_code=409,
+                detail="Translation task is still stopping; temporary files were preserved",
+            )
     output_path = translated_path(req.file_path)
     if os.path.exists(output_path):
         os.remove(output_path)
@@ -87,12 +177,41 @@ def _delete_history_session_unlocked(
     ai_review_tasks: MutableMapping[str, Any] | None = None,
     upload_dir: str | Path | None = None,
     purge_working_source: bool = False,
+    coordinator: TaskCoordinator | None = None,
 ) -> dict[str, Any]:
-    absolute_path = os.path.abspath(file_path)
+    coordinator = coordinator or default_task_coordinator()
+    try:
+        reservation = coordinator.cleanup_reservation(file_path)
+        reservation.__enter__()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    try:
+        return _delete_history_session_reserved(
+            file_path,
+            tasks=tasks,
+            ai_review_tasks=ai_review_tasks,
+            upload_dir=upload_dir,
+            purge_working_source=purge_working_source,
+            coordinator=coordinator,
+        )
+    finally:
+        reservation.__exit__(None, None, None)
+
+
+def _delete_history_session_reserved(
+    file_path: str,
+    *,
+    tasks: MutableMapping[str, TranslationTask],
+    ai_review_tasks: MutableMapping[str, Any] | None = None,
+    upload_dir: str | Path | None = None,
+    purge_working_source: bool = False,
+    coordinator: TaskCoordinator,
+) -> dict[str, Any]:
+    absolute_path = _path_key(file_path)
     matching_tasks = [
         (task_id, task)
         for task_id, task in tasks.items()
-        if os.path.abspath(task.file_path) == absolute_path
+        if _path_key(task.file_path) == absolute_path
     ]
     if any(task.status in _ACTIVE_TRANSLATION_STATUSES for _task_id, task in matching_tasks):
         raise HTTPException(status_code=409, detail="Stop the translation task before deleting its history")
@@ -100,7 +219,7 @@ def _delete_history_session_unlocked(
     matching_ai_tasks = [
         (task_id, task)
         for task_id, task in (ai_review_tasks or {}).items()
-        if os.path.abspath(str(getattr(task, "file_path", ""))) == absolute_path
+        if _path_key(str(getattr(task, "file_path", ""))) == absolute_path
     ]
     if any(
         task.status in _ACTIVE_AI_REVIEW_STATUSES
@@ -108,7 +227,13 @@ def _delete_history_session_unlocked(
     ):
         raise HTTPException(status_code=409, detail="Stop AI review before deleting its history")
 
-    result = cleanup_translation_state(CleanupRequest(file_path=file_path), tasks=tasks)
+    result = cleanup_translation_state(
+        CleanupRequest(file_path=file_path),
+        tasks=tasks,
+        ai_review_tasks=ai_review_tasks,
+        coordinator=coordinator,
+        _reservation_held=True,
+    )
     for task_id, _task in matching_tasks:
         tasks.pop(task_id, None)
     for task_id, _task in matching_ai_tasks:
@@ -173,11 +298,11 @@ def create_router(
     def cancel_all_translation_activity() -> int:
         cancelled = 0
         for batch in list(batches.values()):
-            if batch.status in ("running", "paused", "stopping"):
+            if batch.status in ("starting", "running", "paused", "stopping", "finalizing"):
                 batch.cancel()
                 cancelled += 1
         for task in list(tasks.values()):
-            if task.status in ("running", "paused", "stopping"):
+            if task.status in ("starting", "running", "paused", "stopping", "finalizing"):
                 task.cancel()
                 cancelled += 1
         for task in list((ai_review_tasks or {}).values()):
@@ -354,6 +479,7 @@ def create_router(
             translate_columns=[1],
             execution_profile=profile_name,
             profile_options=profile_options,
+            ai_review_tasks=ai_review_tasks,
         )
 
     @router.get("/api/translation/dirty-state")
@@ -397,7 +523,7 @@ def create_router(
             active = active_ai_review_for_file(ai_review_tasks, req.file_path)
             if active:
                 raise HTTPException(status_code=409, detail="Stop AI review before cleaning translation state")
-        return cleanup_translation_state(req, tasks=tasks)
+        return cleanup_translation_state(req, tasks=tasks, ai_review_tasks=ai_review_tasks)
 
     return router
 

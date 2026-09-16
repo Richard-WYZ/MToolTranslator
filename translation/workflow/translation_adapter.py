@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 
 from translation.config import fallback_chunk_strategy, fallback_models, system_prompts
 from translation.prompts import compose_label_prompt, compose_translation_prompt
 from translation.quality import quality_prompt_rules
 
 
+if TYPE_CHECKING:
+    from translation.workflow.pipeline import TranslationPipeline
+
+
 def restore_protected_for_pipeline(
-    pipeline: Any,
+    pipeline: TranslationPipeline,
     original_text: str,
     prepared_text: str,
     protected_text: str,
@@ -33,7 +37,7 @@ def restore_protected_for_pipeline(
     )
 
 
-def glossary_mappings_for_quality(pipeline: Any) -> list[dict[str, str]]:
+def glossary_mappings_for_quality(pipeline: TranslationPipeline) -> list[dict[str, str]]:
     mappings: list[dict[str, str]] = []
     for src, tgt, owner, typ in pipeline.glossary.iter_mappings():
         mappings.append({
@@ -45,7 +49,7 @@ def glossary_mappings_for_quality(pipeline: Any) -> list[dict[str, str]]:
 
 
 def pollution_issues_for_pipeline(
-    pipeline: Any,
+    pipeline: TranslationPipeline,
     source: str,
     translated: str,
     *,
@@ -59,7 +63,7 @@ def pollution_issues_for_pipeline(
 
 
 def fallback_translate_for_pipeline(
-    pipeline: Any,
+    pipeline: TranslationPipeline,
     protected_text: str,
     file_path: str,
     row_idx: int,
@@ -94,7 +98,7 @@ def fallback_translate_for_pipeline(
 
 
 def compose_label_prompt_for_pipeline(
-    pipeline: Any,
+    pipeline: TranslationPipeline,
     term_hits: list[dict[str, str]] | None = None,
     strict: bool = False,
 ) -> str:
@@ -109,7 +113,7 @@ def compose_label_prompt_for_pipeline(
 
 
 def retry_short_label_for_pipeline(
-    pipeline: Any,
+    pipeline: TranslationPipeline,
     protected_text: str,
     term_hits: list[dict[str, str]],
     *,
@@ -128,7 +132,7 @@ def retry_short_label_for_pipeline(
 
 
 def call_translate_for_pipeline(
-    pipeline: Any,
+    pipeline: TranslationPipeline,
     text: str,
     system_prompt: str,
     options: dict[str, Any] | None = None,
@@ -146,7 +150,7 @@ def call_translate_for_pipeline(
 
 
 def compose_system_prompt_for_pipeline(
-    pipeline: Any,
+    pipeline: TranslationPipeline,
     base_prompt: str,
     term_hits: list[dict[str, str]] | None = None,
     strict: bool = False,

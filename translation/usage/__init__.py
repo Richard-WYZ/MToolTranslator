@@ -1,6 +1,8 @@
 """Token usage accounting for translation runs."""
 
 from translation.usage.tracker import (
+    UsageTracker,
+    use_tracker,
     diff,
     record,
     record_request_start,
@@ -11,6 +13,8 @@ from translation.usage.tracker import (
 )
 
 __all__ = [
+    "UsageTracker",
+    "use_tracker",
     "diff",
     "record",
     "record_request_start",
