@@ -119,6 +119,7 @@ def model_thinking_mode(model_id: str) -> str:
     tests = payload.get("models", {}).get(model_id, {})
     if not isinstance(tests, dict):
         return ""
+    discovered_modes: list[str] = []
     for test_kind in ("basic", "adult"):
         record = tests.get(test_kind)
         if isinstance(record, dict):
@@ -126,8 +127,13 @@ def model_thinking_mode(model_id: str) -> str:
                 continue
             mode = str(record.get("thinking_mode") or "").strip().lower()
             if mode:
-                return mode
-    return ""
+                discovered_modes.append(mode)
+    # Thinking capability belongs to the model, not to the test kind.  In
+    # particular, an NSFW test may discover the requirement before a basic
+    # test does; prefer the stronger discovered requirement for both paths.
+    if "low" in discovered_modes:
+        return "low"
+    return discovered_modes[0] if discovered_modes else ""
 
 
 def record_model_thinking_mode(model_id: str, thinking_mode: str) -> bool:

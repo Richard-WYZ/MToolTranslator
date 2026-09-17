@@ -327,6 +327,28 @@ def test_adult_model_test_detects_faithful_translation_or_restriction(
     assert len(calls) == 1
 
 
+def test_thinking_capability_discovered_by_adult_test_applies_to_basic_requests(
+    monkeypatch, tmp_path
+):
+    path = tmp_path / ".model-status.json"
+    config = {
+        "style": "opencode_go",
+        "base_url": "https://opencode.example/v1",
+        "api_key": "secret-a",
+    }
+    monkeypatch.setattr(model_status, "runtime_model_status_path", lambda: path)
+    monkeypatch.setattr(model_status, "third_party_api_config", lambda: dict(config))
+
+    model_status.record_model_test("api:model-a", "basic", "unavailable")
+    model_status.record_model_test(
+        "api:model-a", "adult", "available", thinking_mode="low"
+    )
+
+    assert model_status.model_thinking_mode("api:model-a") == "low"
+    public = model_status.public_model_statuses()
+    assert public["api:model-a"]["adult"]["thinking_mode"] == "low"
+
+
 def test_model_test_history_survives_catalog_changes_and_marks_context_stale(
     monkeypatch, tmp_path
 ):
