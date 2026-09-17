@@ -2924,6 +2924,7 @@ def test_opencode_go_openai_model_uses_chat_completions(monkeypatch):
     def fake_post(url, headers=None, json=None, timeout=None):
         assert url == "https://opencode.ai/zen/go/v1/chat/completions"
         assert headers["Authorization"] == "Bearer test-key"
+        assert headers["x-opencode-session"]
         assert json["model"] == "kimi-k2.7-code"
         assert json["reasoning_effort"] == "none"
         return FakeResponse()
@@ -2963,6 +2964,7 @@ def test_opencode_go_messages_model_uses_anthropic_endpoint(monkeypatch):
         assert url == "https://opencode.ai/zen/go/v1/messages"
         assert headers["x-api-key"] == "test-key"
         assert headers["anthropic-version"] == "2023-06-01"
+        assert headers["x-opencode-session"]
         assert json["model"] == "qwen3.7-plus"
         assert json["system"] == "Translate"
         assert json["max_tokens"] == 12
