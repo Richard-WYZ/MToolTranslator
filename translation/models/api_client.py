@@ -15,6 +15,8 @@ from translation.models.transport import connection_scope, request as transport_
 
 
 OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
+OPENCODE_GO_LOW_REASONING_EFFORT = "low"
+OPENCODE_GO_LOW_THINKING_BUDGET = 1024
 OPENCODE_GO_CHAT_MODELS = {
     "glm-5.2",
     "glm-5.1",
@@ -146,6 +148,26 @@ def _api_model_id(model: str) -> str:
     return model
 
 
+def _persist_thinking_mode(model: str, mode: str) -> None:
+    """Best-effort persistence of a provider capability discovered at runtime."""
+    try:
+        from app.services.model_status import record_model_thinking_mode
+
+        record_model_thinking_mode(f"api:{_api_model_id(model)}", mode)
+    except Exception:
+        # Translation must not fail because capability bookkeeping failed.
+        return
+
+
+def _stored_thinking_mode(model: str) -> str:
+    try:
+        from app.services.model_status import model_thinking_mode
+
+        return model_thinking_mode(f"api:{_api_model_id(model)}")
+    except Exception:
+        return ""
+
+
 def _request_headers(key: str, *, style: str, auth_header: str = "Authorization") -> dict[str, str]:
     """Build provider headers, including the current OpenCode Go session key."""
     headers = {
@@ -272,6 +294,7 @@ def _openai_translate_once(
     timeout: int = 60,
     options: dict[str, Any] | None = None,
     response_format: Any = None,
+    thinking_mode: str = "disabled",
 ) -> str:
     url = _endpoint_url(base_url, "chat/completions")
     headers = _request_headers(key, style=_api_style(cfg))
@@ -291,8 +314,12 @@ def _openai_translate_once(
                 payload[key_name] = options[key_name]
     if response_format:
         payload["response_format"] = response_format
-    if _api_style(cfg) == "opencode_go" and cfg.get("disable_thinking", True):
-        payload["reasoning_effort"] = "none"
+    if _api_style(cfg) == "opencode_go":
+        payload["reasoning_effort"] = (
+            OPENCODE_GO_LOW_REASONING_EFFORT
+            if thinking_mode == "low"
+            else "none"
+        )
 
     request_started = token_usage.record_request_start("api", model_id)
     try:
@@ -322,6 +349,7 @@ def _anthropic_translate_once(
     terminology: Any = None,
     timeout: int = 60,
     options: dict[str, Any] | None = None,
+    thinking_mode: str = "disabled",
 ) -> str:
     url = _endpoint_url(base_url, "messages")
     headers = {
@@ -339,8 +367,12 @@ def _anthropic_translate_once(
     }
     if system_prompt:
         payload["system"] = system_prompt
-    if _api_style(cfg) == "opencode_go" and cfg.get("disable_thinking", True):
-        payload["thinking"] = {"type": "disabled"}
+    if _api_style(cfg) == "opencode_go":
+        payload["thinking"] = (
+            {"type": "enabled", "budget_tokens": OPENCODE_GO_LOW_THINKING_BUDGET}
+            if thinking_mode == "low"
+            else {"type": "disabled"}
+        )
     if options:
         if "temperature" in options:
             payload["temperature"] = options["temperature"]
@@ -391,30 +423,68 @@ def translate_once(
     if not key:
         raise RuntimeError("Third-party API key is not configured")
 
-    if _endpoint_for_model(cfg, model) == "messages":
-        return _anthropic_translate_once(
-            cfg,
-            base_url,
-            key,
-            model,
-            text,
-            system_prompt=system_prompt,
-            terminology=terminology,
-            timeout=timeout,
-            options=options,
+    if _api_style(cfg) != "opencode_go":
+        if _endpoint_for_model(cfg, model) == "messages":
+            return _anthropic_translate_once(
+                cfg, base_url, key, model, text,
+                system_prompt=system_prompt, terminology=terminology,
+                timeout=timeout, options=options,
+            )
+        return _openai_translate_once(
+            cfg, base_url, key, model, text,
+            system_prompt=system_prompt, terminology=terminology,
+            timeout=timeout, options=options, response_format=response_format,
         )
-    return _openai_translate_once(
-        cfg,
-        base_url,
-        key,
-        model,
-        text,
-        system_prompt=system_prompt,
-        terminology=terminology,
-        timeout=timeout,
-        options=options,
-        response_format=response_format,
+
+    stored_mode = _stored_thinking_mode(model)
+    preferred_mode = stored_mode if stored_mode in {"disabled", "low"} else "disabled"
+    # Two attempts with the current mode, then one bounded fallback with the
+    # lowest known thinking setting.  A model previously discovered to need
+    # thinking is never silently switched back to disabled thinking.
+    modes = (
+        ["low", "low", "low"]
+        if preferred_mode == "low"
+        else ["disabled", "disabled", "low"]
     )
+    last_error: Exception | None = None
+    for thinking_mode in modes:
+        try:
+            if _endpoint_for_model(cfg, model) == "messages":
+                output = _anthropic_translate_once(
+                    cfg,
+                    base_url,
+                    key,
+                    model,
+                    text,
+                    system_prompt=system_prompt,
+                    terminology=terminology,
+                    timeout=timeout,
+                    options=options,
+                    thinking_mode=thinking_mode,
+                )
+            else:
+                output = _openai_translate_once(
+                    cfg,
+                    base_url,
+                    key,
+                    model,
+                    text,
+                    system_prompt=system_prompt,
+                    terminology=terminology,
+                    timeout=timeout,
+                    options=options,
+                    response_format=response_format,
+                    thinking_mode=thinking_mode,
+                )
+            if thinking_mode == "low" and stored_mode != "low":
+                _persist_thinking_mode(model, "low")
+            return output
+        except Exception as exc:
+            last_error = exc
+            # The policy is deliberately bounded: one retry with the original
+            # mode, then one retry with the lowest supported thinking mode.
+            continue
+    raise last_error or RuntimeError("Third-party API translation failed")
 
 
 def translate(

@@ -2989,6 +2989,57 @@ def test_opencode_go_messages_model_uses_anthropic_endpoint(monkeypatch):
         config.DEFAULT_CONFIG["third_party_api"] = old_cfg
 
 
+def test_opencode_go_retries_once_then_enables_low_thinking(monkeypatch):
+    import config
+    from translator import api_client
+
+    class FakeResponse:
+        status_code = 400
+        text = '{"error":"thinking required"}'
+        headers = {}
+
+        def raise_for_status(self):
+            raise requests.HTTPError("HTTP 400", response=self)
+
+        def json(self):
+            return {"choices": [{"message": {"content": "译文"}}]}
+
+    calls = []
+    successful = type("SuccessfulResponse", (), {
+        "raise_for_status": lambda self: None,
+        "json": lambda self: {"choices": [{"message": {"content": "译文"}}]},
+    })
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(json)
+        if len(calls) < 3:
+            return FakeResponse()
+        return successful()
+
+    old_cfg = dict(config.DEFAULT_CONFIG.get("third_party_api", {}))
+    config.DEFAULT_CONFIG["third_party_api"] = {
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "api_key_env": "THIRD_PARTY_API_KEY",
+        "api_key": "test-key",
+        "style": "opencode_go",
+        "models": [],
+    }
+    monkeypatch.delenv("THIRD_PARTY_API_BASE_URL", raising=False)
+    monkeypatch.delenv("THIRD_PARTY_API_KEY", raising=False)
+    monkeypatch.setattr(api_client.requests, "post", fake_post)
+    persisted = []
+    monkeypatch.setattr(api_client, "_persist_thinking_mode", lambda model, mode: persisted.append((model, mode)))
+    try:
+        assert api_client.translate_once("kimi-k2.7-code", "テスト") == "译文"
+        assert len(calls) == 3
+        assert calls[0]["reasoning_effort"] == "none"
+        assert calls[1]["reasoning_effort"] == "none"
+        assert calls[2]["reasoning_effort"] == "low"
+        assert persisted == [("kimi-k2.7-code", "low")]
+    finally:
+        config.DEFAULT_CONFIG["third_party_api"] = old_cfg
+
+
 def test_only_evidence_backed_kanji_names_are_preserved_deterministically():
     from translation.classification import deterministic_translation
     from translator.glossary import Glossary

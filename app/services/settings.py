@@ -387,11 +387,17 @@ def test_connection(
         failed_status = "error" if test_kind == "adult" else "unavailable"
         record_model_test(selected_model, test_kind, failed_status)
         raise HTTPException(status_code=502, detail=f"Connection test failed: {exc}") from exc
+    thinking_mode = ""
+    if selected_provider == "api":
+        from app.services.model_status import model_thinking_mode
+
+        thinking_mode = model_thinking_mode(selected_model)
     result = {
         "ok": bool(str(output).strip()),
         "provider": selected_provider,
         "model": selected_model,
         "test_kind": test_kind,
+        "thinking_mode": thinking_mode or "disabled",
         "usage_warning": "本次测试发送了一条极短翻译请求，可能产生少量模型用量。",
     }
     if test_kind == "adult":
@@ -405,7 +411,12 @@ def test_connection(
         status = "available" if result["nsfw_supported"] else "restricted"
     else:
         status = "available" if result["ok"] else "unavailable"
-    result["test_status"] = record_model_test(selected_model, test_kind, status)
+    result["test_status"] = record_model_test(
+        selected_model,
+        test_kind,
+        status,
+        thinking_mode=thinking_mode or None,
+    )
     return result
 
 

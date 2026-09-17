@@ -82,11 +82,15 @@ def _public_record(
 ) -> dict[str, Any]:
     provider = model_id.split(":", 1)[0]
     current_context = (contexts or {}).get(provider) or _provider_context(provider)
-    return {
+    result = {
         "status": str(record.get("status") or "untested"),
         "tested_at": str(record.get("tested_at") or ""),
         "stale": record.get("context") != current_context,
     }
+    thinking_mode = str(record.get("thinking_mode") or "").strip()
+    if thinking_mode:
+        result["thinking_mode"] = thinking_mode
+    return result
 
 
 def public_model_statuses() -> dict[str, dict[str, dict[str, Any]]]:
@@ -109,13 +113,64 @@ def public_model_statuses() -> dict[str, dict[str, dict[str, Any]]]:
     return result
 
 
-def record_model_test(model_id: str, test_kind: str, status: str) -> dict[str, Any]:
+def model_thinking_mode(model_id: str) -> str:
+    """Return the persisted thinking mode required by a model, if known."""
+    payload = _read_store()
+    tests = payload.get("models", {}).get(model_id, {})
+    if not isinstance(tests, dict):
+        return ""
+    for test_kind in ("basic", "adult"):
+        record = tests.get(test_kind)
+        if isinstance(record, dict):
+            if record.get("context") != _provider_context("api"):
+                continue
+            mode = str(record.get("thinking_mode") or "").strip().lower()
+            if mode:
+                return mode
+    return ""
+
+
+def record_model_thinking_mode(model_id: str, thinking_mode: str) -> bool:
+    """Persist a discovered provider capability without resetting test history."""
+    mode = str(thinking_mode or "").strip().lower()
+    if not mode:
+        return False
+    with _LOCK:
+        payload = _read_store()
+        tests = payload.setdefault("models", {}).setdefault(model_id, {})
+        changed = False
+        for test_kind in ("basic", "adult"):
+            record = tests.get(test_kind)
+            if isinstance(record, dict):
+                if record.get("thinking_mode") != mode:
+                    record["thinking_mode"] = mode
+                    changed = True
+        if not changed:
+            tests.setdefault("basic", {
+                "status": "untested",
+                "tested_at": "",
+                "context": _provider_context(model_id.split(":", 1)[0]),
+                "thinking_mode": mode,
+            })
+            changed = True
+        return _write_store(payload) if changed else True
+
+
+def record_model_test(
+    model_id: str,
+    test_kind: str,
+    status: str,
+    *,
+    thinking_mode: str | None = None,
+) -> dict[str, Any]:
     provider = model_id.split(":", 1)[0]
     record = {
         "status": status,
         "tested_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "context": _provider_context(provider),
     }
+    if thinking_mode:
+        record["thinking_mode"] = str(thinking_mode).strip().lower()
     with _LOCK:
         payload = _read_store()
         models = payload.setdefault("models", {})
@@ -127,4 +182,9 @@ def record_model_test(model_id: str, test_kind: str, status: str) -> dict[str, A
     return public
 
 
-__all__ = ["public_model_statuses", "record_model_test"]
+__all__ = [
+    "model_thinking_mode",
+    "public_model_statuses",
+    "record_model_test",
+    "record_model_thinking_mode",
+]
