@@ -3035,6 +3035,8 @@ def test_opencode_go_retries_once_then_enables_low_thinking(monkeypatch):
         assert calls[0]["reasoning_effort"] == "none"
         assert calls[1]["reasoning_effort"] == "none"
         assert calls[2]["reasoning_effort"] == "low"
+        assert "minimum necessary reasoning" in calls[2]["messages"][0]["content"]
+        assert "Return only the requested translation" in calls[2]["messages"][0]["content"]
         assert persisted == [("kimi-k2.7-code", "low")]
     finally:
         config.DEFAULT_CONFIG["third_party_api"] = old_cfg

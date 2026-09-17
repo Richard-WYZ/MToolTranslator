@@ -17,6 +17,12 @@ from translation.models.transport import connection_scope, request as transport_
 OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
 OPENCODE_GO_LOW_REASONING_EFFORT = "low"
 OPENCODE_GO_LOW_THINKING_BUDGET = 1024
+LOW_THINKING_TRANSLATION_SUFFIX = (
+    "\n\nTranslation-only constraint: use the minimum necessary reasoning. "
+    "Do not analyze, explain, summarize, critique, or discuss the task. "
+    "Return only the requested translation or required structured output, "
+    "with no preamble or reasoning text."
+)
 OPENCODE_GO_CHAT_MODELS = {
     "glm-5.2",
     "glm-5.1",
@@ -230,6 +236,14 @@ def _build_messages(text: str, system_prompt: str = "", terminology: Any = None)
     return messages
 
 
+def _translation_system_prompt(system_prompt: str, thinking_mode: str) -> str:
+    if thinking_mode != "low":
+        return system_prompt
+    if LOW_THINKING_TRANSLATION_SUFFIX.strip() in system_prompt:
+        return system_prompt
+    return f"{system_prompt}{LOW_THINKING_TRANSLATION_SUFFIX}" if system_prompt else LOW_THINKING_TRANSLATION_SUFFIX.lstrip()
+
+
 def list_models() -> list[dict[str, Any]]:
     cfg = _api_config()
     models = cfg.get("models") or []
@@ -301,7 +315,11 @@ def _openai_translate_once(
     model_id = _api_model_id(model) if _api_style(cfg) == "opencode_go" else model
     payload: dict[str, Any] = {
         "model": model_id,
-        "messages": _build_messages(text, system_prompt=system_prompt, terminology=terminology),
+        "messages": _build_messages(
+            text,
+            system_prompt=_translation_system_prompt(system_prompt, thinking_mode),
+            terminology=terminology,
+        ),
         "temperature": 0,
     }
     if options:
@@ -366,7 +384,7 @@ def _anthropic_translate_once(
         "temperature": 0,
     }
     if system_prompt:
-        payload["system"] = system_prompt
+        payload["system"] = _translation_system_prompt(system_prompt, thinking_mode)
     if _api_style(cfg) == "opencode_go":
         payload["thinking"] = (
             {"type": "enabled", "budget_tokens": OPENCODE_GO_LOW_THINKING_BUDGET}
