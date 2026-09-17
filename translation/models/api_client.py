@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+import uuid
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -145,6 +146,20 @@ def _api_model_id(model: str) -> str:
     return model
 
 
+def _request_headers(key: str, *, style: str, auth_header: str = "Authorization") -> dict[str, str]:
+    """Build provider headers, including the current OpenCode Go session key."""
+    headers = {
+        auth_header: f"Bearer {key}" if auth_header == "Authorization" else key,
+        "Content-Type": "application/json",
+    }
+    if style == "opencode_go":
+        # OpenCode Go requires this header for request routing.  Keep the
+        # identifier bounded to one physical request so a failed request
+        # cannot be replayed as an accidental continuation.
+        headers["x-opencode-session"] = str(uuid.uuid4())
+    return headers
+
+
 def _endpoint_url(base_url: str, endpoint: str) -> str:
     base = base_url.rstrip("/")
     for suffix in KNOWN_ENDPOINT_SUFFIXES:
@@ -259,10 +274,7 @@ def _openai_translate_once(
     response_format: Any = None,
 ) -> str:
     url = _endpoint_url(base_url, "chat/completions")
-    headers = {
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-    }
+    headers = _request_headers(key, style=_api_style(cfg))
     model_id = _api_model_id(model) if _api_style(cfg) == "opencode_go" else model
     payload: dict[str, Any] = {
         "model": model_id,
@@ -315,6 +327,7 @@ def _anthropic_translate_once(
     headers = {
         "x-api-key": key,
         "anthropic-version": str(cfg.get("anthropic_version") or "2023-06-01"),
+        "x-opencode-session": str(uuid.uuid4()),
         "Content-Type": "application/json",
     }
     model_id = _api_model_id(model) if _api_style(cfg) == "opencode_go" else model
