@@ -24,40 +24,47 @@ LOW_THINKING_TRANSLATION_SUFFIX = (
     "with no preamble or reasoning text."
 )
 OPENCODE_GO_CHAT_MODELS = {
+    "glm-5.3-flash",
+    "glm-5.3",
     "glm-5.2",
     "glm-5.1",
+    "kimi-k3",
     "kimi-k2.7-code",
     "kimi-k2.6",
+    "longcat-2.0",
+    "deepseek-v4.1-flash",
     "deepseek-v4-pro",
     "deepseek-v4-flash",
+    "deepseek-v4-flash-vision-exp",
     "mimo-v2.5",
     "mimo-v2.5-pro",
+    "hy4-preview",
+    "hy3",
 }
 OPENCODE_GO_MESSAGES_MODELS = {
     "minimax-m3",
     "minimax-m2.7",
     "minimax-m2.5",
+    "qwen3.8-max",
+    "qwen3.8-flash",
     "qwen3.7-max",
     "qwen3.7-plus",
     "qwen3.6-plus",
+    "union-alpha",
 }
-OPENCODE_GO_MODELS = [
-    "glm-5.2",
-    "glm-5.1",
-    "kimi-k2.7-code",
-    "kimi-k2.6",
-    "deepseek-v4-pro",
-    "deepseek-v4-flash",
-    "mimo-v2.5",
-    "mimo-v2.5-pro",
-    "minimax-m3",
-    "minimax-m2.7",
-    "minimax-m2.5",
-    "qwen3.7-max",
-    "qwen3.7-plus",
-    "qwen3.6-plus",
-]
-KNOWN_ENDPOINT_SUFFIXES = ("/chat/completions", "/messages", "/models")
+OPENCODE_GO_RESPONSES_MODELS = {
+    "grok-4.6",
+    "gpt-5.6-luna",
+    "muse-spark-1.3-contributor",
+    "muse-spark-1.2-contributor",
+}
+OPENCODE_GO_MODELS = sorted(
+    OPENCODE_GO_CHAT_MODELS
+    | OPENCODE_GO_MESSAGES_MODELS
+    | OPENCODE_GO_RESPONSES_MODELS
+)
+KNOWN_ENDPOINT_SUFFIXES = ("/chat/completions", "/messages", "/responses", "/models")
+SUPPORTED_PROTOCOLS = ("chat_completions", "messages", "responses")
 
 
 class APIRequestError(requests.HTTPError):
@@ -198,15 +205,77 @@ def _endpoint_url(base_url: str, endpoint: str) -> str:
 
 
 def _endpoint_for_model(cfg: dict[str, Any], model: str) -> str:
+    protocol = model_protocol(cfg, model)
+    return {
+        "chat_completions": "chat/completions",
+        "messages": "messages",
+        "responses": "responses",
+    }[protocol]
+
+
+def _normalize_protocol(value: Any) -> str:
+    rendered = str(value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "chat": "chat_completions",
+        "chat/completions": "chat_completions",
+        "openai": "chat_completions",
+        "anthropic": "messages",
+        "response": "responses",
+    }
+    return aliases.get(rendered, rendered)
+
+
+def model_protocol(cfg: dict[str, Any], model: str) -> str:
+    """Resolve one model's transport protocol without leaking policy above transport."""
     style = _api_style(cfg)
     if style in ("anthropic", "messages"):
         return "messages"
+    if style in ("response", "responses"):
+        return "responses"
     if style == "opencode_go":
         model_id = _api_model_id(model)
+        overrides = cfg.get("model_protocols") or {}
+        if isinstance(overrides, dict):
+            override = _normalize_protocol(overrides.get(model_id))
+            if override in SUPPORTED_PROTOCOLS:
+                return override
+        try:
+            from app.services.model_status import model_protocol as stored_model_protocol
+
+            stored = _normalize_protocol(stored_model_protocol(f"api:{model_id}"))
+        except Exception:
+            stored = ""
+        if stored in SUPPORTED_PROTOCOLS:
+            return stored
+        if model_id in OPENCODE_GO_RESPONSES_MODELS:
+            return "responses"
         if model_id in OPENCODE_GO_MESSAGES_MODELS:
             return "messages"
-        return "chat/completions"
-    return "chat/completions"
+        return "chat_completions"
+    return "chat_completions"
+
+
+def _persist_model_protocol(model: str, protocol: str) -> None:
+    try:
+        from app.services.model_status import record_model_protocol
+
+        record_model_protocol(f"api:{_api_model_id(model)}", protocol)
+    except Exception:
+        return
+
+
+def _is_explicit_protocol_mismatch(exc: Exception) -> bool:
+    body = str(getattr(exc, "response_body", "") or "").lower()
+    message = str(exc).lower()
+    markers = (
+        "not supported for format",
+        "unsupported api format",
+        "unsupported endpoint",
+        "use the responses api",
+        "use /responses",
+        "use /messages",
+    )
+    return any(marker in body or marker in message for marker in markers)
 
 
 def _build_user_text(text: str, terminology: Any = None) -> str:
@@ -420,6 +489,100 @@ def _anthropic_translate_once(
     return content
 
 
+def _responses_translate_once(
+    cfg: dict[str, Any],
+    base_url: str,
+    key: str,
+    model: str,
+    text: str,
+    system_prompt: str = "",
+    terminology: Any = None,
+    timeout: int = 60,
+    options: dict[str, Any] | None = None,
+    response_format: Any = None,
+    thinking_mode: str = "disabled",
+) -> str:
+    url = _endpoint_url(base_url, "responses")
+    headers = _request_headers(key, style=_api_style(cfg))
+    model_id = _api_model_id(model) if _api_style(cfg) == "opencode_go" else model
+    payload: dict[str, Any] = {
+        "model": model_id,
+        "input": _build_user_text(text, terminology=terminology),
+    }
+    if system_prompt:
+        payload["instructions"] = _translation_system_prompt(system_prompt, thinking_mode)
+    if options and options.get("num_predict"):
+        payload["max_output_tokens"] = int(options["num_predict"])
+    else:
+        payload["max_output_tokens"] = 2048
+    if response_format:
+        payload["text"] = {"format": response_format}
+    if _api_style(cfg) == "opencode_go":
+        payload["reasoning"] = {
+            "effort": OPENCODE_GO_LOW_REASONING_EFFORT
+            if thinking_mode == "low"
+            else "none"
+        }
+
+    request_started = token_usage.record_request_start("api", model_id)
+    try:
+        resp = transport_request("api", "post", url, headers=headers, json=payload, timeout=(10, timeout))
+    finally:
+        token_usage.record_response_received("api", model_id, request_started)
+    _raise_for_status_with_body(resp)
+    data = resp.json()
+    token_usage.record("api", model_id, data.get("usage"))
+    content = str(data.get("output_text") or "").strip()
+    if not content:
+        pieces: list[str] = []
+        for item in data.get("output") or []:
+            if not isinstance(item, dict):
+                continue
+            for block in item.get("content") or []:
+                if isinstance(block, dict) and block.get("type") in {"output_text", "text"}:
+                    pieces.append(str(block.get("text") or ""))
+        content = "".join(pieces).strip()
+    if not content:
+        raise RuntimeError("Third-party Responses API returned empty content")
+    return content
+
+
+def _translate_with_protocol(
+    protocol: str,
+    cfg: dict[str, Any],
+    base_url: str,
+    key: str,
+    model: str,
+    text: str,
+    *,
+    system_prompt: str,
+    terminology: Any,
+    timeout: int,
+    options: dict[str, Any] | None,
+    response_format: Any,
+    thinking_mode: str,
+) -> str:
+    if protocol == "messages":
+        return _anthropic_translate_once(
+            cfg, base_url, key, model, text,
+            system_prompt=system_prompt, terminology=terminology,
+            timeout=timeout, options=options, thinking_mode=thinking_mode,
+        )
+    if protocol == "responses":
+        return _responses_translate_once(
+            cfg, base_url, key, model, text,
+            system_prompt=system_prompt, terminology=terminology,
+            timeout=timeout, options=options, response_format=response_format,
+            thinking_mode=thinking_mode,
+        )
+    return _openai_translate_once(
+        cfg, base_url, key, model, text,
+        system_prompt=system_prompt, terminology=terminology,
+        timeout=timeout, options=options, response_format=response_format,
+        thinking_mode=thinking_mode,
+    )
+
+
 def translate_once(
     model: str,
     text: str,
@@ -442,16 +605,11 @@ def translate_once(
         raise RuntimeError("Third-party API key is not configured")
 
     if _api_style(cfg) != "opencode_go":
-        if _endpoint_for_model(cfg, model) == "messages":
-            return _anthropic_translate_once(
-                cfg, base_url, key, model, text,
-                system_prompt=system_prompt, terminology=terminology,
-                timeout=timeout, options=options,
-            )
-        return _openai_translate_once(
-            cfg, base_url, key, model, text,
+        return _translate_with_protocol(
+            model_protocol(cfg, model), cfg, base_url, key, model, text,
             system_prompt=system_prompt, terminology=terminology,
             timeout=timeout, options=options, response_format=response_format,
+            thinking_mode="disabled",
         )
 
     stored_mode = _stored_thinking_mode(model)
@@ -465,40 +623,34 @@ def translate_once(
         else ["disabled", "disabled", "low"]
     )
     last_error: Exception | None = None
+    preferred_protocol = model_protocol(cfg, model)
+    protocols = [preferred_protocol]
+    explicitly_overridden = _api_model_id(model) in dict(cfg.get("model_protocols") or {})
+    last_error: Exception | None = None
     for thinking_mode in modes:
         try:
-            if _endpoint_for_model(cfg, model) == "messages":
-                output = _anthropic_translate_once(
-                    cfg,
-                    base_url,
-                    key,
-                    model,
-                    text,
-                    system_prompt=system_prompt,
-                    terminology=terminology,
-                    timeout=timeout,
-                    options=options,
-                    thinking_mode=thinking_mode,
-                )
-            else:
-                output = _openai_translate_once(
-                    cfg,
-                    base_url,
-                    key,
-                    model,
-                    text,
-                    system_prompt=system_prompt,
-                    terminology=terminology,
-                    timeout=timeout,
-                    options=options,
-                    response_format=response_format,
-                    thinking_mode=thinking_mode,
-                )
+            output = _translate_with_protocol(
+                protocols[-1], cfg, base_url, key, model, text,
+                system_prompt=system_prompt, terminology=terminology,
+                timeout=timeout, options=options, response_format=response_format,
+                thinking_mode=thinking_mode,
+            )
+            _persist_model_protocol(model, protocols[-1])
             if thinking_mode == "low" and stored_mode != "low":
                 _persist_thinking_mode(model, "low")
             return output
         except Exception as exc:
             last_error = exc
+            if (
+                not explicitly_overridden
+                and _is_explicit_protocol_mismatch(exc)
+                and len(protocols) < len(SUPPORTED_PROTOCOLS)
+            ):
+                next_protocol = next(
+                    candidate for candidate in SUPPORTED_PROTOCOLS
+                    if candidate not in protocols
+                )
+                protocols.append(next_protocol)
             # The policy is deliberately bounded: one retry with the original
             # mode, then one retry with the lowest supported thinking mode.
             continue
@@ -542,8 +694,10 @@ def translate(
 __all__ = [
     "APIRequestError",
     "OPENCODE_GO_MODELS",
+    "OPENCODE_GO_RESPONSES_MODELS",
     "connection_scope",
     "list_models",
+    "model_protocol",
     "translate",
     "translate_once",
 ]

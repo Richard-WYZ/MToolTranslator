@@ -16,6 +16,7 @@ THIRD_PARTY_API_BASE_URL=
 THIRD_PARTY_API_KEY=
 THIRD_PARTY_API_MODELS=
 THIRD_PARTY_API_DISABLED_MODELS=
+THIRD_PARTY_API_MODEL_PROTOCOLS=
 THIRD_PARTY_API_DISABLE_THINKING=true
 OLLAMA_HOST=http://localhost:11434
 OLLAMA_DISABLED_MODELS=
@@ -30,6 +31,11 @@ def runtime_env_path() -> Path:
 def runtime_model_status_path() -> Path:
     """Return the portable, non-secret model test history file."""
     return runtime_base_dir() / ".model-status.json"
+
+
+def runtime_model_benchmark_path() -> Path:
+    """Return the portable, non-secret model benchmark result file."""
+    return runtime_base_dir() / ".model-benchmark.json"
 
 
 def ensure_portable_env_file() -> dict[str, object]:
@@ -54,5 +60,6 @@ __all__ = [
     "PORTABLE_ENV_TEMPLATE",
     "ensure_portable_env_file",
     "runtime_env_path",
+    "runtime_model_benchmark_path",
     "runtime_model_status_path",
 ]

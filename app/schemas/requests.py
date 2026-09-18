@@ -73,6 +73,7 @@ class SettingsUpdateRequest(BaseModel):
     api_base_url: str = ""
     api_models: List[str] = []
     disabled_api_models: List[str] = []
+    api_model_protocols: Dict[str, str] = {}
     disabled_ollama_models: List[str] = []
     default_model: str
     disable_thinking: bool = True

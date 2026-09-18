@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, MutableMapping
 from urllib.parse import urlparse
@@ -28,6 +30,7 @@ EDITABLE_ENV_KEYS = (
     "THIRD_PARTY_API_KEY",
     "THIRD_PARTY_API_MODELS",
     "THIRD_PARTY_API_DISABLED_MODELS",
+    "THIRD_PARTY_API_MODEL_PROTOCOLS",
     "THIRD_PARTY_API_DISABLE_THINKING",
     "OLLAMA_HOST",
     "OLLAMA_DISABLED_MODELS",
@@ -99,6 +102,7 @@ def public_settings() -> dict[str, Any]:
             "base_url": str(api.get("base_url") or ""),
             "models": models,
             "disabled_models": disabled_models("api"),
+            "model_protocols": dict(api.get("model_protocols") or {}),
             "catalog_source": catalog_source,
             "api_key_configured": bool(
                 os.environ.get("THIRD_PARTY_API_KEY") or api.get("api_key")
@@ -186,7 +190,7 @@ def save_settings(payload: Any, tasks: MutableMapping[str, Any]) -> dict[str, An
     if provider not in {"api", "ollama"}:
         raise HTTPException(status_code=400, detail="provider must be api or ollama")
     style = _validate_value("api.style", payload.api_style).lower().replace("-", "_")
-    if style not in {"openai", "opencode_go", "anthropic", "messages"}:
+    if style not in {"openai", "opencode_go", "anthropic", "messages", "responses"}:
         raise HTTPException(status_code=400, detail="Unsupported API style")
     default = _validate_value("default_model", payload.default_model)
     if not default:
@@ -221,6 +225,22 @@ def save_settings(payload: Any, tasks: MutableMapping[str, Any]) -> dict[str, An
         for item in payload.disabled_ollama_models
         if _validate_value("disabled_ollama_models", item)
     ))
+    protocol_aliases = {
+        "chat": "chat_completions",
+        "chat/completions": "chat_completions",
+        "openai": "chat_completions",
+        "anthropic": "messages",
+        "response": "responses",
+    }
+    model_protocols: dict[str, str] = {}
+    for raw_model, raw_protocol in dict(getattr(payload, "api_model_protocols", {}) or {}).items():
+        protocol_model = _validate_value("api_model_protocols.model", raw_model).removeprefix("api:")
+        protocol = _validate_value("api_model_protocols.protocol", raw_protocol).lower().replace("-", "_")
+        protocol = protocol_aliases.get(protocol, protocol)
+        if protocol not in {"chat_completions", "messages", "responses"}:
+            raise HTTPException(status_code=400, detail=f"Unsupported model protocol: {protocol}")
+        if protocol_model:
+            model_protocols[protocol_model] = protocol
     clean_default = default.split(":", 1)[1]
     disabled_for_provider = disabled_api if provider == "api" else disabled_ollama
     if clean_default in disabled_for_provider:
@@ -261,6 +281,9 @@ def save_settings(payload: Any, tasks: MutableMapping[str, Any]) -> dict[str, An
         "THIRD_PARTY_API_KEY": secret,
         "THIRD_PARTY_API_MODELS": ",".join(model_values),
         "THIRD_PARTY_API_DISABLED_MODELS": ",".join(disabled_api),
+        "THIRD_PARTY_API_MODEL_PROTOCOLS": json.dumps(
+            model_protocols, ensure_ascii=True, separators=(",", ":")
+        ) if model_protocols else "",
         "THIRD_PARTY_API_DISABLE_THINKING": _bool_text(payload.disable_thinking),
         "OLLAMA_HOST": ollama_url,
         "OLLAMA_DISABLED_MODELS": ",".join(disabled_ollama),
@@ -373,6 +396,14 @@ def test_connection(
         if test_kind == "adult"
         else "Translate Japanese to Simplified Chinese. Return only the translation."
     )
+    protocol = "ollama"
+    if selected_provider == "api":
+        from translation.models import api_client
+
+        protocol = api_client.model_protocol(
+            third_party_api_config(), selected_model.removeprefix("api:")
+        )
+    started_at = time.perf_counter()
     try:
         from translation.models import translate_once
 
@@ -384,9 +415,32 @@ def test_connection(
             think=False,
         )
     except Exception as exc:
+        latency_ms = round((time.perf_counter() - started_at) * 1000)
+        response_body = str(getattr(exc, "response_body", "") or "")
+        provider_error_type = ""
+        if response_body:
+            try:
+                error_payload = json.loads(response_body)
+                raw_error = error_payload.get("error") if isinstance(error_payload, dict) else None
+                if isinstance(raw_error, dict):
+                    provider_error_type = str(raw_error.get("type") or "")
+            except (TypeError, ValueError):
+                pass
+        details = {
+            "protocol": protocol,
+            "http_status": getattr(exc, "status_code", None),
+            "provider_error_type": provider_error_type or type(exc).__name__,
+            "error_summary": str(exc)[:500],
+            "latency_ms": latency_ms,
+        }
         failed_status = "error" if test_kind == "adult" else "unavailable"
-        record_model_test(selected_model, test_kind, failed_status)
+        record_model_test(selected_model, test_kind, failed_status, details=details)
         raise HTTPException(status_code=502, detail=f"Connection test failed: {exc}") from exc
+    latency_ms = round((time.perf_counter() - started_at) * 1000)
+    if selected_provider == "api":
+        from app.services.model_status import model_protocol as stored_model_protocol
+
+        protocol = stored_model_protocol(selected_model) or protocol
     thinking_mode = ""
     if selected_provider == "api":
         from app.services.model_status import model_thinking_mode
@@ -398,6 +452,8 @@ def test_connection(
         "model": selected_model,
         "test_kind": test_kind,
         "thinking_mode": thinking_mode or "disabled",
+        "protocol": protocol,
+        "latency_ms": latency_ms,
         "usage_warning": "本次测试发送了一条极短翻译请求，可能产生少量模型用量。",
     }
     if test_kind == "adult":
@@ -416,6 +472,7 @@ def test_connection(
         test_kind,
         status,
         thinking_mode=thinking_mode or None,
+        details={"protocol": protocol, "latency_ms": latency_ms},
     )
     return result
 

@@ -251,12 +251,15 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert 'id="settings-model-list"' in html
     assert 'id="btn-test-enabled-models"' in html
     assert 'id="btn-test-enabled-nsfw"' in html
+    assert '<option value="responses">OpenAI Responses</option>' in html
     assert 'id="settings-api-models"' not in html
     assert "/settings/connection-test" in script
     assert "/settings/models/discover" in script
     assert "api_key_action" in script
     assert "data-model-enabled" in script
     assert "data-test-model-nsfw" in script
+    assert "data-model-protocol" in script
+    assert "api_model_protocols" in script
     assert "availability-badge" in script
     assert "NSFW 可用" in script
     assert "NSFW 上次测试" in script
