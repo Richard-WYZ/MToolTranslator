@@ -37,6 +37,7 @@ CUSTOM_OPTION_KEYS = {
     "api_quality_model",
     "api_sensitive_routing_enabled",
     "api_sensitive_model",
+    "api_sensitive_fallback_model",
 }
 
 
@@ -100,7 +101,16 @@ def resolve_execution_profile(
     raw_options = dict(options or {})
 
     if profile == "quality_first":
-        selected_model = QUALITY_PRIMARY_MODEL
+        from translation.benchmark.store import applied_profile
+
+        benchmark_profile = applied_profile()
+        selected_model = str(benchmark_profile.get("primary_model") or QUALITY_PRIMARY_MODEL)
+        fast_model = str(benchmark_profile.get("fast_model") or QUALITY_FAST_MODEL)
+        quality_model = str(benchmark_profile.get("quality_model") or QUALITY_PRIMARY_MODEL)
+        sensitive_model = str(benchmark_profile.get("sensitive_model") or QUALITY_FAST_MODEL)
+        sensitive_fallback = str(
+            benchmark_profile.get("sensitive_fallback_model") or quality_model
+        )
         cfg.update({
             "enabled": True,
             "protocol": "json",
@@ -112,10 +122,11 @@ def resolve_execution_profile(
             "api_concurrency": 10,
             "api_adaptive_concurrency_enabled": True,
             "api_model_routing_enabled": True,
-            "api_fast_model": QUALITY_FAST_MODEL,
-            "api_quality_model": QUALITY_PRIMARY_MODEL,
+            "api_fast_model": fast_model,
+            "api_quality_model": quality_model,
             "api_sensitive_routing_enabled": True,
-            "api_sensitive_model": QUALITY_FAST_MODEL,
+            "api_sensitive_model": sensitive_model,
+            "api_sensitive_fallback_model": sensitive_fallback,
         })
     elif profile == "single_model":
         if not selected_model.startswith("api:") or selected_model == "api:":
@@ -134,6 +145,7 @@ def resolve_execution_profile(
             "api_quality_model": "",
             "api_sensitive_routing_enabled": False,
             "api_sensitive_model": "",
+            "api_sensitive_fallback_model": "",
         })
     elif profile == "local":
         if not selected_model.startswith("ollama:") or selected_model == "ollama:":
@@ -147,6 +159,7 @@ def resolve_execution_profile(
             "api_quality_model": "",
             "api_sensitive_routing_enabled": False,
             "api_sensitive_model": "",
+            "api_sensitive_fallback_model": "",
         })
     elif profile == "custom":
         if not selected_model:
@@ -168,6 +181,7 @@ def resolve_execution_profile(
             str(cfg.get("api_fast_model") or ""),
             str(cfg.get("api_quality_model") or ""),
             str(cfg.get("api_sensitive_model") or ""),
+            str(cfg.get("api_sensitive_fallback_model") or ""),
         ]
         for routed_model in dict.fromkeys(filter(None, routed_models)):
             _require_enabled_model(routed_model)
@@ -202,7 +216,7 @@ def _validate_custom_config(cfg: dict[str, Any]) -> None:
         cfg[field] = value
     if cfg.get("protocol") not in ("json", "line"):
         raise HTTPException(status_code=400, detail="protocol must be json or line")
-    for key in ("api_fast_model", "api_quality_model", "api_sensitive_model"):
+    for key in ("api_fast_model", "api_quality_model", "api_sensitive_model", "api_sensitive_fallback_model"):
         value = str(cfg.get(key) or "")
         if value:
             cfg[key] = canonical_model_id(value)
@@ -214,6 +228,8 @@ def profile_summary(profile: str, primary_model: str, cfg: dict[str, Any]) -> di
         routes.insert(0, {"role": "短标签", "model": str(cfg["api_fast_model"])})
     if cfg.get("api_sensitive_routing_enabled") and cfg.get("api_sensitive_model"):
         routes.append({"role": "敏感文本", "model": str(cfg["api_sensitive_model"])})
+    if cfg.get("api_sensitive_fallback_model"):
+        routes.append({"role": "敏感回退", "model": str(cfg["api_sensitive_fallback_model"])})
     if cfg.get("api_quality_model"):
         routes.append({"role": "质量修复", "model": str(cfg["api_quality_model"])})
     return {
@@ -235,7 +251,24 @@ def public_runtime_configuration(models: list[dict[str, Any]]) -> dict[str, Any]
     ids = {str(item.get("name") or "") for item in models}
     api_status = api_configuration_status()
     local_models = sorted(model for model in ids if model.startswith("ollama:"))
-    quality_models_present = QUALITY_PRIMARY_MODEL in ids and QUALITY_FAST_MODEL in ids
+    quality_model, quality_cfg, quality_summary = resolve_execution_profile(
+        "quality_first", None, enforce_enabled=False
+    )
+    required_quality_models = {
+        quality_model,
+        str(quality_cfg.get("api_fast_model") or ""),
+        str(quality_cfg.get("api_quality_model") or ""),
+        str(quality_cfg.get("api_sensitive_model") or ""),
+        str(quality_cfg.get("api_sensitive_fallback_model") or ""),
+    } - {""}
+    quality_models_present = required_quality_models.issubset(ids)
+    benchmark_routes_applied = any((
+        quality_model != QUALITY_PRIMARY_MODEL,
+        str(quality_cfg.get("api_fast_model") or "") != QUALITY_FAST_MODEL,
+        str(quality_cfg.get("api_quality_model") or "") != QUALITY_PRIMARY_MODEL,
+        str(quality_cfg.get("api_sensitive_model") or "") != QUALITY_FAST_MODEL,
+        str(quality_cfg.get("api_sensitive_fallback_model") or "") != QUALITY_PRIMARY_MODEL,
+    ))
     return {
         "default_model": configured_default_model(),
         "default_provider": model_provider(),
@@ -250,18 +283,14 @@ def public_runtime_configuration(models: list[dict[str, Any]]) -> dict[str, Any]
         },
         "profiles": [
             {
-                **profile_summary(
-                    "quality_first",
-                    QUALITY_PRIMARY_MODEL,
-                    resolve_execution_profile(
-                        "quality_first",
-                        None,
-                        enforce_enabled=False,
-                    )[1],
-                ),
+                **quality_summary,
                 "available": api_status["configured"] and quality_models_present,
                 "recommended": True,
-                "description": "短标签与敏感文本使用 MiniMax，普通文本与质量修复使用 Qwen。",
+                "description": (
+                    "使用已应用的 benchmark 路由；可靠性先达标，再按所选的质量、速度或综合策略分配模型。"
+                    if benchmark_routes_applied
+                    else "短标签与敏感文本使用 MiniMax，普通文本与质量修复使用 Qwen。"
+                ),
             },
             {
                 "id": "single_model",

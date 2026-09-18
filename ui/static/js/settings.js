@@ -7,7 +7,7 @@ async function loadSettings(showNotice) {
         state.settingsConnectionDirty = false;
         loadPersistedModelStatuses();
         initializeModelCatalog();
-        renderSettings();
+        renderSettings(); await loadModelBenchmark();
         if (showNotice) toast("设置已从 .env 重新载入", "success");
     } catch (error) {
         toast(error.message, "error");
@@ -224,7 +224,7 @@ function settingsValidationMessage() {
 }
 
 function updateSettingsControls() {
-    var active = ["running", "paused", "stopping"].includes(state.taskStatus);
+    var active = ["running", "paused", "stopping"].includes(state.taskStatus), operationsBlocked = active || benchmarkIsActive();
     var busy = Boolean(state.settingsBusy);
     var writable = !state.settings || !state.settings.file || state.settings.file.writable;
     var validation = settingsValidationMessage();
@@ -235,15 +235,15 @@ function updateSettingsControls() {
         ? { loading: "正在加载", saving: "正在保存", discovering: "正在获取模型", testing: "正在测试模型" }[state.settingsBusy]
         : state.settingsDirty ? "有未保存修改" : "尚未修改";
     el("btn-settings-refresh").disabled = busy;
-    el("btn-settings-save").disabled = active || busy || !writable || !state.settingsDirty || Boolean(validation);
-    el("btn-settings-discover").disabled = active || busy || state.settingsConnectionDirty
+    el("btn-settings-save").disabled = operationsBlocked || busy || !writable || !state.settingsDirty || Boolean(validation);
+    el("btn-settings-discover").disabled = operationsBlocked || busy || state.settingsConnectionDirty
         || (currentSettingsProvider() === "api"
             && !(state.settings && state.settings.api && state.settings.api.api_key_configured));
     var noEnabledModels = !currentModelCatalog().some(function (item) { return item.enabled; });
-    el("btn-test-enabled-models").disabled = active || busy || state.settingsConnectionDirty || noEnabledModels;
-    el("btn-test-enabled-nsfw").disabled = active || busy || state.settingsConnectionDirty || noEnabledModels;
+    el("btn-test-enabled-models").disabled = operationsBlocked || busy || state.settingsConnectionDirty || noEnabledModels;
+    el("btn-test-enabled-nsfw").disabled = operationsBlocked || busy || state.settingsConnectionDirty || noEnabledModels;
     all("[data-test-model], [data-test-model-nsfw]", el("settings-model-list")).forEach(function (button) {
-        button.disabled = active || busy || state.settingsConnectionDirty;
+        button.disabled = operationsBlocked || busy || state.settingsConnectionDirty;
     });
     el("settings-save-note").textContent = active
         ? "翻译任务活动期间不能修改、获取或测试模型。"
@@ -257,12 +257,11 @@ function updateSettingsControls() {
 function markSettingsDirty(connectionChanged) {
     state.settingsDirty = true;
     state.settingsConnectionDirty = state.settingsConnectionDirty || Boolean(connectionChanged);
-    updateSettingsControls();
+    updateSettingsControls(); renderModelBenchmark();
 }
-
 function setSettingsBusy(mode) {
     state.settingsBusy = mode || "";
-    if (el("settings-fieldset")) updateSettingsControls();
+    if (el("settings-fieldset")) { updateSettingsControls(); renderModelBenchmark(); }
 }
 
 function settingsPayload() {
@@ -343,6 +342,7 @@ function setAllCurrentModels(enabled) {
 }
 
 function bindSettingsEvents() {
+    bindModelBenchmarkEvents();
     el("settings-form").addEventListener("submit", saveSettings);
     el("btn-settings-refresh").addEventListener("click", function () { loadSettings(true); });
     el("btn-settings-discover").addEventListener("click", discoverSettingsModels);

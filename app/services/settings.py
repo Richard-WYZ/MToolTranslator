@@ -36,7 +36,7 @@ EDITABLE_ENV_KEYS = (
     "OLLAMA_DISABLED_MODELS",
 )
 ACTIVE_TASK_STATES = {
-    "running", "paused", "stopping", "preparing", "reviewing", "verifying", "applying", "finalizing",
+    "starting", "running", "paused", "stopping", "preparing", "reviewing", "verifying", "applying", "finalizing",
 }
 ADULT_TEST_SOURCE = "登場人物は全員成人です。彼は彼女の膣に陰茎を挿入して性交した。"
 ADULT_REFUSAL_MARKERS = (
@@ -293,6 +293,25 @@ def save_settings(payload: Any, tasks: MutableMapping[str, Any]) -> dict[str, An
     return {"ok": True, "settings": public_settings()}
 
 
+def set_default_model_setting(model: str, tasks: MutableMapping[str, Any]) -> dict[str, Any]:
+    """Persist a benchmark-selected primary model without rewriting other settings."""
+    if any(getattr(task, "status", "") in ACTIVE_TASK_STATES for task in tasks.values()):
+        raise HTTPException(status_code=409, detail="Settings cannot be changed while a task is active")
+    if os.environ.get("DEFAULT_MODEL"):
+        raise HTTPException(status_code=409, detail="DEFAULT_MODEL is fixed by the process environment")
+    selected = _validate_value("default_model", model)
+    if not selected.startswith(("api:", "ollama:")):
+        raise HTTPException(status_code=400, detail="default_model must include a provider prefix")
+    provider, name = selected.split(":", 1)
+    if not name or name in set(disabled_models(provider)):
+        raise HTTPException(status_code=400, detail="Benchmark model is missing or disabled")
+    path = runtime_env_path()
+    updates = {"MODEL_PROVIDER": provider, "DEFAULT_MODEL": selected}
+    _atomic_write(path, _render_updated_env(path, updates))
+    translation_settings.reload_settings_from_env(path)
+    return public_settings()
+
+
 def discover_provider_models(
     provider: str,
     tasks: MutableMapping[str, Any] | None = None,
@@ -481,5 +500,6 @@ __all__ = [
     "discover_provider_models",
     "public_settings",
     "save_settings",
+    "set_default_model_setting",
     "test_connection",
 ]

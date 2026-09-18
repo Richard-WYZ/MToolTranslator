@@ -111,6 +111,8 @@ var state = {
     modelCatalog: { api: [], ollama: [] },
     modelAvailability: {},
     modelNsfwAvailability: {},
+    modelBenchmark: { status: "idle", result: null, applied: null },
+    benchmarkPollingTimer: null,
 };
 
 function el(id) { return document.getElementById(id); }

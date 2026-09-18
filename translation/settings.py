@@ -66,6 +66,7 @@ _BASE_DEFAULT_CONFIG = {
         "api_quality_model": "",
         "api_sensitive_routing_enabled": True,
         "api_sensitive_model": "api:minimax-m3",
+        "api_sensitive_fallback_model": "",
         "api_sensitive_repair_enabled": True,
         "api_sensitive_repair_batch_size": 5,
         "api_sensitive_repair_max_batch_chars": 1000,
@@ -390,6 +391,7 @@ def _apply_dotenv(
         "BATCH_API_FAST_MODEL": "api_fast_model",
         "BATCH_API_QUALITY_MODEL": "api_quality_model",
         "BATCH_API_SENSITIVE_MODEL": "api_sensitive_model",
+        "BATCH_API_SENSITIVE_FALLBACK_MODEL": "api_sensitive_fallback_model",
         "BATCH_PROTOCOL": "protocol",
     }
     for env_name, key in bool_values.items():

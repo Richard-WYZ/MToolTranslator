@@ -428,6 +428,30 @@
                                 <p class="model-usage-note">获取模型目录不发送推理请求；普通与成人内容测试都会逐模型发送一条极短翻译请求，可能消耗 Token。成人测试通过后标记为“NSFW 可用”。</p>
                             </section>
 
+                            <section id="model-benchmark-panel" class="model-benchmark">
+                                <div class="model-picker-heading">
+                                    <div>
+                                        <h3>模型 Benchmark 与自动路由</h3>
+                                        <p>可靠性先达标，再比较质量与速度；成人内容单独选择主模型和 fallback</p>
+                                    </div>
+                                    <div class="model-picker-actions">
+                                        <select id="benchmark-mode" aria-label="Benchmark 深度">
+                                            <option value="quick">快速 · 每模型 6 次</option>
+                                            <option value="standard" selected>标准 · 每模型 10 次</option>
+                                            <option value="deep">深度 · 每模型 30 次</option>
+                                        </select>
+                                        <button id="btn-benchmark-start" type="button" class="btn btn-primary btn-sm">测试已启用模型</button>
+                                        <button id="btn-benchmark-cancel" type="button" class="btn btn-secondary btn-sm" hidden>停止</button>
+                                    </div>
+                                </div>
+                                <div id="benchmark-progress" class="benchmark-progress" hidden>
+                                    <div><span id="benchmark-progress-label">准备中</span><strong id="benchmark-progress-value">0%</strong></div>
+                                    <div class="progress-track"><span id="benchmark-progress-bar"></span></div>
+                                </div>
+                                <div id="benchmark-empty" class="model-empty">尚未运行 benchmark。它只会在你点击后发送请求，并可能产生模型用量。</div>
+                                <div id="benchmark-results" hidden></div>
+                            </section>
+
                             <details id="settings-advanced" class="settings-advanced">
                                 <summary>高级连接设置</summary>
                                 <div class="settings-form-grid advanced-settings-grid">
@@ -501,6 +525,7 @@
 <script defer src="/static/js/glossary.js"></script>
 <script defer src="/static/js/history.js"></script>
 <script defer src="/static/js/model-testing.js"></script>
+<script defer src="/static/js/model-benchmark.js"></script>
 <script defer src="/static/js/settings.js"></script>
 <script defer src="/static/js/main.js"></script>
 </body>

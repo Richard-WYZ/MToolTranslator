@@ -162,11 +162,15 @@ def _sensitive_single_retry_model(
     batch_cfg: dict[str, Any],
     current_model: str,
 ) -> str:
-    """Use the quality model for the final isolated retry when available."""
+    """Use the benchmark-selected adult fallback for the isolated retry."""
     if batch_cfg.get("api_sensitive_cross_model_retry_enabled", True):
-        quality_model = str(batch_cfg.get("api_quality_model") or "")
-        if quality_model and quality_model != current_model:
-            return quality_model
+        fallback_model = str(
+            batch_cfg.get("api_sensitive_fallback_model")
+            or batch_cfg.get("api_quality_model")
+            or ""
+        )
+        if fallback_model and fallback_model != current_model:
+            return fallback_model
     return current_model
 
 

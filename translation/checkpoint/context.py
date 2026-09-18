@@ -29,6 +29,7 @@ SEMANTIC_BATCH_KEYS = (
     "api_quality_model",
     "api_sensitive_routing_enabled",
     "api_sensitive_model",
+    "api_sensitive_fallback_model",
     "api_sensitive_repair_enabled",
     "api_sensitive_repair_batch_size",
     "api_sensitive_repair_max_batch_chars",

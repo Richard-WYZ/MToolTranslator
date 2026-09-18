@@ -92,6 +92,16 @@ class SettingsModelDiscoveryRequest(BaseModel):
     provider: str
 
 
+class SettingsBenchmarkStartRequest(BaseModel):
+    provider: Literal["api", "ollama"]
+    models: List[str] = Field(default_factory=list)
+    mode: Literal["quick", "standard", "deep"] = "standard"
+
+
+class SettingsBenchmarkApplyRequest(BaseModel):
+    strategy: Literal["quality", "efficiency", "balanced", "nsfw"] = "balanced"
+
+
 class ColumnMapping(BaseModel):
     column_index: int
     action: str

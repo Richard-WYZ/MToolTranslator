@@ -179,6 +179,28 @@ def test_settings_save_persists_per_model_protocol_overrides(monkeypatch, tmp_pa
         translation_settings.reload_settings_from_env()
 
 
+def test_benchmark_can_update_only_default_model_without_losing_settings(monkeypatch, tmp_path: Path):
+    _clear_supported_environment(monkeypatch)
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "# keep this comment\nTHIRD_PARTY_API_KEY=secret\nUNKNOWN_SETTING=keep-me\n"
+        "MODEL_PROVIDER=api\nDEFAULT_MODEL=api:old-model\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings_service, "runtime_env_path", lambda: env_path)
+    monkeypatch.setattr(settings_service, "disabled_models", lambda provider: [])
+    try:
+        result = settings_service.set_default_model_setting("api:new-model", {})
+        content = env_path.read_text(encoding="utf-8")
+        assert result["default_model"] == "api:new-model"
+        assert "DEFAULT_MODEL=api:new-model" in content
+        assert "THIRD_PARTY_API_KEY=secret" in content
+        assert "UNKNOWN_SETTING=keep-me" in content
+        assert "# keep this comment" in content
+    finally:
+        translation_settings.reload_settings_from_env()
+
+
 def test_settings_save_is_blocked_during_active_translation(
     monkeypatch, tmp_path: Path
 ):
