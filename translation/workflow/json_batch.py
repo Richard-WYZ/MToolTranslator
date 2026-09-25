@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 
 import translation.checkpoint as checkpoint
 from translation.batching import apply_batch_translation_results, default_batch_options
@@ -9,11 +9,15 @@ from translation.output import write_json_items
 from translation.workflow.composition import finalize_mtool_compositions
 
 
+if TYPE_CHECKING:
+    from translation.workflow.pipeline import TranslationPipeline
+
+
 ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 def translate_json_batched_workflow(
-    pipeline: Any,
+    pipeline: TranslationPipeline,
     file_path: str,
     translated_items: list[tuple[Any, Any]],
     mtool: bool,
@@ -116,21 +120,23 @@ def translate_json_batched_workflow(
                 pipeline.glossary.save()
             idx = next_idx
     finally:
-        if deferred_confirmed_terms:
-            pipeline._apply_confirmed_terms_to_outputs(file_path, list(deferred_confirmed_terms.values()))
-            pipeline.glossary.save()
-        processed_targets = finalize_mtool_compositions(
-            pipeline,
-            file_path=file_path,
-            translated_items=translated_items,
-            processed_targets=processed_targets,
-            total_targets=total_targets,
-            progress_callback=progress_callback,
-        )
-        checkpoint.set_glossary_version(file_path, pipeline.glossary.version(), update_entries=True)
-        pipeline._update_token_usage(file_path)
-        if pipeline._writer:
-            pipeline._writer.stop()
+        try:
+            if deferred_confirmed_terms:
+                pipeline._apply_confirmed_terms_to_outputs(file_path, list(deferred_confirmed_terms.values()))
+                pipeline.glossary.save()
+            processed_targets = finalize_mtool_compositions(
+                pipeline,
+                file_path=file_path,
+                translated_items=translated_items,
+                processed_targets=processed_targets,
+                total_targets=total_targets,
+                progress_callback=progress_callback,
+            )
+            checkpoint.set_glossary_version(file_path, pipeline.glossary.version(), update_entries=True)
+            pipeline._update_token_usage(file_path)
+        finally:
+            if pipeline._writer:
+                pipeline._writer.stop()
 
     write_json_items(translated_items, target_path)
     return translated_items

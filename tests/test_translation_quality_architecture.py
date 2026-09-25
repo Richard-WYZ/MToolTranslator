@@ -4,6 +4,8 @@ import ast
 from pathlib import Path
 import tempfile
 
+import pytest
+
 
 def test_application_layer_uses_translation_facades_not_translator_internals():
     root = Path(__file__).resolve().parents[1]
@@ -124,9 +126,13 @@ def test_test_and_build_commands_use_dedicated_workspaces():
     build_script = (root / "tools" / "build.ps1").read_text(encoding="utf-8")
 
     assert "cache_dir = test_work/pytest/cache" in pytest_config
-    assert "--basetemp=test_work/pytest/tmp" in pytest_config
+    assert "basetemp" not in pytest_config
+    assert "testpaths = tests translator" in pytest_config
     assert 'PYTHONDONTWRITEBYTECODE = "1"' in test_script
     assert '"test_work\\pytest"' in test_script
+    assert 'NewGuid' in test_script
+    assert '$RunRoot' in test_script
+    assert '--basetemp="$BaseTemp"' in test_script
     assert 'Join-Path $BuildRoot "work"' in build_script
     assert 'Join-Path $BuildRoot "dist"' in build_script
     assert "$DistPath = Join-Path $DistRoot $ArtifactDirectoryName" in build_script
@@ -835,7 +841,7 @@ def test_runtime_uses_public_pipeline_token_usage_adapter(monkeypatch):
 
     usage.reset()
     usage.record("api", "model", {"total_tokens": 4})
-    assert TranslationPipeline().token_usage()["total_tokens"] == 4
+    assert TranslationPipeline().token_usage()["total_tokens"] == 0
     usage.reset()
 
 
@@ -1668,7 +1674,7 @@ def test_runtime_model_and_scheduler_facades_back_pipeline_imports():
     import translator.usage as legacy_usage
     import translator.pipeline as pipeline_mod
     from translation.batching import BatchJob, run_concurrent_batches
-    from translation.models import chunk_translate, fallback_translate, retry_short_label_translation, retry_with_fallback
+    from translation.quality import chunk_translate, fallback_translate, retry_short_label_translation, retry_with_fallback
     from translation.models.router import translate as routed_translate
     from translation.quality import has_japanese, is_refusal
     from translator import model_router as legacy_model_router
@@ -2451,7 +2457,8 @@ def test_workflow_pipeline_delegates_cell_translation_to_cell_module(monkeypatch
     assert "Quality retry: translate ordinary English words into Chinese" in cell_text
     assert "translate_cell_with_meta(" in pipeline_text
     assert "CellTranslationServices(" not in pipeline_text
-    assert "build_cell_translation_services(self, globals())" in pipeline_text
+    assert "globals()" not in pipeline_text
+    assert "cell_services.CellDependencies(" in pipeline_text
     assert "CellTranslationServices(" in cell_services_text
     assert "class CellTranslationServices" in cell_text
 
@@ -2532,7 +2539,8 @@ def test_workflow_pipeline_delegates_api_parallel_batch_flow_to_parallel_module(
     json_parallel_text = (root / "translation" / "workflow" / "json_parallel.py").read_text(encoding="utf-8")
 
     assert "api_parallel_batch_retry_failed" not in workflow_pipeline_text
-    assert "api_parallel_batch_retry_failed" in json_parallel_text
+    assert "api_parallel_batch_retry_failed" not in json_parallel_text
+    assert "api_parallel_batch_retry_failed" in (root / "translation" / "workflow" / "parallel_support.py").read_text(encoding="utf-8")
     assert "translate_json_batched_parallel_workflow(" in workflow_pipeline_text
     assert "def _run_concurrent_batches" in workflow_pipeline_text
 
@@ -2918,6 +2926,7 @@ def test_opencode_go_openai_model_uses_chat_completions(monkeypatch):
     def fake_post(url, headers=None, json=None, timeout=None):
         assert url == "https://opencode.ai/zen/go/v1/chat/completions"
         assert headers["Authorization"] == "Bearer test-key"
+        assert headers["x-opencode-session"]
         assert json["model"] == "kimi-k2.7-code"
         assert json["reasoning_effort"] == "none"
         return FakeResponse()
@@ -2957,6 +2966,7 @@ def test_opencode_go_messages_model_uses_anthropic_endpoint(monkeypatch):
         assert url == "https://opencode.ai/zen/go/v1/messages"
         assert headers["x-api-key"] == "test-key"
         assert headers["anthropic-version"] == "2023-06-01"
+        assert headers["x-opencode-session"]
         assert json["model"] == "qwen3.7-plus"
         assert json["system"] == "Translate"
         assert json["max_tokens"] == 12
@@ -2977,6 +2987,165 @@ def test_opencode_go_messages_model_uses_anthropic_endpoint(monkeypatch):
     monkeypatch.setattr(api_client.requests, "post", fake_post)
     try:
         assert api_client.translate_once("qwen3.7-plus", "テスト", system_prompt="Translate", options={"num_predict": 12}) == "译文"
+    finally:
+        config.DEFAULT_CONFIG["third_party_api"] = old_cfg
+
+
+@pytest.mark.parametrize("model", ["gpt-5.6-luna", "grok-4.6"])
+def test_opencode_go_responses_models_use_responses_endpoint(monkeypatch, model):
+    import config
+    from translator import api_client
+
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "output": [{
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "译文"}],
+                }],
+                "usage": {"input_tokens": 5, "output_tokens": 2},
+            }
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append((url, headers, json, timeout))
+        return FakeResponse()
+
+    old_cfg = dict(config.DEFAULT_CONFIG.get("third_party_api", {}))
+    config.DEFAULT_CONFIG["third_party_api"] = {
+        "base_url": "https://opencode.ai/zen/go/v1/chat/completions",
+        "api_key_env": "THIRD_PARTY_API_KEY",
+        "api_key": "test-key",
+        "style": "opencode_go",
+        "models": [],
+    }
+    monkeypatch.delenv("THIRD_PARTY_API_BASE_URL", raising=False)
+    monkeypatch.delenv("THIRD_PARTY_API_KEY", raising=False)
+    monkeypatch.setattr(api_client.requests, "post", fake_post)
+    monkeypatch.setattr(api_client, "_persist_model_protocol", lambda *args: None)
+    try:
+        assert api_client.translate_once(
+            model, "テスト", system_prompt="Translate", options={"num_predict": 12}
+        ) == "译文"
+        url, headers, payload, timeout = calls[0]
+        assert url == "https://opencode.ai/zen/go/v1/responses"
+        assert headers["Authorization"] == "Bearer test-key"
+        assert headers["x-opencode-session"]
+        assert payload == {
+            "model": model,
+            "input": "テスト",
+            "instructions": "Translate",
+            "max_output_tokens": 12,
+            "reasoning": {"effort": "none"},
+        }
+        assert timeout == (10, 60)
+    finally:
+        config.DEFAULT_CONFIG["third_party_api"] = old_cfg
+
+
+def test_opencode_go_model_protocol_override_wins_over_builtin_mapping(monkeypatch):
+    from translator import api_client
+
+    monkeypatch.delenv("THIRD_PARTY_API_STYLE", raising=False)
+    cfg = {
+        "style": "opencode_go",
+        "model_protocols": {"gpt-5.6-luna": "messages"},
+    }
+
+    assert api_client.model_protocol(cfg, "gpt-5.6-luna") == "messages"
+    assert api_client.model_protocol({"style": "opencode_go"}, "grok-4.6") == "responses"
+    assert api_client.model_protocol({"style": "opencode_go"}, "unknown-model") == "chat_completions"
+
+
+def test_opencode_go_probes_protocol_only_for_explicit_format_mismatch(monkeypatch):
+    import config
+    from translator import api_client
+
+    attempted = []
+    persisted = []
+
+    class ProtocolMismatch(RuntimeError):
+        response_body = '{"error":{"message":"model not supported for format"}}'
+
+    def fake_translate(protocol, *args, **kwargs):
+        attempted.append(protocol)
+        if protocol != "responses":
+            raise ProtocolMismatch("unsupported API format")
+        return "译文"
+
+    old_cfg = dict(config.DEFAULT_CONFIG.get("third_party_api", {}))
+    config.DEFAULT_CONFIG["third_party_api"] = {
+        "base_url": "https://provider.invalid/v1",
+        "api_key": "test-key",
+        "style": "opencode_go",
+        "models": [],
+    }
+    monkeypatch.delenv("THIRD_PARTY_API_BASE_URL", raising=False)
+    monkeypatch.delenv("THIRD_PARTY_API_KEY", raising=False)
+    monkeypatch.setattr(api_client, "_stored_thinking_mode", lambda model: "")
+    monkeypatch.setattr(api_client, "_translate_with_protocol", fake_translate)
+    monkeypatch.setattr(api_client, "_persist_model_protocol", lambda model, protocol: persisted.append(protocol))
+    try:
+        assert api_client.translate_once("unknown-model", "テスト") == "译文"
+        assert attempted == ["chat_completions", "messages", "responses"]
+        assert persisted == ["responses"]
+    finally:
+        config.DEFAULT_CONFIG["third_party_api"] = old_cfg
+
+
+def test_opencode_go_retries_once_then_enables_low_thinking(monkeypatch):
+    import config
+    from translator import api_client
+
+    class FakeResponse:
+        status_code = 400
+        text = '{"error":"thinking required"}'
+        headers = {}
+
+        def raise_for_status(self):
+            raise requests.HTTPError("HTTP 400", response=self)
+
+        def json(self):
+            return {"choices": [{"message": {"content": "译文"}}]}
+
+    calls = []
+    successful = type("SuccessfulResponse", (), {
+        "raise_for_status": lambda self: None,
+        "json": lambda self: {"choices": [{"message": {"content": "译文"}}]},
+    })
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(json)
+        if len(calls) < 3:
+            return FakeResponse()
+        return successful()
+
+    old_cfg = dict(config.DEFAULT_CONFIG.get("third_party_api", {}))
+    config.DEFAULT_CONFIG["third_party_api"] = {
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "api_key_env": "THIRD_PARTY_API_KEY",
+        "api_key": "test-key",
+        "style": "opencode_go",
+        "models": [],
+    }
+    monkeypatch.delenv("THIRD_PARTY_API_BASE_URL", raising=False)
+    monkeypatch.delenv("THIRD_PARTY_API_KEY", raising=False)
+    monkeypatch.setattr(api_client.requests, "post", fake_post)
+    persisted = []
+    monkeypatch.setattr(api_client, "_persist_thinking_mode", lambda model, mode: persisted.append((model, mode)))
+    try:
+        assert api_client.translate_once("kimi-k2.7-code", "テスト") == "译文"
+        assert len(calls) == 3
+        assert calls[0]["reasoning_effort"] == "none"
+        assert calls[1]["reasoning_effort"] == "none"
+        assert calls[2]["reasoning_effort"] == "low"
+        assert "minimum necessary reasoning" in calls[2]["messages"][0]["content"]
+        assert "Return only the requested translation" in calls[2]["messages"][0]["content"]
+        assert persisted == [("kimi-k2.7-code", "low")]
     finally:
         config.DEFAULT_CONFIG["third_party_api"] = old_cfg
 

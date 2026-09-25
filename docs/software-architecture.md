@@ -118,18 +118,47 @@ reuses it. Runtime objects are stored in `TranslationWorkflowContext.resources`.
 `TranslationStage` invokes the pipeline facade. The facade preserves a stable
 extension surface while delegating work to focused modules:
 
-- `file_entry.py`: file validation, cancellation reset, and usage reset.
+- `file_entry.py`: file validation, early pause/cancel checks, and run-scoped
+  usage and connection ownership.
 - `json_flow.py`: top-level JSON orchestration and resume handling.
 - `json_batch.py`: sequential batch workflow.
-- `json_parallel.py`: API-parallel batch workflow.
+- `json_parallel.py`: dispatch to the event-driven or phased API workflow.
+- `parallel_event.py` and `parallel_phased.py`: explicit workflow state and
+  scheduling stages for the two execution modes.
+- `parallel_decisions.py`: shared primary-result acceptance and repair policy.
+- `parallel_support.py` and `parallel_repair.py`: batch preparation and repair
+  job construction.
+- `parallel_progress.py`: shared result application, checkpoint flushing, and
+  finalization that always stops the writer.
 - `batch_adapter.py`: batching compatibility adapters.
 - `cell.py`: one-entry translation and validation flow.
-- `cell_services.py`: cell dependency assembly.
+- `cell_services.py`: cell dependency assembly using an explicit typed
+  `CellDependencies` object.
 - `translation_adapter.py`: prompt, fallback, protection, and pollution wiring.
 - `runtime_adapter.py`: control, progress, writer, usage, and checkpoint effects.
 
 Model transports remain under `translation/models/`. Workflow and quality code
 must remain provider-neutral.
+
+Fallback prompts, chunking, and quality retry budgets belong to
+`translation/quality/retry.py`; old model-module exports are compatibility
+facades. The retry policy version participates in checkpoint fingerprints.
+`translation/models/transport.py` owns connection reuse: each worker thread
+has its own provider session, and the run closes all sessions on exit.
+
+Each pipeline and AI review task owns a `UsageTracker`. Context propagation
+binds batch workers and verifier workers to that task, so concurrent reviews
+and later runs cannot change completed task statistics.
+
+`app/services/task_coordinator.py` serializes translation admission and reserves
+files for AI review and cleanup. Cleanup retains its reservation until worker
+and writer termination and file deletion have finished. A worker that cannot
+stop promptly produces a conflict response; its output remains intact.
+
+The output writer waits for changes or a flush deadline without busy polling.
+One flush lock serializes snapshot capture and writing, preventing an older
+snapshot from overwriting a newer one. Shutdown joins the writer and surfaces
+write failures to the task lifecycle.
 
 ### 4. Proofreading Handoff
 
@@ -231,7 +260,10 @@ refactor is considered complete, run:
 tools\run_tests.ps1 -q
 ```
 
-Generated pytest state stays under `test_work/pytest/`. Windows packaging must
+Each test run gets an isolated working directory under `test_work/pytest/`,
+including glossary, checkpoints, cache, and temporary files. Default dotenv
+loading and external network access are disabled for tests.
+Windows packaging must
 run through `tools/build.ps1`, which keeps all intermediates and distributions
 under `build/`.
 

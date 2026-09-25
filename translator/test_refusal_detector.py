@@ -72,7 +72,7 @@ def test_is_refusal():
 
 
 def test_retry_needs_review():
-    """测试 3 次重试后返回 NEEDS_REVIEW"""
+    """测试有界重试预算耗尽后返回 NEEDS_REVIEW。"""
     print("=" * 50)
     print("测试 retry_with_fallback() 3次重试 → NEEDS_REVIEW")
     print("=" * 50)
@@ -94,6 +94,7 @@ def test_retry_needs_review():
             text="こんにちは、これはテストです",
             system_prompt=default_system_prompt("professional"),
             attempt=0,
+            max_attempts=3,
             file_path="test.csv",
             row=1,
             col=0,
@@ -104,9 +105,8 @@ def test_retry_needs_review():
 
         assert result["status"] == "NEEDS_REVIEW", f"期望 NEEDS_REVIEW，实际 {result['status']}"
         assert result["original"] == "こんにちは、これはテストです"
-        # 初始 1 次 + 提示切换 1 次 + 模型切换 1 次 + 分块翻译 N 次
-        # 分块会把长句拆成多块，所以调用次数 >= 4
-        assert call_count[0] >= 4, f"期望至少 4 次调用，实际 {call_count[0]}"
+        assert result["attempts"] == 3
+        assert call_count[0] == 3, f"有界预算应恰好发起 3 次请求，实际 {call_count[0]}"
         print("  [PASS] 3 次重试后正确标记 NEEDS_REVIEW")
     finally:
         # 恢复原始函数

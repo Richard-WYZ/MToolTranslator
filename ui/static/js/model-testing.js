@@ -28,6 +28,15 @@ function modelTestTimeSummary(basic, adult) {
     var parts = [];
     if (basic.tested_at) parts.push("普通上次测试 " + modelTestTime(basic));
     if (adult.tested_at) parts.push("NSFW 上次测试 " + modelTestTime(adult));
+    var protocol = basic.protocol || adult.protocol;
+    if (protocol) parts.push("协议 " + {
+        chat_completions: "Chat",
+        messages: "Messages",
+        responses: "Responses",
+        ollama: "Ollama",
+    }[protocol] || protocol);
+    if (basic.latency_ms) parts.push("延迟 " + basic.latency_ms + " ms");
+    if (basic.http_status) parts.push("HTTP " + basic.http_status);
     return parts.join(" · ") || "尚无历史测试";
 }
 

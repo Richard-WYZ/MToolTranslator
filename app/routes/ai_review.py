@@ -66,6 +66,7 @@ def create_router(
                 sensitive_model=req.sensitive_model,
                 auto_apply=req.auto_apply,
                 auto_retry=req.auto_retry,
+                translation_tasks=translation_tasks,
             )
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=409 if isinstance(exc, RuntimeError) else 400, detail=str(exc)) from exc
@@ -97,7 +98,12 @@ def create_router(
         if translation_task_is_active(translation_tasks, req.file_path):
             raise HTTPException(status_code=409, detail="Cannot resume AI review while translation is active")
         try:
-            task = resume_ai_review_task(ai_review_tasks, file_path=req.file_path, task_id=task_id)
+            task = resume_ai_review_task(
+                ai_review_tasks,
+                file_path=req.file_path,
+                task_id=task_id,
+                translation_tasks=translation_tasks,
+            )
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return task.progress()

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 
 import translation.checkpoint as checkpoint
 import translation.usage as token_usage
@@ -10,11 +10,15 @@ from translation.progress import emit_progress
 from translation.terminology import backfill_confirmed_terms_to_outputs
 
 
+if TYPE_CHECKING:
+    from translation.workflow.pipeline import TranslationPipeline
+
+
 ProgressCallback = Callable[[dict[str, Any]], None]
 
 
-def update_token_usage(pipeline: Any, file_path: str | None = None) -> dict[str, Any]:
-    pipeline._token_usage = token_usage.snapshot()
+def update_token_usage(pipeline: TranslationPipeline, file_path: str | None = None) -> dict[str, Any]:
+    pipeline._token_usage = pipeline._usage_tracker.snapshot()
     if file_path:
         checkpoint.set_token_usage(file_path, pipeline._token_usage)
     return pipeline._token_usage
@@ -28,36 +32,36 @@ def save_or_buffer_progress(
     checkpoint.save_or_buffer_progress(file_path, progress_records, **record)
 
 
-def is_resumable_checkpoint_entry(pipeline: Any, entry: dict[str, Any] | None, source: str) -> bool:
+def is_resumable_checkpoint_entry(pipeline: TranslationPipeline, entry: dict[str, Any] | None, source: str) -> bool:
     return checkpoint.is_resumable_entry(entry, source=source, **pipeline._resume_context)
 
 
-def pause(pipeline: Any) -> None:
+def pause(pipeline: TranslationPipeline) -> None:
     pipeline._pause_event.set()
 
 
-def resume(pipeline: Any) -> None:
+def resume(pipeline: TranslationPipeline) -> None:
     pipeline._pause_event.clear()
 
 
-def cancel(pipeline: Any) -> None:
+def cancel(pipeline: TranslationPipeline) -> None:
     pipeline._cancel_event.set()
     pipeline._pause_event.clear()
 
 
-def flush_writer(pipeline: Any) -> None:
+def flush_writer(pipeline: TranslationPipeline) -> None:
     if pipeline._writer:
         pipeline._writer.flush()
 
 
-def update_output_cell(pipeline: Any, row_idx: int, col_idx: int, text: str) -> bool:
+def update_output_cell(pipeline: TranslationPipeline, row_idx: int, col_idx: int, text: str) -> bool:
     writer = pipeline._writer
     if not writer:
         return False
     return writer.update_cell(row_idx, col_idx, text)
 
 
-def apply_confirmed_terms_to_outputs(pipeline: Any, file_path: str, confirmed_terms: list[dict[str, Any]]) -> None:
+def apply_confirmed_terms_to_outputs(pipeline: TranslationPipeline, file_path: str, confirmed_terms: list[dict[str, Any]]) -> None:
     backfill_confirmed_terms_to_outputs(
         file_path,
         confirmed_terms,
@@ -66,7 +70,7 @@ def apply_confirmed_terms_to_outputs(pipeline: Any, file_path: str, confirmed_te
     )
 
 
-def check_pipeline_control_flags(pipeline: Any, cancelled_factory: Callable[[], Exception]) -> None:
+def check_pipeline_control_flags(pipeline: TranslationPipeline, cancelled_factory: Callable[[], Exception]) -> None:
     check_control_flags(
         is_cancelled=pipeline._cancel_event.is_set,
         is_paused=pipeline._pause_event.is_set,

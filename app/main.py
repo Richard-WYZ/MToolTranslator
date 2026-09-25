@@ -97,7 +97,7 @@ def cleanup_translation(req: CleanupRequest):
         from fastapi import HTTPException
 
         raise HTTPException(status_code=409, detail="Stop AI review before cleaning translation state")
-    return cleanup_translation_state(req, tasks=_tasks)
+    return cleanup_translation_state(req, tasks=_tasks, ai_review_tasks=_ai_review_tasks)
 
 
 def _finalize_exported_session(file_path: str):

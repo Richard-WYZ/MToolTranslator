@@ -135,37 +135,67 @@ class TranslationTask:
         return "translation"
 
     def start(self) -> None:
-        if self.status == "running":
-            return
-        self.status = "running"
-        self.started_at = time.time()
-        self.updated_at = self.started_at
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
+        with self._lock:
+            # Cleanup can cancel the task in the small interval between
+            # admission and worker creation. Do not resurrect that task after
+            # its state has been removed.
+            if self.status in ("stopping", "cancelled", "completed", "error") or self._cancel_requested:
+                return
+            if self.status == "running" or (self.status == "starting" and self._thread):
+                return
+            self.status = "starting"
+            self.started_at = time.time()
+            self.updated_at = self.started_at
+            self._thread = threading.Thread(target=self._run, daemon=True, name=f"translation-{self.task_id}")
+            self._thread.start()
 
     def pause(self) -> None:
-        if self.status == "running":
+        with self._lock:
+            if self.status not in ("starting", "running"):
+                return
             self._pause_requested = True
-            if self.runtime:
-                self.runtime.pause()
+            runtime = self.runtime
             self.status = "paused"
+            if runtime:
+                runtime.pause()
 
     def resume(self) -> None:
-        if self.status == "paused" and self.runtime:
-            self.runtime.resume()
+        with self._lock:
+            if self.status != "paused":
+                return
             self._pause_requested = False
-            self.status = "running"
+            runtime = self.runtime
+            # Before runtime initialization, leave the worker in starting so
+            # it can apply the updated control state once it is constructed.
+            self.status = "running" if runtime else "starting"
+            if runtime:
+                runtime.resume()
 
     def cancel(self) -> None:
-        if self.status in ("running", "paused"):
-            self._cancel_requested = True
-            if self.runtime:
-                self.runtime.cancel()
-            self.status = "stopping"
+        with self._lock:
+            if self.status in ("starting", "running", "paused"):
+                self._cancel_requested = True
+                runtime = self.runtime
+                self.status = "stopping"
+                if runtime:
+                    runtime.cancel()
+            else:
+                runtime = None
 
     def flush(self) -> None:
         if self.runtime:
             self.runtime.flush_writer()
+
+    def wait_for_stop(self, timeout: float = 5.0) -> bool:
+        """Wait for task and its writer to stop before state files are removed."""
+        thread = self._thread
+        if thread:
+            thread.join(timeout=max(0.0, timeout))
+            if thread.is_alive():
+                return False
+        runtime = self.runtime
+        writer_stopped = getattr(runtime, "writer_stopped", None)
+        return bool(writer_stopped()) if callable(writer_stopped) else True
 
     def update_output_cell(self, row: int, col: int, text: str) -> bool:
         if self.runtime:
@@ -177,20 +207,28 @@ class TranslationTask:
             self.runtime.replace_glossary(glossary)
 
     def _run(self) -> None:
-        self.runtime = TranslationRuntime(TranslationRequest(
-            file_path=self.file_path,
-            model=self.model,
-            prompt_style=self.prompt_style,
-            task_id=self.task_id,
-            batch_config_override=self.batch_config_override,
-        ))
-        if self._pause_requested:
-            self.runtime.pause()
-        if self._cancel_requested:
-            self.runtime.cancel()
-
         try:
-            result = self.runtime.translate_file(
+            runtime = TranslationRuntime(TranslationRequest(
+                file_path=self.file_path,
+                model=self.model,
+                prompt_style=self.prompt_style,
+                task_id=self.task_id,
+                batch_config_override=self.batch_config_override,
+            ))
+            with self._lock:
+                self.runtime = runtime
+                pause_requested = self._pause_requested
+                cancel_requested = self._cancel_requested
+                # Apply the control snapshot while publishing the runtime.
+                # pause/resume/cancel are event operations, so keeping them
+                # under the task lock preserves ordering with UI commands.
+                if cancel_requested:
+                    runtime.cancel()
+                elif pause_requested:
+                    runtime.pause()
+                if self.status == "starting" and not cancel_requested:
+                    self.status = "paused" if pause_requested else "running"
+            result = runtime.translate_file(
                 progress_callback=self._update_progress,
                 translate_columns=self.translate_columns,
             )
@@ -208,14 +246,16 @@ class TranslationTask:
                 self.progress["percentage"] = 100.0
                 self.progress["status"] = "completed"
         except TranslationCancelled:
-            self.status = "cancelled"
-            self.finished_at = time.time()
-            self.has_unexported_result = True
+            with self._lock:
+                self.status = "cancelled"
+                self.finished_at = time.time()
+                self.has_unexported_result = True
         except Exception as exc:
-            self.status = "error"
-            self.finished_at = time.time()
-            self.error = str(exc)
-            self.has_unexported_result = True
+            with self._lock:
+                self.status = "error"
+                self.finished_at = time.time()
+                self.error = str(exc)
+                self.has_unexported_result = True
 
     def _validate_completion(self, result: Any) -> int:
         """Return the verified entry count or raise instead of faking 100%."""

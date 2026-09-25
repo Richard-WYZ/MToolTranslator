@@ -51,6 +51,11 @@ class TranslationRuntime:
     def flush_writer(self) -> None:
         self._pipeline.flush_writer()
 
+    def writer_stopped(self) -> bool:
+        """Whether the workflow writer has fully exited its background thread."""
+        writer = getattr(self._pipeline, "_writer", None)
+        return writer is None or not writer.is_alive()
+
     def update_output_cell(self, row: int, col: int, text: str) -> bool:
         return bool(self._pipeline.update_output_cell(row, col, text))
 

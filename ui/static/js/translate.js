@@ -18,12 +18,13 @@ async function ensureCanReplaceFile() {
     await API.post("/translation/cleanup", { file_path: state.filePath, task_id: state.taskId || null });
     return true;
 }
-
 async function applyImportedFile(result, fallbackSize) {
+    stopAIReviewPolling();
     state.filePath = result.saved_path; state.sourceFilePath = result.saved_path;
     state.originalFilePath = result.original_path || ""; state.fileName = result.filename;
     state.fileSize = result.file_size || fallbackSize || 0; state.sessionId = result.session_id;
     state.taskId = ""; state.taskStatus = "idle";
+    state.review.aiTaskId = ""; state.review.aiTaskStatus = "idle"; state.review.aiProgress = null;
     state.hasUnexportedResult = false; state.exportReady = false;
     await loadPreview(); renderFile(); invalidatePreflight();
     toast("文件已导入，尚未发送给任何模型", "success");
@@ -101,6 +102,8 @@ function renderFile() {
 
 function resetFile() {
     stopPolling();
+    stopAIReviewPolling();
+    var aiPollingGeneration = state.review.aiPollingGeneration;
     state.filePath = "";
     state.sourceFilePath = "";
     state.originalFilePath = "";
@@ -119,7 +122,7 @@ function resetFile() {
         items: [], selectedRow: null, selectedRows: new Set(), selectedItems: new Map(), selectionFilePath: "",
         loadRequestId: 0, listRequestId: 0, listController: null,
         aiTaskId: "", aiTaskStatus: "idle", aiPollingTimer: null,
-        aiPollingGeneration: 0, aiProgress: null,
+        aiPollingGeneration: aiPollingGeneration, aiProgress: null,
     };
     el("preview-wrap").hidden = true;
     el("result-summary").hidden = true;
@@ -392,8 +395,4 @@ function resetTaskDisplay() {
     updateTaskStatus("idle");
     updatePhases("analysis");
     updateActionStates();
-}
-
-function activeFilePath() {
-    return state.sourceFilePath || state.filePath;
 }

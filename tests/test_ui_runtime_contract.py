@@ -48,6 +48,7 @@ def test_quality_profile_matches_validated_route():
     assert model == QUALITY_PRIMARY_MODEL
     assert config["api_fast_model"] == QUALITY_FAST_MODEL
     assert config["api_sensitive_model"] == QUALITY_FAST_MODEL
+    assert config["api_sensitive_fallback_model"] == QUALITY_PRIMARY_MODEL
     assert config["api_quality_model"] == QUALITY_PRIMARY_MODEL
     assert config["api_concurrency"] == 10
     assert config["json_batch_size"] == 40
@@ -59,6 +60,7 @@ def test_quality_profile_matches_validated_route():
         "短标签",
         "普通文本",
         "敏感文本",
+        "敏感回退",
         "质量修复",
     }
 
@@ -251,12 +253,19 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert 'id="settings-model-list"' in html
     assert 'id="btn-test-enabled-models"' in html
     assert 'id="btn-test-enabled-nsfw"' in html
+    assert 'id="model-benchmark-panel"' in html
+    assert 'id="btn-benchmark-start"' in html
+    assert '<option value="responses">OpenAI Responses</option>' in html
     assert 'id="settings-api-models"' not in html
     assert "/settings/connection-test" in script
     assert "/settings/models/discover" in script
+    assert "/settings/benchmark/start" in script
+    assert "/settings/benchmark/apply" in script
     assert "api_key_action" in script
     assert "data-model-enabled" in script
     assert "data-test-model-nsfw" in script
+    assert "data-model-protocol" in script
+    assert "api_model_protocols" in script
     assert "availability-badge" in script
     assert "NSFW 可用" in script
     assert "NSFW 上次测试" in script
@@ -315,7 +324,7 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert "selectedRows.clear" not in filter_handler
     assert 'test_kind: testKind' in script
     assert "state.settingsConnectionDirty" in script
-    assert len(scripts) == 11
+    assert len(scripts) == 12
     assert len(styles) == 4
     assert max(len(path.read_text(encoding="utf-8").splitlines()) for path in scripts) < 400
     assert "/static/app.js" not in html

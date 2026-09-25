@@ -27,7 +27,17 @@ from translation.quality.refusal import (
     is_refusal,
     is_unusable_model_output,
 )
-from translation.quality.retry import retry_english_residue_translation, retry_missing_terms_translation
+from translation.quality.retry import (
+    RetryBudget,
+    RETRY_POLICY_VERSION,
+    call_translate_with_options,
+    chunk_translate,
+    fallback_translate,
+    retry_english_residue_translation,
+    retry_missing_terms_translation,
+    retry_short_label_translation,
+    retry_with_fallback,
+)
 from translation.quality.status import progress_status, status_for_output
 
 __all__ = [
@@ -38,6 +48,9 @@ __all__ = [
     "is_unusable_model_output",
     "new_issues",
     "ModelOutputAssessment",
+    "RetryBudget",
+    "RETRY_POLICY_VERSION",
+    "call_translate_with_options",
     "FIXED_TRANSLATIONS",
     "QUALITY_RULES_VERSION",
     "ProtectedToken",
@@ -56,7 +69,11 @@ __all__ = [
     "protect_runtime_tokens",
     "quality_prompt_rules",
     "retry_english_residue_translation",
+    "chunk_translate",
+    "fallback_translate",
     "retry_missing_terms_translation",
+    "retry_short_label_translation",
+    "retry_with_fallback",
     "restore_runtime_tokens",
     "status_for_output",
     "suspicious_artifacts",

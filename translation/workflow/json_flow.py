@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 
 import translation.checkpoint as checkpoint
 from translation.analysis import (
@@ -33,14 +33,19 @@ from translation.protection import (
     SYMBOL_PROTECTION_VERSION,
 )
 from translation.quality import QUALITY_RULES_VERSION, quality_prompt_rules
+from translation.quality.retry import RETRY_POLICY_VERSION
 from translation.terminology.candidate_policy import CANDIDATE_POLICY_VERSION
+
+
+if TYPE_CHECKING:
+    from translation.workflow.pipeline import TranslationPipeline
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 def translate_json_workflow(
-    pipeline: Any,
+    pipeline: TranslationPipeline,
     file_path: str,
     output_path: str | None,
     progress_callback: ProgressCallback | None,
@@ -120,6 +125,7 @@ def translate_json_workflow(
         "batch_parent_prompt": build_parent_batch_system_prompt(),
         "quality_rules": quality_prompt_rules(),
         "quality_rules_version": QUALITY_RULES_VERSION,
+        "retry_policy_version": RETRY_POLICY_VERSION,
         "classification_version": CLASSIFICATION_VERSION,
         "candidate_policy_version": CANDIDATE_POLICY_VERSION,
         "sensitivity_classifier_version": SENSITIVITY_CLASSIFIER_VERSION,
@@ -315,13 +321,15 @@ def translate_json_workflow(
                 translated_text=translated,
             )
     finally:
-        checkpoint.set_glossary_version(file_path, pipeline.glossary.version(), update_entries=True)
-        pipeline._update_token_usage(file_path)
-        if freeze_glossary:
-            pipeline.glossary.save()
-            pipeline.glossary.thaw()
-        if pipeline._writer:
-            pipeline._writer.stop()
+        try:
+            checkpoint.set_glossary_version(file_path, pipeline.glossary.version(), update_entries=True)
+            pipeline._update_token_usage(file_path)
+            if freeze_glossary:
+                pipeline.glossary.save()
+                pipeline.glossary.thaw()
+        finally:
+            if pipeline._writer:
+                pipeline._writer.stop()
 
     write_json_items(translated_items, target_path)
     return translated_items

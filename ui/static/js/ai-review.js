@@ -16,6 +16,8 @@ function aiReviewRequest(scope, rows) {
 
 async function startAIReview(scope) {
     if (!activeFilePath() || aiReviewIsActive() || reviewActionIsBusy()) return;
+    var requestFilePath = activeFilePath();
+    var requestGeneration = state.review.aiPollingGeneration;
     var requestedScope = scope;
     var rows = scope === "selected" ? Array.from(state.review.selectedRows) : [];
     if (scope === "row" && state.review.selectedRow != null) { scope = "selected"; rows = [state.review.selectedRow]; }
@@ -25,23 +27,32 @@ async function startAIReview(scope) {
     setReviewActionBusy("ai_start", buttonId);
     try {
         var preflight = await API.post("/review/ai/preflight", payload);
+        if (requestFilePath !== activeFilePath() || requestGeneration !== state.review.aiPollingGeneration) return;
         if (!preflight.counts || !preflight.counts.total) { toast("当前范围没有可复核条目", "error"); return; }
         var task = await API.post("/review/ai/start", payload);
+        if (requestFilePath !== activeFilePath() || requestGeneration !== state.review.aiPollingGeneration) return;
         state.review.aiTaskId = task.task_id; state.review.aiTaskStatus = task.status;
         renderAIReviewProgress(task); startAIReviewPolling();
-    } catch (error) { toast(error.message, "error"); }
+    } catch (error) {
+        if (requestFilePath === activeFilePath() && requestGeneration === state.review.aiPollingGeneration) toast(error.message, "error");
+    }
     finally { setReviewActionBusy(); }
 }
 
 async function loadCurrentAIReview() {
-    if (!activeFilePath()) return;
+    var requestFilePath = activeFilePath();
+    var requestGeneration = state.review.aiPollingGeneration;
+    if (!requestFilePath) return;
     try {
-        var payload = await API.get("/review/ai/current?file_path=" + encodeURIComponent(activeFilePath()));
+        var payload = await API.get("/review/ai/current?file_path=" + encodeURIComponent(requestFilePath));
+        if (requestFilePath !== activeFilePath() || requestGeneration !== state.review.aiPollingGeneration) return;
         if (!payload.task) { renderAIReviewProgress(null); return; }
         state.review.aiTaskId = payload.task.task_id; state.review.aiTaskStatus = payload.task.status;
         renderAIReviewProgress(payload.task);
         if (aiReviewIsActive()) startAIReviewPolling();
-    } catch (error) { renderAIReviewProgress(null); }
+    } catch (error) {
+        if (requestFilePath === activeFilePath() && requestGeneration === state.review.aiPollingGeneration) renderAIReviewProgress(null);
+    }
 }
 
 function startAIReviewPolling() {
@@ -57,8 +68,11 @@ function stopAIReviewPolling() {
 
 async function pollAIReview(generation) {
     if (generation !== state.review.aiPollingGeneration || !state.review.aiTaskId) return;
+    var requestFilePath = activeFilePath();
+    var requestTaskId = state.review.aiTaskId;
     try {
-        var task = await API.get("/review/ai/" + encodeURIComponent(state.review.aiTaskId) + "/progress");
+        var task = await API.get("/review/ai/" + encodeURIComponent(requestTaskId) + "/progress");
+        if (generation !== state.review.aiPollingGeneration || requestFilePath !== activeFilePath() || requestTaskId !== state.review.aiTaskId) return;
         var previous = state.review.aiTaskStatus;
         state.review.aiTaskStatus = task.status; state.review.aiProgress = task; renderAIReviewProgress(task);
         if (["completed", "cancelled", "error"].includes(task.status)) {
@@ -70,6 +84,11 @@ async function pollAIReview(generation) {
                 }
                 clearReviewSelection();
                 await refreshReviewAfterEdit();
+                // stopAIReviewPolling intentionally advances the generation
+                // after a terminal response. The response is still current
+                // when the selected file and task remain unchanged, so only
+                // those identities guard the post-refresh UI update.
+                if (requestFilePath !== activeFilePath() || requestTaskId !== state.review.aiTaskId) return;
                 var unresolved = Number((task.counts || {}).unresolved || 0) + Number((task.counts || {}).conflict || 0);
                 var retryStopped = task.status === "completed" && task.auto_retry
                     && Number(task.no_progress_rounds || 0) >= 3 && unresolved > 0;
@@ -80,7 +99,11 @@ async function pollAIReview(generation) {
             }
             return;
         }
-    } catch (error) { toast("读取 AI 复核进度失败：" + error.message, "error"); }
+    } catch (error) {
+        if (generation === state.review.aiPollingGeneration && requestFilePath === activeFilePath() && requestTaskId === state.review.aiTaskId) {
+            toast("读取 AI 复核进度失败：" + error.message, "error");
+        }
+    }
     if (generation === state.review.aiPollingGeneration) state.review.aiPollingTimer = setTimeout(function () { pollAIReview(generation); }, 1200);
 }
 

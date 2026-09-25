@@ -1,5 +1,4 @@
 "use strict";
-
 async function loadSettings(showNotice) {
     setSettingsBusy("loading");
     try {
@@ -8,7 +7,7 @@ async function loadSettings(showNotice) {
         state.settingsConnectionDirty = false;
         loadPersistedModelStatuses();
         initializeModelCatalog();
-        renderSettings();
+        renderSettings(); await loadModelBenchmark();
         if (showNotice) toast("设置已从 .env 重新载入", "success");
     } catch (error) {
         toast(error.message, "error");
@@ -16,15 +15,15 @@ async function loadSettings(showNotice) {
         setSettingsBusy("");
     }
 }
-
 function initializeModelCatalog() {
     var settings = state.settings || {};
     var api = settings.api || {};
     var ollama = settings.ollama || {};
     var apiDisabled = new Set(api.disabled_models || []);
+    var apiProtocols = api.model_protocols || {};
     var localDisabled = new Set(ollama.disabled_models || []);
     state.modelCatalog.api = (api.models || []).map(function (name) {
-        return modelCatalogEntry("api", name, !apiDisabled.has(name));
+        return modelCatalogEntry("api", name, !apiDisabled.has(name), apiProtocols[name] || "");
     });
     var localNames = ((state.models || []).filter(function (model) {
         return model.provider === "ollama";
@@ -45,17 +44,16 @@ function initializeModelCatalog() {
         ));
     }
 }
-
-function modelCatalogEntry(provider, name, enabled) {
+function modelCatalogEntry(provider, name, enabled, protocol) {
     var clean = String(name || "").replace(/^(api|ollama):/, "").trim();
     return {
         id: provider + ":" + clean,
         name: clean,
         provider: provider,
         enabled: enabled !== false,
+        protocol: String(protocol || ""),
     };
 }
-
 function renderSettings() {
     if (!state.settings) return;
     var settings = state.settings;
@@ -82,7 +80,6 @@ function renderSettings() {
     renderSettingsStatus();
     updateSettingsControls();
 }
-
 function keySourceLabel(source) {
     return {
         process_environment: "进程环境变量",
@@ -152,6 +149,11 @@ function renderModelRow(item) {
         restricted: "NSFW 受限",
         error: "NSFW 测试失败",
     }[nsfwAvailability];
+    var protocolPicker = item.provider === "api"
+        ? '<select class="model-protocol-select" data-model-protocol="' + escapeHtml(item.id) + '" aria-label="' + escapeHtml(item.name) + ' 协议">'
+        + '<option value=""' + (!item.protocol ? " selected" : "") + '>协议：自动</option><option value="responses"' + (item.protocol === "responses" ? " selected" : "") + '>Responses</option>'
+        + '<option value="messages"' + (item.protocol === "messages" ? " selected" : "") + '>Messages</option><option value="chat_completions"' + (item.protocol === "chat_completions" ? " selected" : "") + '>Chat</option></select>'
+        : "";
     return '<div class="model-row" data-model-row="' + escapeHtml(item.id) + '">'
         + '<input type="checkbox" data-model-enabled="' + escapeHtml(item.id) + '"'
         + (item.enabled ? " checked" : "") + ' aria-label="启用 ' + escapeHtml(item.name) + '">'
@@ -160,6 +162,7 @@ function renderModelRow(item) {
         + "</small></span>"
         + '<span class="availability-badge ' + availability + (basicRecord.stale ? " stale" : "") + '">' + status + "</span>"
         + '<span class="availability-badge ' + nsfwAvailability + (nsfwRecord.stale ? " stale" : "") + '">' + nsfwStatus + "</span>"
+        + protocolPicker
         + '<button type="button" class="btn btn-secondary btn-sm" data-test-model="' + escapeHtml(item.id) + '"'
         + (testDisabled ? " disabled" : "") + ">"
         + (availability === "testing" ? "测试中…" : "测试可用性") + "</button>"
@@ -221,7 +224,7 @@ function settingsValidationMessage() {
 }
 
 function updateSettingsControls() {
-    var active = ["running", "paused", "stopping"].includes(state.taskStatus);
+    var active = ["running", "paused", "stopping"].includes(state.taskStatus), operationsBlocked = active || benchmarkIsActive();
     var busy = Boolean(state.settingsBusy);
     var writable = !state.settings || !state.settings.file || state.settings.file.writable;
     var validation = settingsValidationMessage();
@@ -232,15 +235,15 @@ function updateSettingsControls() {
         ? { loading: "正在加载", saving: "正在保存", discovering: "正在获取模型", testing: "正在测试模型" }[state.settingsBusy]
         : state.settingsDirty ? "有未保存修改" : "尚未修改";
     el("btn-settings-refresh").disabled = busy;
-    el("btn-settings-save").disabled = active || busy || !writable || !state.settingsDirty || Boolean(validation);
-    el("btn-settings-discover").disabled = active || busy || state.settingsConnectionDirty
+    el("btn-settings-save").disabled = operationsBlocked || busy || !writable || !state.settingsDirty || Boolean(validation);
+    el("btn-settings-discover").disabled = operationsBlocked || busy || state.settingsConnectionDirty
         || (currentSettingsProvider() === "api"
             && !(state.settings && state.settings.api && state.settings.api.api_key_configured));
     var noEnabledModels = !currentModelCatalog().some(function (item) { return item.enabled; });
-    el("btn-test-enabled-models").disabled = active || busy || state.settingsConnectionDirty || noEnabledModels;
-    el("btn-test-enabled-nsfw").disabled = active || busy || state.settingsConnectionDirty || noEnabledModels;
+    el("btn-test-enabled-models").disabled = operationsBlocked || busy || state.settingsConnectionDirty || noEnabledModels;
+    el("btn-test-enabled-nsfw").disabled = operationsBlocked || busy || state.settingsConnectionDirty || noEnabledModels;
     all("[data-test-model], [data-test-model-nsfw]", el("settings-model-list")).forEach(function (button) {
-        button.disabled = active || busy || state.settingsConnectionDirty;
+        button.disabled = operationsBlocked || busy || state.settingsConnectionDirty;
     });
     el("settings-save-note").textContent = active
         ? "翻译任务活动期间不能修改、获取或测试模型。"
@@ -254,12 +257,11 @@ function updateSettingsControls() {
 function markSettingsDirty(connectionChanged) {
     state.settingsDirty = true;
     state.settingsConnectionDirty = state.settingsConnectionDirty || Boolean(connectionChanged);
-    updateSettingsControls();
+    updateSettingsControls(); renderModelBenchmark();
 }
-
 function setSettingsBusy(mode) {
     state.settingsBusy = mode || "";
-    if (el("settings-fieldset")) updateSettingsControls();
+    if (el("settings-fieldset")) { updateSettingsControls(); renderModelBenchmark(); }
 }
 
 function settingsPayload() {
@@ -271,6 +273,8 @@ function settingsPayload() {
         disabled_api_models: state.modelCatalog.api.filter(function (item) {
             return !item.enabled;
         }).map(function (item) { return item.name; }),
+        api_model_protocols: Object.fromEntries(state.modelCatalog.api.filter(function (item) { return Boolean(item.protocol); })
+            .map(function (item) { return [item.name, item.protocol]; })),
         disabled_ollama_models: state.modelCatalog.ollama.filter(function (item) {
             return !item.enabled;
         }).map(function (item) { return item.name; }),
@@ -316,7 +320,9 @@ async function discoverSettingsModels() {
     try {
         var result = await API.post("/settings/models/discover", { provider: provider });
         state.modelCatalog[provider] = (result.models || []).map(function (item) {
-            return modelCatalogEntry(provider, item.name, existing.has(item.id) ? existing.get(item.id) : true);
+            var previous = currentModelCatalog().find(function (entry) { return entry.id === item.id; });
+            return modelCatalogEntry(provider, item.name,
+                existing.has(item.id) ? existing.get(item.id) : true, previous ? previous.protocol : "");
         });
         if (provider === "api") markSettingsDirty(false);
         renderSettingsModelPicker();
@@ -336,6 +342,7 @@ function setAllCurrentModels(enabled) {
 }
 
 function bindSettingsEvents() {
+    bindModelBenchmarkEvents();
     el("settings-form").addEventListener("submit", saveSettings);
     el("btn-settings-refresh").addEventListener("click", function () { loadSettings(true); });
     el("btn-settings-discover").addEventListener("click", discoverSettingsModels);
@@ -349,6 +356,13 @@ function bindSettingsEvents() {
     el("btn-model-select-none").addEventListener("click", function () { setAllCurrentModels(false); });
     el("settings-model-search").addEventListener("input", renderSettingsModelPicker);
     el("settings-model-list").addEventListener("change", function (event) {
+        var protocolSelect = event.target.closest("[data-model-protocol]");
+        if (protocolSelect) {
+            var protocolItem = currentModelCatalog().find(function (entry) { return entry.id === protocolSelect.dataset.modelProtocol; });
+            if (protocolItem) protocolItem.protocol = protocolSelect.value;
+            markSettingsDirty(true);
+            return;
+        }
         var checkbox = event.target.closest("[data-model-enabled]");
         if (!checkbox) return;
         var item = currentModelCatalog().find(function (entry) {

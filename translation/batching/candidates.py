@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from translation.classification import looks_like_short_label, normalize_model_source
+from translation.classification import (
+    looks_like_short_label,
+    normalize_mixed_kana_for_model,
+    normalize_model_source,
+)
 from translation.protection import protect_runtime_tokens, protect_symbols, runtime_token_kind
 
 
@@ -15,8 +19,12 @@ def prepare_model_candidate(
     short_label: bool | None = None,
 ) -> dict[str, Any]:
     """Build a protected model-bound translation candidate."""
+    source_normalization = normalize_mixed_kana_for_model(source)
+    model_source = normalize_model_source(source_normalization.text)
     term_prepared, term_tokens = glossary.protect_terms(source) if glossary is not None else (source, [])
     term_prepared = normalize_model_source(term_prepared)
+    prepared_normalization = normalize_mixed_kana_for_model(term_prepared)
+    term_prepared = prepared_normalization.text
     prepared, runtime_tokens = protect_runtime_tokens(term_prepared)
     protected, symbol_tokens = protect_symbols(prepared)
     term_hits = glossary.find_hits(source) if glossary is not None else []
@@ -25,6 +33,11 @@ def prepare_model_candidate(
         "i": batch_i,
         "idx": idx,
         "source": source,
+        "model_source": model_source,
+        "source_normalization": {
+            "version": source_normalization.version,
+            "mixed_kana": [span.as_dict() for span in source_normalization.spans],
+        },
         "text": protected,
         "prepared": prepared,
         "protected": protected,

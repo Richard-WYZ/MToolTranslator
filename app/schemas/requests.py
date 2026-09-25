@@ -73,6 +73,7 @@ class SettingsUpdateRequest(BaseModel):
     api_base_url: str = ""
     api_models: List[str] = []
     disabled_api_models: List[str] = []
+    api_model_protocols: Dict[str, str] = {}
     disabled_ollama_models: List[str] = []
     default_model: str
     disable_thinking: bool = True
@@ -89,6 +90,16 @@ class SettingsConnectionTestRequest(BaseModel):
 
 class SettingsModelDiscoveryRequest(BaseModel):
     provider: str
+
+
+class SettingsBenchmarkStartRequest(BaseModel):
+    provider: Literal["api", "ollama"]
+    models: List[str] = Field(default_factory=list)
+    mode: Literal["quick", "standard", "deep"] = "standard"
+
+
+class SettingsBenchmarkApplyRequest(BaseModel):
+    strategy: Literal["quality", "efficiency", "balanced", "nsfw"] = "balanced"
 
 
 class ColumnMapping(BaseModel):
