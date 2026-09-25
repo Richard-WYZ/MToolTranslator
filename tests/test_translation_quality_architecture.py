@@ -3097,6 +3097,110 @@ def test_opencode_go_probes_protocol_only_for_explicit_format_mismatch(monkeypat
         config.DEFAULT_CONFIG["third_party_api"] = old_cfg
 
 
+def test_opencode_go_switches_protocol_for_unavailable_endpoint(monkeypatch):
+    import config
+    from translator import api_client
+
+    attempted = []
+    persisted = []
+
+    class EndpointUnavailable(RuntimeError):
+        response_body = '{"error":{"message":"Endpoint is unavailable."}}'
+
+    def fake_translate(protocol, *args, **kwargs):
+        attempted.append(protocol)
+        if protocol != "responses":
+            raise EndpointUnavailable("503 endpoint unavailable")
+        return "译文"
+
+    old_cfg = dict(config.DEFAULT_CONFIG.get("third_party_api", {}))
+    config.DEFAULT_CONFIG["third_party_api"] = {
+        "base_url": "https://provider.invalid/v1",
+        "api_key": "test-key",
+        "style": "opencode_go",
+        "models": [],
+    }
+    monkeypatch.delenv("THIRD_PARTY_API_BASE_URL", raising=False)
+    monkeypatch.delenv("THIRD_PARTY_API_KEY", raising=False)
+    monkeypatch.setattr(api_client, "_stored_thinking_mode", lambda model: "")
+    monkeypatch.setattr(api_client, "_translate_with_protocol", fake_translate)
+    monkeypatch.setattr(api_client, "_persist_model_protocol", lambda model, protocol: persisted.append(protocol))
+    try:
+        assert api_client.translate_once("new-model", "テスト") == "译文"
+        assert attempted == ["chat_completions", "messages", "responses"]
+        assert persisted == ["responses"]
+    finally:
+        config.DEFAULT_CONFIG["third_party_api"] = old_cfg
+
+
+def test_opencode_go_auto_probe_records_all_protocols_when_every_protocol_fails(monkeypatch):
+    import config
+    from translator import api_client
+
+    attempted = []
+    persisted = []
+
+    def fake_translate(protocol, *args, **kwargs):
+        attempted.append(protocol)
+        raise RuntimeError(f"failure on {protocol}")
+
+    old_cfg = dict(config.DEFAULT_CONFIG.get("third_party_api", {}))
+    config.DEFAULT_CONFIG["third_party_api"] = {
+        "base_url": "https://provider.invalid/v1",
+        "api_key": "test-key",
+        "style": "opencode_go",
+        "models": [],
+    }
+    monkeypatch.delenv("THIRD_PARTY_API_BASE_URL", raising=False)
+    monkeypatch.delenv("THIRD_PARTY_API_KEY", raising=False)
+    monkeypatch.setattr(api_client, "_stored_thinking_mode", lambda model: "")
+    monkeypatch.setattr(api_client, "_translate_with_protocol", fake_translate)
+    monkeypatch.setattr(api_client, "_persist_model_protocol", lambda model, protocol: persisted.append(protocol))
+    try:
+        with pytest.raises(RuntimeError, match="failure on responses") as raised:
+            api_client.translate_once(
+                "new-model", "テスト", protocol_override="auto", probe_all_protocols=True
+            )
+        assert set(attempted) == set(api_client.SUPPORTED_PROTOCOLS)
+        assert raised.value.protocol_attempts == api_client.SUPPORTED_PROTOCOLS
+        assert persisted == []
+    finally:
+        config.DEFAULT_CONFIG["third_party_api"] = old_cfg
+
+
+def test_manual_protocol_override_is_one_shot_and_does_not_learn_protocol(monkeypatch):
+    import config
+    from translator import api_client
+
+    attempted = []
+    persisted = []
+
+    def fake_translate(protocol, *args, **kwargs):
+        attempted.append(protocol)
+        return "译文"
+
+    old_cfg = dict(config.DEFAULT_CONFIG.get("third_party_api", {}))
+    config.DEFAULT_CONFIG["third_party_api"] = {
+        "base_url": "https://provider.invalid/v1",
+        "api_key": "test-key",
+        "style": "opencode_go",
+        "models": [],
+        "model_protocols": {"new-model": "chat_completions"},
+    }
+    monkeypatch.delenv("THIRD_PARTY_API_BASE_URL", raising=False)
+    monkeypatch.delenv("THIRD_PARTY_API_KEY", raising=False)
+    monkeypatch.setattr(api_client, "_translate_with_protocol", fake_translate)
+    monkeypatch.setattr(api_client, "_persist_model_protocol", lambda model, protocol: persisted.append(protocol))
+    try:
+        assert api_client.translate_once(
+            "new-model", "テスト", protocol_override="responses", probe_all_protocols=True
+        ) == "译文"
+        assert attempted == ["responses"]
+        assert persisted == []
+    finally:
+        config.DEFAULT_CONFIG["third_party_api"] = old_cfg
+
+
 def test_opencode_go_retries_once_then_enables_low_thinking(monkeypatch):
     import config
     from translator import api_client

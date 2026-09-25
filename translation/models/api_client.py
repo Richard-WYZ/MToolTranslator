@@ -228,25 +228,25 @@ def _normalize_protocol(value: Any) -> str:
 def model_protocol(cfg: dict[str, Any], model: str) -> str:
     """Resolve one model's transport protocol without leaking policy above transport."""
     style = _api_style(cfg)
+    model_id = _api_model_id(model)
+    overrides = cfg.get("model_protocols") or {}
+    if isinstance(overrides, dict):
+        override = _normalize_protocol(overrides.get(model_id))
+        if override in SUPPORTED_PROTOCOLS:
+            return override
+    try:
+        from app.services.model_status import model_protocol as stored_model_protocol
+
+        stored = _normalize_protocol(stored_model_protocol(f"api:{model_id}"))
+    except Exception:
+        stored = ""
+    if stored in SUPPORTED_PROTOCOLS:
+        return stored
     if style in ("anthropic", "messages"):
         return "messages"
     if style in ("response", "responses"):
         return "responses"
     if style == "opencode_go":
-        model_id = _api_model_id(model)
-        overrides = cfg.get("model_protocols") or {}
-        if isinstance(overrides, dict):
-            override = _normalize_protocol(overrides.get(model_id))
-            if override in SUPPORTED_PROTOCOLS:
-                return override
-        try:
-            from app.services.model_status import model_protocol as stored_model_protocol
-
-            stored = _normalize_protocol(stored_model_protocol(f"api:{model_id}"))
-        except Exception:
-            stored = ""
-        if stored in SUPPORTED_PROTOCOLS:
-            return stored
         if model_id in OPENCODE_GO_RESPONSES_MODELS:
             return "responses"
         if model_id in OPENCODE_GO_MESSAGES_MODELS:
@@ -270,12 +270,57 @@ def _is_explicit_protocol_mismatch(exc: Exception) -> bool:
     markers = (
         "not supported for format",
         "unsupported api format",
+        "unsupported protocol",
         "unsupported endpoint",
+        "endpoint is unavailable",
+        "endpoint unavailable",
+        "does not support this endpoint",
         "use the responses api",
         "use /responses",
         "use /messages",
     )
     return any(marker in body or marker in message for marker in markers)
+
+
+def _should_try_next_protocol(exc: Exception, *, exhaustive_probe: bool) -> bool:
+    body = str(getattr(exc, "response_body", "") or "").lower()
+    message = str(exc).lower()
+    if any(marker in body or marker in message for marker in (
+        "content_filter", "safety policy", "policy_violation", "refusal"
+    )):
+        return False
+    if _is_explicit_protocol_mismatch(exc):
+        return True
+    status_code = getattr(exc, "status_code", None)
+    if status_code in {401, 403, 408, 409, 425, 429}:
+        return False
+    if isinstance(status_code, int) and status_code >= 500:
+        return False
+    if status_code in {404, 405, 415, 422}:
+        return True
+    if status_code == 400 and any(marker in body or marker in message for marker in (
+        "invalid temperature", "invalid_request_error", "unsupported parameter"
+    )):
+        return True
+    return exhaustive_probe
+
+
+def _protocol_for_request(
+    cfg: dict[str, Any], model: str, protocol_override: str | None
+) -> tuple[str, bool]:
+    """Resolve a one-call protocol override without mutating saved settings."""
+    override = _normalize_protocol(protocol_override)
+    if override == "auto":
+        model_id = _api_model_id(model)
+        clean_cfg = dict(cfg)
+        configured = dict(cfg.get("model_protocols") or {})
+        configured.pop(model_id, None)
+        clean_cfg["model_protocols"] = configured
+        return model_protocol(clean_cfg, model), True
+    if override in SUPPORTED_PROTOCOLS:
+        return override, False
+    explicitly_configured = _api_model_id(model) in dict(cfg.get("model_protocols") or {})
+    return model_protocol(cfg, model), not explicitly_configured
 
 
 def _build_user_text(text: str, terminology: Any = None) -> str:
@@ -592,6 +637,8 @@ def translate_once(
     options: dict[str, Any] | None = None,
     think: Any = None,
     response_format: Any = None,
+    protocol_override: str | None = None,
+    probe_all_protocols: bool = False,
 ) -> str:
     if not text or not text.strip():
         return ""
@@ -604,57 +651,69 @@ def translate_once(
     if not key:
         raise RuntimeError("Third-party API key is not configured")
 
-    if _api_style(cfg) != "opencode_go":
-        return _translate_with_protocol(
-            model_protocol(cfg, model), cfg, base_url, key, model, text,
-            system_prompt=system_prompt, terminology=terminology,
-            timeout=timeout, options=options, response_format=response_format,
-            thinking_mode="disabled",
-        )
-
-    stored_mode = _stored_thinking_mode(model)
+    is_opencode_go = _api_style(cfg) == "opencode_go"
+    stored_mode = _stored_thinking_mode(model) if is_opencode_go else ""
     preferred_mode = stored_mode if stored_mode in {"disabled", "low"} else "disabled"
     # Two attempts with the current mode, then one bounded fallback with the
     # lowest known thinking setting.  A model previously discovered to need
     # thinking is never silently switched back to disabled thinking.
     modes = (
-        ["low", "low", "low"]
-        if preferred_mode == "low"
-        else ["disabled", "disabled", "low"]
+        (["low", "low", "low"] if preferred_mode == "low"
+         else ["disabled", "disabled", "low"])
+        if is_opencode_go
+        else ["disabled"]
     )
+    preferred_protocol, automatic_selection = _protocol_for_request(
+        cfg, model, protocol_override
+    )
+    manual_selection = not automatic_selection
+    protocol_candidates = [preferred_protocol]
+    if automatic_selection:
+        protocol_candidates.extend(
+            protocol for protocol in SUPPORTED_PROTOCOLS
+            if protocol != preferred_protocol
+        )
+
     last_error: Exception | None = None
-    preferred_protocol = model_protocol(cfg, model)
-    protocols = [preferred_protocol]
-    explicitly_overridden = _api_model_id(model) in dict(cfg.get("model_protocols") or {})
-    last_error: Exception | None = None
-    for thinking_mode in modes:
-        try:
-            output = _translate_with_protocol(
-                protocols[-1], cfg, base_url, key, model, text,
-                system_prompt=system_prompt, terminology=terminology,
-                timeout=timeout, options=options, response_format=response_format,
-                thinking_mode=thinking_mode,
-            )
-            _persist_model_protocol(model, protocols[-1])
-            if thinking_mode == "low" and stored_mode != "low":
-                _persist_thinking_mode(model, "low")
-            return output
-        except Exception as exc:
-            last_error = exc
-            if (
-                not explicitly_overridden
-                and _is_explicit_protocol_mismatch(exc)
-                and len(protocols) < len(SUPPORTED_PROTOCOLS)
-            ):
-                next_protocol = next(
-                    candidate for candidate in SUPPORTED_PROTOCOLS
-                    if candidate not in protocols
+    attempted_protocols: list[str] = []
+    for protocol in protocol_candidates:
+        attempted_protocols.append(protocol)
+        advance_protocol = False
+        for thinking_mode in modes:
+            try:
+                output = _translate_with_protocol(
+                    protocol, cfg, base_url, key, model, text,
+                    system_prompt=system_prompt, terminology=terminology,
+                    timeout=timeout, options=options, response_format=response_format,
+                    thinking_mode=thinking_mode,
                 )
-                protocols.append(next_protocol)
-            # The policy is deliberately bounded: one retry with the original
-            # mode, then one retry with the lowest supported thinking mode.
+                if automatic_selection:
+                    _persist_model_protocol(model, protocol)
+                if is_opencode_go and thinking_mode == "low" and stored_mode != "low":
+                    _persist_thinking_mode(model, "low")
+                return output
+            except Exception as exc:
+                last_error = exc
+                if automatic_selection and _should_try_next_protocol(
+                    exc, exhaustive_probe=probe_all_protocols
+                ):
+                    advance_protocol = True
+                    break
+                continue
+
+        if manual_selection:
+            break
+        if advance_protocol:
             continue
-    raise last_error or RuntimeError("Third-party API translation failed")
+        break
+
+    if last_error is None:
+        last_error = RuntimeError("Third-party API translation failed")
+    try:
+        last_error.protocol_attempts = tuple(attempted_protocols)
+    except Exception:
+        pass
+    raise last_error
 
 
 def translate(

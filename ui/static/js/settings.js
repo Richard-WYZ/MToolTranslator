@@ -251,7 +251,9 @@ function updateSettingsControls() {
         : !writable ? "配置目录不可写；请把软件移动到可写目录。"
         : validation || (state.settingsConnectionDirty
             ? "连接参数已修改：请先保存，再获取或测试模型。"
-            : "模型可用性测试可能消耗少量 Token；不会自动执行。");
+            : state.settingsDirty
+                ? "协议选择可直接用于测试；所有设置只有点击“保存设置”后才会保存。"
+                : "模型可用性测试可能消耗少量 Token；不会自动执行。");
 }
 
 function markSettingsDirty(connectionChanged) {
@@ -360,7 +362,7 @@ function bindSettingsEvents() {
         if (protocolSelect) {
             var protocolItem = currentModelCatalog().find(function (entry) { return entry.id === protocolSelect.dataset.modelProtocol; });
             if (protocolItem) protocolItem.protocol = protocolSelect.value;
-            markSettingsDirty(true);
+            markSettingsDirty(false);
             return;
         }
         var checkbox = event.target.closest("[data-model-enabled]");

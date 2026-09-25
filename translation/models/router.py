@@ -77,6 +77,8 @@ def translate_once(
     options: dict[str, Any] | None = None,
     think: Any = None,
     response_format: Any = None,
+    protocol_override: str | None = None,
+    probe_all_protocols: bool = False,
 ) -> str:
     provider = _provider_for_model(model)
     clean_model = _clean_model(model)
@@ -90,6 +92,10 @@ def translate_once(
         options=options,
         think=think,
         response_format=response_format,
+        **({
+            "protocol_override": protocol_override,
+            "probe_all_protocols": probe_all_protocols,
+        } if provider == "api" else {}),
     )
 
 

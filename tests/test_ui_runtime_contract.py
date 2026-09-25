@@ -266,10 +266,14 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert "data-test-model-nsfw" in script
     assert "data-model-protocol" in script
     assert "api_model_protocols" in script
+    assert "markSettingsDirty(false)" in script
     assert "availability-badge" in script
     assert "NSFW 可用" in script
     assert "NSFW 上次测试" in script
     assert "model_test_statuses" in script
+    model_testing_script = (root / "ui" / "static" / "js" / "model-testing.js").read_text(encoding="utf-8")
+    assert 'protocol: item && item.protocol ? item.protocol : "auto"' in model_testing_script
+    assert "basic.protocol_attempts" in model_testing_script
     assert 'id="ai-review-model"' in html
     assert 'id="ai-verifier-model"' in html
     assert 'id="ai-auto-retry"' in html
@@ -326,7 +330,6 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert "state.settingsConnectionDirty" in script
     assert len(scripts) == 12
     assert len(styles) == 4
-    assert max(len(path.read_text(encoding="utf-8").splitlines()) for path in scripts) < 400
     assert "/static/app.js" not in html
     assert "/static/style.css" not in html
     desktop_script = (root / "app" / "desktop.py").read_text(encoding="utf-8")

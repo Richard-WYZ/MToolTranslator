@@ -17,6 +17,7 @@ _LOCK = threading.Lock()
 _VERSION = 1
 _PUBLIC_DIAGNOSTIC_KEYS = (
     "protocol",
+    "protocol_attempts",
     "http_status",
     "provider_error_type",
     "error_summary",
@@ -235,6 +236,16 @@ def record_model_test(
             continue
         if key in {"error_summary", "provider_error_type", "protocol"}:
             value = str(value).strip()[:500]
+        elif key == "protocol_attempts":
+            if not isinstance(value, (list, tuple)):
+                continue
+            value = [
+                str(item).strip()[:40]
+                for item in value
+                if str(item).strip() in {
+                    "chat_completions", "messages", "responses"
+                }
+            ][:3]
         elif key in {"http_status", "latency_ms"}:
             try:
                 value = int(value)

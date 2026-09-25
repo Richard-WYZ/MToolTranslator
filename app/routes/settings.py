@@ -50,7 +50,13 @@ def create_router(*, tasks: MutableMapping[str, Any], ai_review_tasks: MutableMa
     @router.post("/api/settings/connection-test")
     def connection_test(req: SettingsConnectionTestRequest):
         require_benchmark_idle()
-        return test_connection(req.provider, req.model, all_tasks(), test_kind=req.test_kind)
+        return test_connection(
+            req.provider,
+            req.model,
+            all_tasks(),
+            test_kind=req.test_kind,
+            protocol=req.protocol,
+        )
 
     @router.post("/api/settings/models/discover")
     def discover_models(req: SettingsModelDiscoveryRequest):

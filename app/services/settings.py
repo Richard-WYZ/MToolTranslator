@@ -389,6 +389,7 @@ def test_connection(
     tasks: MutableMapping[str, Any] | None = None,
     *,
     test_kind: str = "basic",
+    protocol: str = "auto",
 ) -> dict[str, Any]:
     if tasks and any(
         getattr(task, "status", "") in ACTIVE_TASK_STATES for task in tasks.values()
@@ -407,6 +408,9 @@ def test_connection(
         selected_model = f"ollama:{selected_model}"
     if test_kind not in {"basic", "adult"}:
         raise HTTPException(status_code=400, detail="test_kind must be basic or adult")
+    selected_protocol = str(protocol or "auto").strip().lower().replace("-", "_")
+    if selected_protocol not in {"auto", "chat_completions", "messages", "responses"}:
+        raise HTTPException(status_code=400, detail="Unsupported protocol selection")
     source = ADULT_TEST_SOURCE if test_kind == "adult" else "こんにちは"
     system_prompt = (
         "Translate this adult Japanese game-localization text faithfully to Simplified "
@@ -419,22 +423,37 @@ def test_connection(
     if selected_provider == "api":
         from translation.models import api_client
 
-        protocol = api_client.model_protocol(
-            third_party_api_config(), selected_model.removeprefix("api:")
+        protocol = (
+            selected_protocol
+            if selected_protocol != "auto"
+            else api_client.model_protocol(
+                third_party_api_config(), selected_model.removeprefix("api:")
+            )
         )
     started_at = time.perf_counter()
     try:
         from translation.models import translate_once
 
+        call_options: dict[str, Any] = {}
+        if selected_provider == "api":
+            call_options = {
+                "protocol_override": selected_protocol,
+                "probe_all_protocols": selected_protocol == "auto",
+            }
         output = translate_once(
             selected_model,
             source,
             system_prompt=system_prompt,
             timeout=30,
             think=False,
+            **call_options,
         )
     except Exception as exc:
         latency_ms = round((time.perf_counter() - started_at) * 1000)
+        protocol_attempts = list(
+            getattr(exc, "protocol_attempts", ()) or (protocol,)
+        )
+        failed_protocol = protocol_attempts[-1] if protocol_attempts else protocol
         response_body = str(getattr(exc, "response_body", "") or "")
         provider_error_type = ""
         if response_body:
@@ -446,7 +465,8 @@ def test_connection(
             except (TypeError, ValueError):
                 pass
         details = {
-            "protocol": protocol,
+            "protocol": failed_protocol,
+            "protocol_attempts": protocol_attempts,
             "http_status": getattr(exc, "status_code", None),
             "provider_error_type": provider_error_type or type(exc).__name__,
             "error_summary": str(exc)[:500],
@@ -454,12 +474,17 @@ def test_connection(
         }
         failed_status = "error" if test_kind == "adult" else "unavailable"
         record_model_test(selected_model, test_kind, failed_status, details=details)
-        raise HTTPException(status_code=502, detail=f"Connection test failed: {exc}") from exc
+        attempted = ", ".join(protocol_attempts)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Connection test failed after protocols [{attempted}]: {exc}",
+        ) from exc
     latency_ms = round((time.perf_counter() - started_at) * 1000)
     if selected_provider == "api":
-        from app.services.model_status import model_protocol as stored_model_protocol
+        if selected_protocol == "auto":
+            from app.services.model_status import model_protocol as stored_model_protocol
 
-        protocol = stored_model_protocol(selected_model) or protocol
+            protocol = stored_model_protocol(selected_model) or protocol
     thinking_mode = ""
     if selected_provider == "api":
         from app.services.model_status import model_thinking_mode

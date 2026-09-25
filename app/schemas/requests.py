@@ -86,6 +86,7 @@ class SettingsConnectionTestRequest(BaseModel):
     provider: str
     model: Optional[str] = None
     test_kind: Literal["basic", "adult"] = "basic"
+    protocol: Literal["auto", "chat_completions", "messages", "responses"] = "auto"
 
 
 class SettingsModelDiscoveryRequest(BaseModel):
