@@ -246,6 +246,12 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
         assert f'id="page-{page}"' in html
     assert "api:qwen3.7-plus" in script
     assert "api:minimax-m3" in script
+    profile_script = (root / "ui" / "static" / "js" / "profiles.js").read_text(encoding="utf-8")
+    assert 'runtimeProfile("quality_first")' in profile_script
+    assert 'profile && profile.primary_model || "api:qwen3.7-plus"' in profile_script
+    assert "qualityProfile && Array.isArray(qualityProfile.routes)" in profile_script
+    assert "qualityProfile.routes" in profile_script
+    assert "（质量优先主路由）" in profile_script
     assert 'id="settings-api-key"' in html
     assert 'id="settings-form"' in html
     assert "<title>MTool 汉化工具</title>" in html

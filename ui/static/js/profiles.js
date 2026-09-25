@@ -40,6 +40,11 @@ function modelsForProvider(provider) {
     return state.models.filter(function (model) { return model.provider === provider; });
 }
 
+function runtimeProfile(profileId) {
+    var profiles = (state.runtime && state.runtime.profiles) || [];
+    return profiles.find(function (profile) { return profile.id === profileId; }) || null;
+}
+
 function fillModelSelect(select, models, selected, allowEmpty) {
     select.innerHTML = "";
     if (allowEmpty) {
@@ -76,7 +81,9 @@ function populateModelSelectors() {
     var primary = el("model-select");
     var apiModels = modelsForProvider("api");
     var localModels = modelsForProvider("ollama");
-    var current = primary.value || localStorage.getItem("lgt.selectedModel") || (state.runtime && state.runtime.default_model) || "";
+    var current = state.profile === "quality_first"
+        ? selectedModel()
+        : primary.value || localStorage.getItem("lgt.selectedModel") || (state.runtime && state.runtime.default_model) || "";
     var visible = state.profile === "local" ? localModels : apiModels;
     var visibleIds = visible.map(function (model) { return model.id || model.name; });
     if (!visibleIds.includes(current)) {
@@ -95,7 +102,10 @@ function populateModelSelectors() {
 }
 
 function selectedModel() {
-    if (state.profile === "quality_first") return "api:qwen3.7-plus";
+    if (state.profile === "quality_first") {
+        var profile = runtimeProfile("quality_first");
+        return profile && profile.primary_model || "api:qwen3.7-plus";
+    }
     return el("model-select").value;
 }
 
@@ -134,7 +144,13 @@ function renderProfile() {
     var quality = state.profile === "quality_first";
     primary.disabled = quality;
     if (quality) {
-        fillModelSelect(primary, [{ id: "api:qwen3.7-plus", name: "api:qwen3.7-plus", provider: "api", display_name: "qwen3.7-plus（固定主模型）" }], "api:qwen3.7-plus", false);
+        var qualityModel = selectedModel();
+        fillModelSelect(primary, [{
+            id: qualityModel,
+            name: qualityModel,
+            provider: qualityModel.split(":", 1)[0],
+            display_name: modelLabel(qualityModel) + "（质量优先主路由）",
+        }], qualityModel, false);
     }
     el("advanced-config").style.display = state.profile === "custom" ? "block" : "none";
     if (state.profile === "custom") el("advanced-config").open = true;
@@ -144,9 +160,10 @@ function renderProfile() {
         local: "整个任务只使用这个本地 Ollama 模型。",
         custom: "此模型用于普通文本；其他模型在高级配置中选择。",
     };
-    el("model-help").textContent = descriptions[state.profile] || "";
-    var profiles = (state.runtime && state.runtime.profiles) || [];
-    var profile = profiles.find(function (item) { return item.id === state.profile; });
+    var profile = runtimeProfile(state.profile);
+    el("model-help").textContent = quality && profile && profile.description
+        ? profile.description
+        : descriptions[state.profile] || "";
     el("profile-step-state").textContent = profile ? profile.name : state.profile;
     renderRouteMap();
     invalidatePreflight();
@@ -155,12 +172,9 @@ function renderProfile() {
 function effectiveRoutes() {
     var primary = selectedModel();
     if (state.profile === "quality_first") {
-        return [
-            { role: "短标签", model: "api:minimax-m3" },
-            { role: "普通文本", model: "api:qwen3.7-plus" },
-            { role: "敏感文本", model: "api:minimax-m3" },
-            { role: "质量修复", model: "api:qwen3.7-plus" },
-        ];
+        var qualityProfile = runtimeProfile("quality_first");
+        if (qualityProfile && Array.isArray(qualityProfile.routes)) return qualityProfile.routes;
+        return [{ role: "普通文本", model: primary }];
     }
     if (state.profile === "custom") {
         var options = profileOptions();
