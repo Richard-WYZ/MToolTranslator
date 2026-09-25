@@ -3388,6 +3388,21 @@ def test_pollution_validator_flags_unsupported_proper_name_in_translation():
     }
 
 
+def test_quality_rules_block_corrupt_replacement_characters_and_repeated_short_fragments():
+    from translation.quality import status_for_output, translation_issues
+    from translation.review.ai import NON_WAIVABLE_ISSUE_TYPES
+
+    corrupt = translation_issues("退魔師キサキ", "退魔师\ufffd的\ufffd")
+    assert "replacement_character_corruption" in {issue["type"] for issue in corrupt}
+    assert "replacement_character_corruption" in NON_WAIVABLE_ISSUE_TYPES
+    assert status_for_output("退魔師キサキ", "退魔师\ufffd的\ufffd", corrupt) == "review_required"
+
+    invented = translation_issues("れぢゅ", "要、要去了")
+    assert "short_fragment_repetition" in {issue["type"] for issue in invented}
+    assert "short_fragment_repetition" in NON_WAIVABLE_ISSUE_TYPES
+    assert status_for_output("れぢゅ", "要、要去了", invented) == "review_required"
+
+
 def test_pollution_validator_accepts_honorific_names_supported_by_source():
     from translation.pollution import translation_pollution_issues
 
@@ -4459,6 +4474,34 @@ def test_glossary_preseed_enables_high_confidence_name_confirmation():
         assert glossary.auto_extract("\u30d5\u30a3\u30fc\u30cd\uff1a\u6765\u305f", "\u83f2\u59ae\uff1a\u6765\u4e86") == []
         assert glossary.auto_extract("\u30d5\u30a3\u30fc\u30cd\uff1a\u7b11\u3063\u305f", "\u83f2\u59ae\uff1a\u7b11\u4e86")
         assert glossary.terms["\u30d5\u30a3\u30fc\u30cd"] == "\u83f2\u59ae"
+
+
+def test_frozen_glossary_confirms_repeated_high_confidence_names_after_translation():
+    from translator.glossary import Glossary
+    from translation.workflow.glossary_finalize import finalize_glossary_evidence
+
+    with tempfile.TemporaryDirectory(prefix="frozen_glossary_finalize_") as tmpdir:
+        glossary = Glossary(file_path=os.path.join(tmpdir, "glossary.json"))
+        sources = ["\u30d5\u30a3\u30fc\u30cd\uff1a\u6765\u305f", "\u30d5\u30a3\u30fc\u30cd\uff1a\u7b11\u3063\u305f"]
+        glossary.preseed_from_sources(sources)
+        glossary.freeze()
+        assert glossary.auto_extract(sources[0], "\u83f2\u59ae\uff1a\u6765\u4e86") == []
+        assert glossary.auto_extract(sources[1], "\u83f2\u59ae\uff1a\u7b11\u4e86") == []
+        assert not glossary.terms
+
+        applied = []
+        class Pipeline:
+            def __init__(self):
+                self.glossary = glossary
+
+            def _apply_confirmed_terms_to_outputs(self, file_path, terms):
+                applied.extend(terms)
+
+        confirmed = finalize_glossary_evidence(Pipeline(), os.path.join(tmpdir, "source.json"), {})
+        assert not glossary.frozen
+        assert glossary.terms["\u30d5\u30a3\u30fc\u30cd"] == "\u83f2\u59ae"
+        assert confirmed == applied
+        assert len(confirmed) == 1
 
 
 def test_offline_dictionary_yomitan_exact_chinese_matches_are_optional():

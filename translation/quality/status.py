@@ -16,6 +16,8 @@ HARD_REVIEW_ISSUE_TYPES = {
     "contextual_term_pollution",
     "unsupported_glossary_name",
     "unsupported_proper_name",
+    "replacement_character_corruption",
+    "short_fragment_repetition",
 }
 
 OPERATIONAL_DIAGNOSTIC_ISSUE_TYPES = {

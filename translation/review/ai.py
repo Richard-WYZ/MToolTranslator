@@ -40,7 +40,7 @@ from translation.review import write_review_report
 from translation.terminology import Glossary
 
 
-AI_REVIEW_VERSION = "ai-review-v11-auto-retry"
+AI_REVIEW_VERSION = "ai-review-v12-corruption-and-fragment-guards"
 AI_REVIEW_ACTIVE_STATUSES = {"preparing", "reviewing", "verifying", "applying", "finalizing"}
 AI_REVIEW_TERMINAL_STATUSES = {"completed", "cancelled", "error"}
 NON_WAIVABLE_ISSUE_TYPES = set(HARD_REVIEW_ISSUE_TYPES) | {

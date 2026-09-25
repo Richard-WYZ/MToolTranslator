@@ -15,7 +15,7 @@ from translation.protection.runtime import (
 )
 
 
-QUALITY_RULES_VERSION = "quality-rules-v15-artifact-integrity"
+QUALITY_RULES_VERSION = "quality-rules-v16-corruption-and-fragment-guards"
 FIXED_TRANSLATIONS: dict[str, str] = {
     "continue": "继续",
     "new game": "新游戏",
@@ -540,6 +540,22 @@ def translation_issues(original: str, translated: str, short_label: bool = False
     if not translated.strip():
         issues.append({"type": "empty_translation", "message": "Translated text is empty."})
         return issues
+
+    if translated.count("\ufffd") > original.count("\ufffd"):
+        issues.append({
+            "type": "replacement_character_corruption",
+            "message": "Translated text contains Unicode replacement characters absent from the source.",
+        })
+
+    compact_target = re.sub(r"[\s，,。.!！?？、；;：:]", "", translated)
+    if (
+        re.fullmatch(r"[\u3040-\u30ffー]{1,4}", original.strip())
+        and re.search(r"([\u3400-\u9fff])\1", compact_target)
+    ):
+        issues.append({
+            "type": "short_fragment_repetition",
+            "message": "A very short kana fragment became a repeated-character phrase; verify that context was not invented.",
+        })
 
     if (
         translated == original

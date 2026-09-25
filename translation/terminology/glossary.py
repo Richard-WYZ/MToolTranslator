@@ -306,6 +306,36 @@ class Glossary:
                     info["reject_reason"] = "automatic_review_failed"
         return confirmed
 
+    def confirm_ready_candidates(self) -> list[dict[str, Any]]:
+        """Confirm evidence-backed candidates after a frozen translation pass.
+
+        Batch workers intentionally share one stable set of enforced mappings.
+        Once they have all stopped, candidates may be evaluated with the same
+        thresholds as incremental extraction and safely backfilled.
+        """
+        if self._frozen:
+            raise RuntimeError("cannot confirm glossary terms while mappings are frozen")
+        confirmed: list[dict[str, Any]] = []
+        for source, info in list(self.candidates.items()):
+            if source in self.terms or not isinstance(info, dict):
+                continue
+            if info.get("status") in ("confirmed", "official", "rejected"):
+                continue
+            target = str(info.get("target") or "").strip()
+            if not target:
+                continue
+            if self._should_auto_confirm(source, target, info):
+                term_type = str(info.get("type") or "proper_noun")
+                aliases = list(self._candidate_targets(source))
+                aliases.extend((info.get("aliases", {}) or {}).values())
+                self.add(source, target, term_type)
+                confirmed.append({
+                    "source": source,
+                    "target": target,
+                    "aliases": list(dict.fromkeys(str(alias) for alias in aliases if alias)),
+                })
+        return confirmed
+
     def preseed_from_sources(self, sources: list[str], min_count: int = 2) -> int:
         """Collect high-confidence source-only term candidates before translation.
 

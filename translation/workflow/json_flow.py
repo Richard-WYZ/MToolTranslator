@@ -35,6 +35,7 @@ from translation.protection import (
 from translation.quality import QUALITY_RULES_VERSION, quality_prompt_rules
 from translation.quality.retry import RETRY_POLICY_VERSION
 from translation.terminology.candidate_policy import CANDIDATE_POLICY_VERSION
+from translation.workflow.glossary_finalize import finalize_glossary_evidence
 
 
 if TYPE_CHECKING:
@@ -182,8 +183,7 @@ def translate_json_workflow(
                 progress_callback,
             )
         finally:
-            if freeze_glossary:
-                pipeline.glossary.save()
+            if freeze_glossary and pipeline.glossary.frozen:
                 pipeline.glossary.thaw()
 
     try:
@@ -322,11 +322,11 @@ def translate_json_workflow(
             )
     finally:
         try:
+            if freeze_glossary:
+                pipeline.glossary.thaw()
+            finalize_glossary_evidence(pipeline, file_path, {})
             checkpoint.set_glossary_version(file_path, pipeline.glossary.version(), update_entries=True)
             pipeline._update_token_usage(file_path)
-            if freeze_glossary:
-                pipeline.glossary.save()
-                pipeline.glossary.thaw()
         finally:
             if pipeline._writer:
                 pipeline._writer.stop()
