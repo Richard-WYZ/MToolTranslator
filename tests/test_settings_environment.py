@@ -22,6 +22,7 @@ ENV_KEYS = (
     "THIRD_PARTY_API_KEY",
     "THIRD_PARTY_API_MODELS",
     "THIRD_PARTY_API_DISABLED_MODELS",
+    "THIRD_PARTY_API_MODEL_PROTOCOLS",
     "THIRD_PARTY_API_DISABLE_THINKING",
     "OLLAMA_HOST",
     "OLLAMA_DISABLED_MODELS",
@@ -152,6 +153,50 @@ def test_settings_save_persists_disabled_models_and_rejects_disabled_default(
             )
         assert exc.value.status_code == 400
         assert "remain enabled" in str(exc.value.detail)
+    finally:
+        translation_settings.reload_settings_from_env()
+
+
+def test_settings_save_persists_per_model_protocol_overrides(monkeypatch, tmp_path: Path):
+    _clear_supported_environment(monkeypatch)
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(settings_service, "runtime_env_path", lambda: env_path)
+    try:
+        result = settings_service.save_settings(
+            _request(api_model_protocols={
+                "api:gpt-5.6-luna": "responses",
+                "qwen-test": "anthropic",
+            }),
+            {},
+        )
+        content = env_path.read_text(encoding="utf-8")
+        assert result["settings"]["api"]["model_protocols"] == {
+            "gpt-5.6-luna": "responses",
+            "qwen-test": "messages",
+        }
+        assert 'THIRD_PARTY_API_MODEL_PROTOCOLS={"gpt-5.6-luna":"responses","qwen-test":"messages"}' in content
+    finally:
+        translation_settings.reload_settings_from_env()
+
+
+def test_benchmark_can_update_only_default_model_without_losing_settings(monkeypatch, tmp_path: Path):
+    _clear_supported_environment(monkeypatch)
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "# keep this comment\nTHIRD_PARTY_API_KEY=secret\nUNKNOWN_SETTING=keep-me\n"
+        "MODEL_PROVIDER=api\nDEFAULT_MODEL=api:old-model\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings_service, "runtime_env_path", lambda: env_path)
+    monkeypatch.setattr(settings_service, "disabled_models", lambda provider: [])
+    try:
+        result = settings_service.set_default_model_setting("api:new-model", {})
+        content = env_path.read_text(encoding="utf-8")
+        assert result["default_model"] == "api:new-model"
+        assert "DEFAULT_MODEL=api:new-model" in content
+        assert "THIRD_PARTY_API_KEY=secret" in content
+        assert "UNKNOWN_SETTING=keep-me" in content
+        assert "# keep this comment" in content
     finally:
         translation_settings.reload_settings_from_env()
 
@@ -327,6 +372,28 @@ def test_adult_model_test_detects_faithful_translation_or_restriction(
     assert len(calls) == 1
 
 
+def test_thinking_capability_discovered_by_adult_test_applies_to_basic_requests(
+    monkeypatch, tmp_path
+):
+    path = tmp_path / ".model-status.json"
+    config = {
+        "style": "opencode_go",
+        "base_url": "https://opencode.example/v1",
+        "api_key": "secret-a",
+    }
+    monkeypatch.setattr(model_status, "runtime_model_status_path", lambda: path)
+    monkeypatch.setattr(model_status, "third_party_api_config", lambda: dict(config))
+
+    model_status.record_model_test("api:model-a", "basic", "unavailable")
+    model_status.record_model_test(
+        "api:model-a", "adult", "available", thinking_mode="low"
+    )
+
+    assert model_status.model_thinking_mode("api:model-a") == "low"
+    public = model_status.public_model_statuses()
+    assert public["api:model-a"]["adult"]["thinking_mode"] == "low"
+
+
 def test_model_test_history_survives_catalog_changes_and_marks_context_stale(
     monkeypatch, tmp_path
 ):
@@ -353,6 +420,39 @@ def test_model_test_history_survives_catalog_changes_and_marks_context_stale(
 
     assert stale["api:model-a"]["basic"]["status"] == "available"
     assert stale["api:model-a"]["basic"]["stale"] is True
+
+
+def test_model_status_persists_protocol_and_public_diagnostics(monkeypatch, tmp_path):
+    path = tmp_path / ".model-status.json"
+    config = {
+        "style": "opencode_go",
+        "base_url": "https://provider.example/v1",
+        "api_key": "secret-a",
+    }
+    monkeypatch.setattr(model_status, "runtime_model_status_path", lambda: path)
+    monkeypatch.setattr(model_status, "third_party_api_config", lambda: dict(config))
+
+    assert model_status.record_model_protocol("api:gpt-5.6-luna", "responses") is True
+    saved = model_status.record_model_test(
+        "api:gpt-5.6-luna",
+        "basic",
+        "unavailable",
+        details={
+            "protocol": "responses",
+            "http_status": 401,
+            "provider_error_type": "authentication_error",
+            "error_summary": "invalid key",
+            "latency_ms": 321,
+        },
+    )
+
+    assert model_status.model_protocol("api:gpt-5.6-luna") == "responses"
+    assert saved["protocol"] == "responses"
+    assert saved["http_status"] == 401
+    public = model_status.public_model_statuses()["api:gpt-5.6-luna"]["basic"]
+    assert public["provider_error_type"] == "authentication_error"
+    assert public["error_summary"] == "invalid key"
+    assert public["latency_ms"] == 321
 
 
 def test_ollama_client_reads_reloaded_host_for_each_request(monkeypatch):

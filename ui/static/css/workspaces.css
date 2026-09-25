@@ -157,7 +157,8 @@
 .model-picker-toolbar { margin: 12px 0 9px; }
 .model-picker-toolbar input { flex: 1; }
 .settings-model-list { max-height: 330px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: white; }
-.model-row { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto auto auto auto; align-items: center; gap: 8px; min-height: 48px; padding: 6px 10px; border-bottom: 1px solid #edf0f5; }
+.model-row { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto auto auto auto auto; align-items: center; gap: 8px; min-height: 48px; padding: 6px 10px; border-bottom: 1px solid #edf0f5; }
+.model-protocol-select { width: 112px; min-height: 30px; padding: 4px 6px; font-size: 9px; }
 .model-row:last-child { border-bottom: 0; }
 .model-row:hover { background: #fafaff; }
 .model-row-copy { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
@@ -171,6 +172,25 @@
 .availability-badge.restricted, .availability-badge.error { color: #9f1239; background: var(--danger-soft); }
 .availability-badge.stale { color: #92400e; background: #fff4d6; }
 .model-usage-note { margin: 9px 2px 0; color: var(--muted); font-size: 9px; }
+.model-benchmark { margin-top: 14px; padding: 15px; border: 1px solid #cfd5ff; border-radius: 12px; background: #f8f8ff; }
+.model-benchmark select { min-height: 30px; padding: 4px 7px; font-size: 10px; }
+.benchmark-progress { margin-top: 12px; }
+.benchmark-progress > div:first-child, .benchmark-meta { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 10px; }
+.benchmark-progress strong { color: var(--text); }
+.benchmark-progress .progress-track { height: 6px; margin-top: 6px; overflow: hidden; border-radius: 999px; background: #e7e9f5; }
+.benchmark-progress .progress-track span { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--primary); transition: width .25s ease; }
+.benchmark-meta { margin: 12px 0 8px; flex-wrap: wrap; }
+.benchmark-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: white; }
+.benchmark-table { width: 100%; border-collapse: collapse; font-size: 10px; }
+.benchmark-table th, .benchmark-table td { padding: 8px 9px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+.benchmark-table tbody tr:last-child td { border-bottom: 0; }
+.benchmark-table td:first-child small { display: block; color: var(--muted); }
+.benchmark-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+.benchmark-card { display: flex; min-width: 0; flex-direction: column; gap: 7px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: white; }
+.benchmark-card.selected { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary-soft); }
+.benchmark-card div { display: flex; flex-direction: column; gap: 2px; }
+.benchmark-card span, .benchmark-card p { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.6; overflow-wrap: anywhere; }
+.benchmark-card button { margin-top: auto; }
 .settings-advanced { margin-top: 14px; border: 1px solid var(--line); border-radius: 11px; background: white; }
 .settings-advanced summary { padding: 11px 13px; cursor: pointer; font-size: 11px; font-weight: 800; }
 .advanced-settings-grid { padding: 2px 13px 13px; }

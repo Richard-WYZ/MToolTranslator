@@ -75,7 +75,13 @@ try {
         throw "Unexpected build output. The artifact directory must contain only MToolTranslator.exe: $DistPath"
     }
 
+    # Keep the isolated artifact directory pristine for packaging, while also
+    # refreshing the convenient local development executable at build\dist.
+    $ConvenienceExecutablePath = Join-Path $DistRoot "MToolTranslator.exe"
+    Copy-Item -LiteralPath $ExecutablePath -Destination $ConvenienceExecutablePath -Force
+
     Write-Output "Packaged application: $ExecutablePath"
+    Write-Output "Updated convenience executable: $ConvenienceExecutablePath"
     exit 0
 }
 finally {

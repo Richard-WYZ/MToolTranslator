@@ -15,6 +15,13 @@ from translation.config import ollama_host, third_party_api_config
 
 _LOCK = threading.Lock()
 _VERSION = 1
+_PUBLIC_DIAGNOSTIC_KEYS = (
+    "protocol",
+    "http_status",
+    "provider_error_type",
+    "error_summary",
+    "latency_ms",
+)
 
 
 def _empty_store() -> dict[str, Any]:
@@ -82,11 +89,19 @@ def _public_record(
 ) -> dict[str, Any]:
     provider = model_id.split(":", 1)[0]
     current_context = (contexts or {}).get(provider) or _provider_context(provider)
-    return {
+    result = {
         "status": str(record.get("status") or "untested"),
         "tested_at": str(record.get("tested_at") or ""),
         "stale": record.get("context") != current_context,
     }
+    thinking_mode = str(record.get("thinking_mode") or "").strip()
+    if thinking_mode:
+        result["thinking_mode"] = thinking_mode
+    for key in _PUBLIC_DIAGNOSTIC_KEYS:
+        value = record.get(key)
+        if value not in (None, ""):
+            result[key] = value
+    return result
 
 
 def public_model_statuses() -> dict[str, dict[str, dict[str, Any]]]:
@@ -109,13 +124,123 @@ def public_model_statuses() -> dict[str, dict[str, dict[str, Any]]]:
     return result
 
 
-def record_model_test(model_id: str, test_kind: str, status: str) -> dict[str, Any]:
+def model_thinking_mode(model_id: str) -> str:
+    """Return the persisted thinking mode required by a model, if known."""
+    payload = _read_store()
+    tests = payload.get("models", {}).get(model_id, {})
+    if not isinstance(tests, dict):
+        return ""
+    discovered_modes: list[str] = []
+    for test_kind in ("basic", "adult"):
+        record = tests.get(test_kind)
+        if isinstance(record, dict):
+            if record.get("context") != _provider_context("api"):
+                continue
+            mode = str(record.get("thinking_mode") or "").strip().lower()
+            if mode:
+                discovered_modes.append(mode)
+    # Thinking capability belongs to the model, not to the test kind.  In
+    # particular, an NSFW test may discover the requirement before a basic
+    # test does; prefer the stronger discovered requirement for both paths.
+    if "low" in discovered_modes:
+        return "low"
+    return discovered_modes[0] if discovered_modes else ""
+
+
+def record_model_thinking_mode(model_id: str, thinking_mode: str) -> bool:
+    """Persist a discovered provider capability without resetting test history."""
+    mode = str(thinking_mode or "").strip().lower()
+    if not mode:
+        return False
+    with _LOCK:
+        payload = _read_store()
+        tests = payload.setdefault("models", {}).setdefault(model_id, {})
+        changed = False
+        for test_kind in ("basic", "adult"):
+            record = tests.get(test_kind)
+            if isinstance(record, dict):
+                if record.get("thinking_mode") != mode:
+                    record["thinking_mode"] = mode
+                    changed = True
+        if not changed:
+            tests.setdefault("basic", {
+                "status": "untested",
+                "tested_at": "",
+                "context": _provider_context(model_id.split(":", 1)[0]),
+                "thinking_mode": mode,
+            })
+            changed = True
+        return _write_store(payload) if changed else True
+
+
+def model_protocol(model_id: str) -> str:
+    """Return a protocol learned for the current provider context, if any."""
+    payload = _read_store()
+    tests = payload.get("models", {}).get(model_id, {})
+    if not isinstance(tests, dict):
+        return ""
+    capability = tests.get("_capabilities")
+    if not isinstance(capability, dict):
+        return ""
+    provider = model_id.split(":", 1)[0]
+    if capability.get("context") != _provider_context(provider):
+        return ""
+    return str(capability.get("protocol") or "")
+
+
+def record_model_protocol(model_id: str, protocol: str) -> bool:
+    """Persist a successfully used transport protocol for one model."""
+    normalized = str(protocol or "").strip().lower()
+    if normalized not in {"chat_completions", "messages", "responses"}:
+        return False
+    provider = model_id.split(":", 1)[0]
+    with _LOCK:
+        payload = _read_store()
+        tests = payload.setdefault("models", {}).setdefault(model_id, {})
+        current = tests.get("_capabilities")
+        context = _provider_context(provider)
+        if (
+            isinstance(current, dict)
+            and current.get("protocol") == normalized
+            and current.get("context") == context
+        ):
+            return True
+        tests["_capabilities"] = {
+            "protocol": normalized,
+            "context": context,
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        return _write_store(payload)
+
+
+def record_model_test(
+    model_id: str,
+    test_kind: str,
+    status: str,
+    *,
+    thinking_mode: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     provider = model_id.split(":", 1)[0]
     record = {
         "status": status,
         "tested_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "context": _provider_context(provider),
     }
+    if thinking_mode:
+        record["thinking_mode"] = str(thinking_mode).strip().lower()
+    for key in _PUBLIC_DIAGNOSTIC_KEYS:
+        value = (details or {}).get(key)
+        if value in (None, ""):
+            continue
+        if key in {"error_summary", "provider_error_type", "protocol"}:
+            value = str(value).strip()[:500]
+        elif key in {"http_status", "latency_ms"}:
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                continue
+        record[key] = value
     with _LOCK:
         payload = _read_store()
         models = payload.setdefault("models", {})
@@ -127,4 +252,11 @@ def record_model_test(model_id: str, test_kind: str, status: str) -> dict[str, A
     return public
 
 
-__all__ = ["public_model_statuses", "record_model_test"]
+__all__ = [
+    "model_thinking_mode",
+    "model_protocol",
+    "public_model_statuses",
+    "record_model_test",
+    "record_model_protocol",
+    "record_model_thinking_mode",
+]

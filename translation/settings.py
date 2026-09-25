@@ -25,6 +25,7 @@ _BASE_DEFAULT_CONFIG = {
         "disable_thinking": True,
         "models": [],
         "disabled_models": [],
+        "model_protocols": {},
     },
     "ollama_disabled_models": [],
     "translate_columns": [0, 1],
@@ -65,6 +66,7 @@ _BASE_DEFAULT_CONFIG = {
         "api_quality_model": "",
         "api_sensitive_routing_enabled": True,
         "api_sensitive_model": "api:minimax-m3",
+        "api_sensitive_fallback_model": "",
         "api_sensitive_repair_enabled": True,
         "api_sensitive_repair_batch_size": 5,
         "api_sensitive_repair_max_batch_chars": 1000,
@@ -257,6 +259,38 @@ def _model_limits(value: str) -> dict[str, int]:
     }
 
 
+def _model_protocols(value: str) -> dict[str, str]:
+    rendered = value.strip()
+    if not rendered:
+        return {}
+    try:
+        parsed = json.loads(rendered)
+    except json.JSONDecodeError:
+        parsed = dict(
+            item.split("=", 1)
+            for item in rendered.split(",")
+            if "=" in item
+        )
+    if not isinstance(parsed, dict):
+        return {}
+    aliases = {
+        "chat": "chat_completions",
+        "chat/completions": "chat_completions",
+        "openai": "chat_completions",
+        "anthropic": "messages",
+        "response": "responses",
+    }
+    supported = {"chat_completions", "messages", "responses"}
+    result: dict[str, str] = {}
+    for model, protocol in parsed.items():
+        name = str(model).strip().removeprefix("api:")
+        normalized = str(protocol).strip().lower().replace("-", "_")
+        normalized = aliases.get(normalized, normalized)
+        if name and normalized in supported:
+            result[name] = normalized
+    return result
+
+
 def _enabled(value: str) -> bool:
     return value.strip().lower() in ("1", "true", "yes", "on")
 
@@ -300,6 +334,10 @@ def _apply_dotenv(
     if env.get("THIRD_PARTY_API_DISABLED_MODELS"):
         api_config["disabled_models"] = _split_models(
             env["THIRD_PARTY_API_DISABLED_MODELS"]
+        )
+    if env.get("THIRD_PARTY_API_MODEL_PROTOCOLS"):
+        api_config["model_protocols"] = _model_protocols(
+            env["THIRD_PARTY_API_MODEL_PROTOCOLS"]
         )
     if env.get("OLLAMA_DISABLED_MODELS"):
         target_config["ollama_disabled_models"] = _split_models(
@@ -353,6 +391,7 @@ def _apply_dotenv(
         "BATCH_API_FAST_MODEL": "api_fast_model",
         "BATCH_API_QUALITY_MODEL": "api_quality_model",
         "BATCH_API_SENSITIVE_MODEL": "api_sensitive_model",
+        "BATCH_API_SENSITIVE_FALLBACK_MODEL": "api_sensitive_fallback_model",
         "BATCH_PROTOCOL": "protocol",
     }
     for env_name, key in bool_values.items():

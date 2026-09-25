@@ -4,6 +4,8 @@ import ast
 from pathlib import Path
 import tempfile
 
+import pytest
+
 
 def test_application_layer_uses_translation_facades_not_translator_internals():
     root = Path(__file__).resolve().parents[1]
@@ -2985,6 +2987,165 @@ def test_opencode_go_messages_model_uses_anthropic_endpoint(monkeypatch):
     monkeypatch.setattr(api_client.requests, "post", fake_post)
     try:
         assert api_client.translate_once("qwen3.7-plus", "テスト", system_prompt="Translate", options={"num_predict": 12}) == "译文"
+    finally:
+        config.DEFAULT_CONFIG["third_party_api"] = old_cfg
+
+
+@pytest.mark.parametrize("model", ["gpt-5.6-luna", "grok-4.6"])
+def test_opencode_go_responses_models_use_responses_endpoint(monkeypatch, model):
+    import config
+    from translator import api_client
+
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "output": [{
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "译文"}],
+                }],
+                "usage": {"input_tokens": 5, "output_tokens": 2},
+            }
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append((url, headers, json, timeout))
+        return FakeResponse()
+
+    old_cfg = dict(config.DEFAULT_CONFIG.get("third_party_api", {}))
+    config.DEFAULT_CONFIG["third_party_api"] = {
+        "base_url": "https://opencode.ai/zen/go/v1/chat/completions",
+        "api_key_env": "THIRD_PARTY_API_KEY",
+        "api_key": "test-key",
+        "style": "opencode_go",
+        "models": [],
+    }
+    monkeypatch.delenv("THIRD_PARTY_API_BASE_URL", raising=False)
+    monkeypatch.delenv("THIRD_PARTY_API_KEY", raising=False)
+    monkeypatch.setattr(api_client.requests, "post", fake_post)
+    monkeypatch.setattr(api_client, "_persist_model_protocol", lambda *args: None)
+    try:
+        assert api_client.translate_once(
+            model, "テスト", system_prompt="Translate", options={"num_predict": 12}
+        ) == "译文"
+        url, headers, payload, timeout = calls[0]
+        assert url == "https://opencode.ai/zen/go/v1/responses"
+        assert headers["Authorization"] == "Bearer test-key"
+        assert headers["x-opencode-session"]
+        assert payload == {
+            "model": model,
+            "input": "テスト",
+            "instructions": "Translate",
+            "max_output_tokens": 12,
+            "reasoning": {"effort": "none"},
+        }
+        assert timeout == (10, 60)
+    finally:
+        config.DEFAULT_CONFIG["third_party_api"] = old_cfg
+
+
+def test_opencode_go_model_protocol_override_wins_over_builtin_mapping(monkeypatch):
+    from translator import api_client
+
+    monkeypatch.delenv("THIRD_PARTY_API_STYLE", raising=False)
+    cfg = {
+        "style": "opencode_go",
+        "model_protocols": {"gpt-5.6-luna": "messages"},
+    }
+
+    assert api_client.model_protocol(cfg, "gpt-5.6-luna") == "messages"
+    assert api_client.model_protocol({"style": "opencode_go"}, "grok-4.6") == "responses"
+    assert api_client.model_protocol({"style": "opencode_go"}, "unknown-model") == "chat_completions"
+
+
+def test_opencode_go_probes_protocol_only_for_explicit_format_mismatch(monkeypatch):
+    import config
+    from translator import api_client
+
+    attempted = []
+    persisted = []
+
+    class ProtocolMismatch(RuntimeError):
+        response_body = '{"error":{"message":"model not supported for format"}}'
+
+    def fake_translate(protocol, *args, **kwargs):
+        attempted.append(protocol)
+        if protocol != "responses":
+            raise ProtocolMismatch("unsupported API format")
+        return "译文"
+
+    old_cfg = dict(config.DEFAULT_CONFIG.get("third_party_api", {}))
+    config.DEFAULT_CONFIG["third_party_api"] = {
+        "base_url": "https://provider.invalid/v1",
+        "api_key": "test-key",
+        "style": "opencode_go",
+        "models": [],
+    }
+    monkeypatch.delenv("THIRD_PARTY_API_BASE_URL", raising=False)
+    monkeypatch.delenv("THIRD_PARTY_API_KEY", raising=False)
+    monkeypatch.setattr(api_client, "_stored_thinking_mode", lambda model: "")
+    monkeypatch.setattr(api_client, "_translate_with_protocol", fake_translate)
+    monkeypatch.setattr(api_client, "_persist_model_protocol", lambda model, protocol: persisted.append(protocol))
+    try:
+        assert api_client.translate_once("unknown-model", "テスト") == "译文"
+        assert attempted == ["chat_completions", "messages", "responses"]
+        assert persisted == ["responses"]
+    finally:
+        config.DEFAULT_CONFIG["third_party_api"] = old_cfg
+
+
+def test_opencode_go_retries_once_then_enables_low_thinking(monkeypatch):
+    import config
+    from translator import api_client
+
+    class FakeResponse:
+        status_code = 400
+        text = '{"error":"thinking required"}'
+        headers = {}
+
+        def raise_for_status(self):
+            raise requests.HTTPError("HTTP 400", response=self)
+
+        def json(self):
+            return {"choices": [{"message": {"content": "译文"}}]}
+
+    calls = []
+    successful = type("SuccessfulResponse", (), {
+        "raise_for_status": lambda self: None,
+        "json": lambda self: {"choices": [{"message": {"content": "译文"}}]},
+    })
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(json)
+        if len(calls) < 3:
+            return FakeResponse()
+        return successful()
+
+    old_cfg = dict(config.DEFAULT_CONFIG.get("third_party_api", {}))
+    config.DEFAULT_CONFIG["third_party_api"] = {
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "api_key_env": "THIRD_PARTY_API_KEY",
+        "api_key": "test-key",
+        "style": "opencode_go",
+        "models": [],
+    }
+    monkeypatch.delenv("THIRD_PARTY_API_BASE_URL", raising=False)
+    monkeypatch.delenv("THIRD_PARTY_API_KEY", raising=False)
+    monkeypatch.setattr(api_client.requests, "post", fake_post)
+    persisted = []
+    monkeypatch.setattr(api_client, "_persist_thinking_mode", lambda model, mode: persisted.append((model, mode)))
+    try:
+        assert api_client.translate_once("kimi-k2.7-code", "テスト") == "译文"
+        assert len(calls) == 3
+        assert calls[0]["reasoning_effort"] == "none"
+        assert calls[1]["reasoning_effort"] == "none"
+        assert calls[2]["reasoning_effort"] == "low"
+        assert "minimum necessary reasoning" in calls[2]["messages"][0]["content"]
+        assert "Return only the requested translation" in calls[2]["messages"][0]["content"]
+        assert persisted == [("kimi-k2.7-code", "low")]
     finally:
         config.DEFAULT_CONFIG["third_party_api"] = old_cfg
 
