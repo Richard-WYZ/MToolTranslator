@@ -110,6 +110,8 @@ def review_filter_matches(columns: list[dict], filter_name: str) -> bool:
     filter_name = filter_name or "all"
     if filter_name == "all":
         return bool(columns)
+    if filter_name == "translated":
+        return any(col.get("status") == "translated" for col in columns)
 
     def issue_types(col: dict) -> set[str]:
         return {str(item.get("type", "")) for item in col.get("violations", []) if isinstance(item, dict)}
@@ -196,6 +198,7 @@ def _review_signature(file_path: str) -> tuple[Any, ...]:
         _file_stamp(file_path),
         _file_stamp(translated_path(file_path)),
         _file_stamp(checkpoint.get_checkpoint_path(file_path)),
+        _file_stamp(checkpoint.get_checkpoint_journal_path(file_path)),
         _file_stamp(checkpoint.get_glossary_path(file_path)),
         _file_stamp(ai_review_store_path(file_path)),
     )
@@ -238,7 +241,7 @@ def _build_review_context(file_path: str, signature: tuple[Any, ...]) -> dict:
     translated_texts: list[str] = []
     columns_by_row: list[list[dict]] = []
     filter_names = (
-        "all", "issues", "required", "advisory", "preserved", "violated", "pending",
+        "all", "translated", "issues", "required", "advisory", "preserved", "violated", "pending",
         "refusal", "term", "english", "symbol", "length",
         "ai_reclassified", "ai_fixed", "ai_confirmed", "ai_unresolved", "ai_conflict", "ai_pending",
     )

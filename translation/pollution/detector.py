@@ -37,6 +37,7 @@ COMMON_SOURCE_TERMS = {
 }
 
 COMMON_CN_TITLES = {
+    "\u4e3b\u4eba",
     "\u5973\u795e",
     "\u795e\u5b50",
     "\u5fa1\u5b50",

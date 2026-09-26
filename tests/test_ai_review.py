@@ -122,6 +122,28 @@ def test_ai_review_batches_and_confirms_existing_translations(tmp_path, isolated
     assert session["work"]["verifier_complete"] is True
 
 
+def test_ai_review_only_reports_success_after_final_artifact_audit(tmp_path, isolated_checkpoint_dir):
+    source_path = tmp_path / "review.json"
+    output_path = default_output_path(str(source_path))
+    write_json_items([("こんにちは", "こんにちは"), ("ララメ", "ララメ")], str(source_path))
+    write_json_items([("こんにちは", "你好"), ("ララメ", "拉梅")], output_path)
+    checkpoint.save_progress_many(str(source_path), [
+        {"row": 0, "col": 0, "original": "こんにちは", "translated": "你好", "status": "review_required"},
+        {"row": 1, "col": 0, "original": "ララメ", "translated": "拉梅", "status": "review_required"},
+    ])
+    records = [
+        {"row": 0, "source": "こんにちは", "before": "你好", "after": "你好", "result": "confirmed", "final_status": "translated", "remaining_issues": []},
+        {"row": 1, "source": "ララメ", "before": "拉梅", "after": "拉拉梅", "result": "fixed", "final_status": "translated", "remaining_issues": []},
+    ]
+    models = AIReviewModels("api:review", "api:verify", "api:adult", "api:adult-verify")
+    apply_ai_review_records(task_id="mixed", file_path=str(source_path), output_path=output_path, records=records, models=models)
+    entries = checkpoint.load_checkpoint(str(source_path))["entries"]
+    assert records[0]["result"] == "confirmed"
+    assert entries["0_0"]["status"] == "translated"
+    assert records[1]["result"] == "unresolved"
+    assert entries["1_0"]["status"] == "review_required"
+
+
 def test_ai_review_auto_retry_only_reprocesses_unresolved_rows(tmp_path, isolated_checkpoint_dir):
     source_path, output_path, items = _write_source_and_output(tmp_path, 2)
     primary_payloads: list[list[int]] = []

@@ -175,6 +175,21 @@ def test_review_separates_required_advisory_and_system_preserved(
     assert matching_review_rows(context, "advisory") == [1]
     assert matching_review_rows(context, "preserved") == [0]
     assert matching_review_rows(context, "issues") == [1, 2]
+    assert matching_review_rows(context, "translated") == []
     assert context["stats"]["required_review"] == 1
     assert context["stats"]["advisory_review"] == 1
     assert context["stats"]["system_preserved"] == 1
+
+
+def test_review_cache_tracks_checkpoint_journal_during_translation(tmp_path, isolated_checkpoint_dir):
+    source_path = tmp_path / "live.json"
+    write_json_items([("こんにちは", "こんにちは")], str(source_path))
+    first = load_review_context(str(source_path))
+    checkpoint.save_progress_many(str(source_path), [{
+        "row": 0, "col": 0, "original": "こんにちは", "translated": "你好", "status": "translated",
+    }])
+    second = load_review_context(str(source_path))
+    assert second is not first
+    assert matching_review_rows(second, "translated") == [0]
+    assert second["stats"]["confirmed_translation"] == 1
+    assert _task(str(source_path)).get_progress()["workspace_revision"] != "0:0:0"

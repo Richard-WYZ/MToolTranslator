@@ -33,6 +33,7 @@ RECOMPUTED_FINAL_ISSUE_TYPES = {
     "model_refusal",
     "numeric_preservation",
     "resource_identifier_preservation",
+    "runtime_token_preservation",
     "short_label_expansion",
     "suspicious_artifact",
     "symbol_preservation",

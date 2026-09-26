@@ -239,6 +239,7 @@ async function pollProgress(generation) {
         state.pollingFailures = 0;
         state.taskStatus = progress.status;
         renderProgress(progress);
+        refreshVisibleWorkspaceDuringTranslation(progress);
         if (["completed", "cancelled", "error"].includes(progress.status)) {
             stopPolling();
             state.hasUnexportedResult = Boolean(progress.snapshot_ready);
@@ -395,4 +396,30 @@ function resetTaskDisplay() {
     updateTaskStatus("idle");
     updatePhases("analysis");
     updateActionStates();
+}
+
+async function refreshVisibleWorkspaceDuringTranslation(progress) {
+    if (!["review", "glossary"].includes(state.page) || !activeFilePath()) return;
+    var key = activeFilePath() + ":" + progress.workspace_revision + ":" + progress.status + ":" + state.page;
+    if (state.workspaceRefreshBusy || key === state.workspaceRefreshKey) return;
+    if (Date.now() - state.workspaceRefreshAt < 5000) return;
+    state.workspaceRefreshBusy = true;
+    state.workspaceRefreshAt = Date.now();
+    try {
+        if (state.page === "review") {
+            var stats = await API.get("/review/stats?file_path=" + encodeURIComponent(activeFilePath()));
+            state.review.stats = stats;
+            renderReviewStats(stats);
+            var selected = state.review.items.find(function (item) { return item.row === state.review.selectedRow; });
+            var editorDirty = selected && el("editor-target").value !== String(reviewColumn(selected).translated || "");
+            if (!editorDirty && !reviewActionIsBusy()) await loadReviewList(state.review.offset);
+        } else {
+            await loadGlossary();
+        }
+        state.workspaceRefreshKey = key;
+    } catch (error) {
+        // The next progress update retries; keep the current page usable.
+    } finally {
+        state.workspaceRefreshBusy = false;
+    }
 }

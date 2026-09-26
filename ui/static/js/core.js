@@ -69,6 +69,9 @@ var state = {
     pollingTimer: null,
     pollingGeneration: 0,
     pollingFailures: 0,
+    workspaceRefreshAt: 0,
+    workspaceRefreshKey: "",
+    workspaceRefreshBusy: false,
     hasUnexportedResult: false,
     exportReady: false,
     history: {

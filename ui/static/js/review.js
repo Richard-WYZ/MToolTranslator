@@ -92,6 +92,7 @@ function renderReviewStats(stats) {
     el("review-count-advisory").textContent = Number(stats.advisory_review || 0).toLocaleString("zh-CN");
     el("review-count-preserved").textContent = Number(stats.system_preserved || 0).toLocaleString("zh-CN");
     el("review-count-actionable").textContent = Number(stats.needs_review || 0).toLocaleString("zh-CN");
+    el("review-count-translated").textContent = Number(stats.confirmed_translation || 0).toLocaleString("zh-CN");
     el("nav-review-count").hidden = !stats.required_review;
     el("nav-review-count").textContent = stats.required_review || 0;
 }

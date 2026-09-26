@@ -96,6 +96,16 @@ def is_runtime_angle_fragment(value: str) -> bool:
     )
 
 
+def is_runtime_angle_block(value: str) -> bool:
+    """A multiline block of plugin tags is opaque even if one tag has no colon."""
+    lines = [line.strip() for line in str(value or "").splitlines() if line.strip()]
+    return bool(
+        len(lines) > 1
+        and all(ANGLE_FRAGMENT_RE.fullmatch(line) for line in lines)
+        and any(is_runtime_angle_fragment(line) for line in lines)
+    )
+
+
 def protect_runtime_tokens(text: str) -> tuple[str, list[ProtectedToken]]:
     if not text:
         return text, []

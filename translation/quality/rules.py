@@ -309,6 +309,10 @@ def exact_japanese_menu_translation(text: str) -> str:
 def exact_nonlinguistic_translation(text: str) -> str:
     if not text:
         return ""
+    from translation.protection.runtime import is_runtime_angle_block
+
+    if is_runtime_angle_block(text):
+        return text
     if (
         NUMERIC_ONLY_RE.fullmatch(text)
         or CODE_LIKE_RE.fullmatch(text)
@@ -537,6 +541,23 @@ def translation_issues(original: str, translated: str, short_label: bool = False
     issues: list[dict[str, str]] = []
     original = original or ""
     translated = translated or ""
+    from translation.protection.runtime import ANGLE_FRAGMENT_RE, is_runtime_angle_fragment
+
+    source_runtime_tags = Counter(
+        match.group(0)
+        for match in ANGLE_FRAGMENT_RE.finditer(original)
+        if is_runtime_angle_fragment(match.group(0))
+    )
+    target_runtime_tags = Counter(
+        match.group(0)
+        for match in ANGLE_FRAGMENT_RE.finditer(translated)
+        if is_runtime_angle_fragment(match.group(0))
+    )
+    if source_runtime_tags != target_runtime_tags:
+        issues.append({
+            "type": "runtime_token_preservation",
+            "message": "Runtime angle tags differ from the source.",
+        })
     if not translated.strip():
         issues.append({"type": "empty_translation", "message": "Translated text is empty."})
         return issues
@@ -580,7 +601,11 @@ def translation_issues(original: str, translated: str, short_label: bool = False
             "message": "Translation contains no lexical content for a linguistic source.",
         })
 
-    if has_japanese(translated, original=original) and not exact_nonlinguistic_translation(translated):
+    linguistic_target = ANGLE_FRAGMENT_RE.sub(
+        lambda match: "" if source_runtime_tags[match.group(0)] else match.group(0),
+        translated,
+    )
+    if has_japanese(linguistic_target, original=original) and not exact_nonlinguistic_translation(translated):
         issues.append({
             "type": "untranslated_japanese",
             "message": "Japanese kana remain in the translated text.",

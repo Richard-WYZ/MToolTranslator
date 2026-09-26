@@ -4605,3 +4605,29 @@ def test_frozen_glossary_does_not_change_later_json_batch_prompts(monkeypatch):
             config.DEFAULT_CONFIG["batch_translation"]["json_batch_size"] = old_batch_size
             config.DEFAULT_CONFIG["batch_translation"]["max_batch_chars"] = old_batch_chars
             config.DEFAULT_CONFIG["batch_translation"]["api_parallel_enabled"] = old_parallel
+def test_runtime_angle_blocks_and_embedded_tags_are_preserved_without_false_japanese_residue():
+    from translation.quality import exact_nonlinguistic_translation, translation_issues
+    from translation.review.ai import _validate_translation
+
+    tags = "<ステート追加: 162>\n<CC確率加算:100>"
+    assert exact_nonlinguistic_translation(tags) == tags
+    assert _validate_translation(tags, tags, [], short_label=False) == []
+    mixed_tags = "<道具封印スイッチ>\n<反撃拡張:ツインエッジ>"
+    assert exact_nonlinguistic_translation(mixed_tags) == mixed_tags
+    source = "毒ガスを蓄えた魔物\n<反撃拡張:破裂カウンター>"
+    translated = "储存毒气的魔物\n<反撃拡張:破裂カウンター>"
+    assert not any(issue["type"] == "untranslated_japanese" for issue in translation_issues(source, translated))
+    assert not any(issue["type"] == "untranslated_japanese" for issue in _validate_translation(source, translated, [], short_label=False))
+    broken = "储存毒气的魔物\n<反撃拡張:破裂计数器>"
+    assert any(issue["type"] == "runtime_token_preservation" for issue in translation_issues(source, broken))
+
+
+def test_generic_master_title_does_not_trigger_unsupported_glossary_name():
+    from translation.pollution import translation_pollution_issues
+
+    issues = translation_pollution_issues(
+        "ご主人さま、だ～いすき♥",
+        "主人大人，最——喜欢了♥",
+        glossary_mappings=[{"source": "ミカリン", "target": "主人", "type": "person"}],
+    )
+    assert not any(issue["type"] == "unsupported_glossary_name" for issue in issues)

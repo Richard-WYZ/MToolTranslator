@@ -1,13 +1,16 @@
 "use strict";
 
 async function loadGlossary() {
+    var path = activeFilePath();
     if (!activeFilePath()) {
         el("glossary-empty-file").hidden = false;
         el("glossary-workspace").hidden = true;
         return;
     }
     try {
-        state.glossary.payload = await API.get("/glossary/dynamic?file_path=" + encodeURIComponent(activeFilePath()));
+        var payload = await API.get("/glossary/dynamic?file_path=" + encodeURIComponent(path));
+        if (path !== activeFilePath()) return;
+        state.glossary.payload = payload;
         el("glossary-empty-file").hidden = true;
         el("glossary-workspace").hidden = false;
         el("glossary-file-label").textContent = state.fileName || activeFilePath();
