@@ -3099,6 +3099,38 @@ def test_opencode_go_probes_protocol_only_for_explicit_format_mismatch(monkeypat
         config.DEFAULT_CONFIG["third_party_api"] = old_cfg
 
 
+def test_opencode_go_retries_model_protocol_unsupported_response(monkeypatch):
+    from translation.models import api_client
+
+    attempted = []
+    persisted = []
+
+    class ProtocolUnsupported(RuntimeError):
+        response_body = (
+            '{"type":"error","error":{"type":"ModelProtocolUnsupported",'
+            '"message":"Model does not support this protocol."}}'
+        )
+        status_code = 400
+
+    def fake_translate(protocol, *args, **kwargs):
+        attempted.append(protocol)
+        if protocol == "messages":
+            raise ProtocolUnsupported("400 Bad Request")
+        return "译文"
+
+    monkeypatch.setattr(api_client, "_api_config", lambda: {
+        "base_url": "https://provider.invalid/v1", "api_key": "test-key", "style": "opencode_go",
+    })
+    monkeypatch.setattr(api_client, "model_protocol", lambda cfg, model: "messages")
+    monkeypatch.setattr(api_client, "_stored_thinking_mode", lambda model: "")
+    monkeypatch.setattr(api_client, "_translate_with_protocol", fake_translate)
+    monkeypatch.setattr(api_client, "_persist_model_protocol", lambda model, protocol: persisted.append(protocol))
+
+    assert api_client.translate_once("glm-5.2", "テスト") == "译文"
+    assert attempted == ["messages", "chat_completions"]
+    assert persisted == ["chat_completions"]
+
+
 def test_opencode_go_switches_protocol_for_unavailable_endpoint(monkeypatch):
     import config
     from translator import api_client
@@ -3403,6 +3435,16 @@ def test_quality_rules_block_corrupt_replacement_characters_and_repeated_short_f
     assert "short_fragment_repetition" in {issue["type"] for issue in invented}
     assert "short_fragment_repetition" in NON_WAIVABLE_ISSUE_TYPES
     assert status_for_output("れぢゅ", "要、要去了", invented) == "review_required"
+
+    for source, target in (
+        ("ララタ", "拉拉塔"),
+        ("ゆらゆら", "摇摇晃晃"),
+        ("ぽかぽか", "暖洋洋"),
+        ("あああ", "啊啊啊"),
+    ):
+        assert "short_fragment_repetition" not in {
+            issue["type"] for issue in translation_issues(source, target)
+        }
 
 
 def test_pollution_validator_accepts_honorific_names_supported_by_source():
@@ -4667,4 +4709,29 @@ def test_generic_person_role_target_cannot_be_auto_confirmed_as_a_name():
     }
     assert not glossary._should_auto_confirm("ヌシ", "主人", evidence)
     evidence["targets"] = {"米吉": 5}
+    assert not glossary._should_auto_confirm("ミジ", "米吉", evidence)
+    evidence["evidence"].append("preflight_verified_person")
     assert glossary._should_auto_confirm("ミジ", "米吉", evidence)
+
+
+def test_frequent_common_words_cannot_be_confirmed_as_people_from_layout_alone():
+    from translation.terminology import Glossary
+
+    glossary = Glossary.in_memory()
+    for source, target, count in (("使用", "使用", 17), ("シーン", "场景", 346)):
+        evidence = {
+            "type": "person",
+            "count": count,
+            "score": 0.85,
+            "targets": {target: 3},
+            "evidence": ["person_like", "speaker_position", "standalone_line", "whole_file_preseed"],
+        }
+        assert not glossary._should_auto_confirm(source, target, evidence)
+        glossary.terms[source] = target
+        glossary.candidates[source] = evidence
+    assert glossary.prune_invalid_terms() == 2
+    assert not glossary.terms
+    assert not glossary.is_identified_person_name("使用")
+    assert not glossary.is_identified_person_name("使用する")
+    assert not any("使用" in source for source, _target, _owner, _type in glossary.iter_mappings())
+    assert glossary.find_hits("戦闘中に使用すると敗北する。") == []

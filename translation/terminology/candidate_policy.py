@@ -5,7 +5,7 @@ from collections import Counter
 from typing import Any
 
 
-CANDIDATE_POLICY_VERSION = "term-candidates-v6-verified-names-and-honorifics"
+CANDIDATE_POLICY_VERSION = "term-candidates-v7-frequent-names-require-preflight"
 JP_RE = re.compile("[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]+")
 KANJI_RE = re.compile("[\u3400-\u4dbf\u4e00-\u9fff]")
 KATAKANA_NAME_RE = re.compile("[\u30a1-\u30fa\u30fc]{2,20}")
@@ -78,6 +78,10 @@ def has_enough_confirmed_evidence(source: str, info: dict[str, Any]) -> bool:
     if {"preflight_verified_person", "manual_confirmed"} & set((info or {}).get("evidence", []) or []):
         return True
     term_type = str((info or {}).get("type") or "proper_noun")
+    # A frequent word has enough context for the independent name preflight.
+    # Speaker-like formatting alone can also describe ordinary UI actions.
+    if term_type == "person" and int((info or {}).get("count", 0) or 0) >= 5:
+        return False
     if term_type in ("place", "item", "skill", "organization", "title"):
         return True
     if KATAKANA_TITLE_NAME_RE.fullmatch(source) or KATAKANA_COMPOUND_NAME_RE.fullmatch(source):

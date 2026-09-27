@@ -125,15 +125,15 @@ def test_ai_review_batches_and_confirms_existing_translations(tmp_path, isolated
 def test_ai_review_only_reports_success_after_final_artifact_audit(tmp_path, isolated_checkpoint_dir):
     source_path = tmp_path / "review.json"
     output_path = default_output_path(str(source_path))
-    write_json_items([("こんにちは", "こんにちは"), ("ララメ", "ララメ")], str(source_path))
-    write_json_items([("こんにちは", "你好"), ("ララメ", "拉梅")], output_path)
+    write_json_items([("こんにちは", "こんにちは"), ("カメラ", "カメラ")], str(source_path))
+    write_json_items([("こんにちは", "你好"), ("カメラ", "相机")], output_path)
     checkpoint.save_progress_many(str(source_path), [
         {"row": 0, "col": 0, "original": "こんにちは", "translated": "你好", "status": "review_required"},
-        {"row": 1, "col": 0, "original": "ララメ", "translated": "拉梅", "status": "review_required"},
+        {"row": 1, "col": 0, "original": "カメラ", "translated": "相机", "status": "review_required"},
     ])
     records = [
         {"row": 0, "source": "こんにちは", "before": "你好", "after": "你好", "result": "confirmed", "final_status": "translated", "remaining_issues": []},
-        {"row": 1, "source": "ララメ", "before": "拉梅", "after": "拉拉梅", "result": "fixed", "final_status": "translated", "remaining_issues": []},
+        {"row": 1, "source": "カメラ", "before": "相机", "after": "啦啦啦", "result": "fixed", "final_status": "translated", "remaining_issues": []},
     ]
     models = AIReviewModels("api:review", "api:verify", "api:adult", "api:adult-verify")
     apply_ai_review_records(task_id="mixed", file_path=str(source_path), output_path=output_path, records=records, models=models)

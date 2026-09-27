@@ -271,6 +271,8 @@ def _is_explicit_protocol_mismatch(exc: Exception) -> bool:
         "not supported for format",
         "unsupported api format",
         "unsupported protocol",
+        "modelprotocolunsupported",
+        "does not support this protocol",
         "unsupported endpoint",
         "endpoint is unavailable",
         "endpoint unavailable",

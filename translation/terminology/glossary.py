@@ -486,6 +486,8 @@ class Glossary:
         if not stripped or re.search("[\u3040-\u30ff]", stripped):
             return False
         info = self.candidates.get(stripped, {}) or {}
+        if info.get("status") == "rejected":
+            return False
         evidence = {str(item) for item in info.get("evidence", []) or []}
         return str(info.get("type") or "") == "person" and bool(
             {"speaker_position", "standalone_line"} <= evidence
@@ -505,6 +507,8 @@ class Glossary:
             source = stripped[:-suffix_length]
             info = self.candidates.get(source, {}) or {}
             if not isinstance(info, dict) or str(info.get("type") or "") != "person":
+                continue
+            if info.get("status") == "rejected":
                 continue
             proposed_target = str(info.get("target") or "").strip()
             if proposed_target and not self._source_target_compatible(source, proposed_target, "person"):
