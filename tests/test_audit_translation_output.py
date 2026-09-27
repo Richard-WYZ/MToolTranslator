@@ -186,3 +186,37 @@ def test_final_artifact_audit_replaces_stale_output_issues_without_metadata(monk
     assert report["items"] == []
     assert entry["status"] == "translated"
     assert entry["issues"] == [{"type": "api_request_fallback", "message": "diagnostic"}]
+
+
+def test_final_artifact_audit_clears_stale_glossary_name_alarm(monkeypatch, tmp_path):
+    import translation.checkpoint as checkpoint
+    from translation.review import write_review_report
+    from translation.terminology import Glossary
+
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", str(tmp_path / "checkpoints"))
+    source_path = tmp_path / "source.json"
+    output_path = tmp_path / "source.translated.json"
+    source = "ご主人さま……！"
+    translated = "主人大人……！"
+    source_path.write_text(json.dumps({source: source}, ensure_ascii=False), encoding="utf-8")
+    output_path.write_text(json.dumps({source: translated}, ensure_ascii=False), encoding="utf-8")
+    checkpoint.init_checkpoint(str(source_path), total=1)
+    glossary = Glossary(file_path=checkpoint.get_glossary_path(str(source_path)))
+    glossary.add("ヌシ", "主人", term_type="person")
+    glossary.save()
+    checkpoint.save_progress(
+        str(source_path), 0, 0, source, translated, status="review_required",
+        issues=[{
+            "type": "unsupported_glossary_name",
+            "message": "Target contains confirmed term '主人', but source does not contain 'ヌシちゃん'.",
+        }],
+        json_key=source,
+    )
+
+    report = json.loads(open(write_review_report(str(source_path), str(output_path)), encoding="utf-8").read())
+    entry = checkpoint.load_checkpoint(str(source_path))["entries"]["0_0"]
+
+    assert report["items"] == []
+    assert report["summary"]["review_required"] == 0
+    assert entry["status"] == "translated"
+    assert entry["issues"] == []

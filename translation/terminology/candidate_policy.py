@@ -50,6 +50,10 @@ BAD_TARGETS = {
     "\u4f60", "\u6211", "\u4ed6", "\u5979",
     "\u8fd9\u4e2a", "\u90a3\u4e2a", "\u90a3\u91cc", "\u8fd9\u91cc",
 }
+GENERIC_PERSON_ROLE_TARGETS = {
+    "主人", "头目", "首领", "霸主", "老板", "老师", "骑士", "公主", "王子",
+    "国王", "女王", "士兵", "学者", "神子", "圣女",
+}
 BAD_TARGET_SUBSTRINGS = (
     "\u6211\u8981",
     "\u4f60\u8981",

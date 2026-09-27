@@ -8,6 +8,7 @@ from typing import Any
 from translation.pollution import glossary_term_pollution_issues
 from translation.terminology.candidate_policy import (
     KATAKANA_NAME_RE,
+    GENERIC_PERSON_ROLE_TARGETS,
     build_aliases,
     classify_term,
     extract_terms,
@@ -549,6 +550,8 @@ class Glossary:
         count = int(info.get("count", 0))
         score = float(info.get("score", 0.0))
         term_type = str(info.get("type") or "proper_noun")
+        if term_type == "person" and target in GENERIC_PERSON_ROLE_TARGETS:
+            return False
         target_counts = {
             str(candidate): int(count)
             for candidate, count in (info.get("targets", {}) or {}).items()

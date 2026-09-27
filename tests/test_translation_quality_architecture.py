@@ -4631,3 +4631,38 @@ def test_generic_master_title_does_not_trigger_unsupported_glossary_name():
         glossary_mappings=[{"source": "ミカリン", "target": "主人", "type": "person"}],
     )
     assert not any(issue["type"] == "unsupported_glossary_name" for issue in issues)
+
+
+def test_unsupported_glossary_name_reports_one_issue_per_confirmed_target():
+    from translation.pollution import translation_pollution_issues
+
+    mappings = [
+        {"source": "ミジちゃん", "target": "米吉", "owner": "ミジ", "type": "person"},
+        {"source": "ミジさん", "target": "米吉", "owner": "ミジ", "type": "person"},
+        {"source": "ミジ", "target": "米吉", "owner": "ミジ", "type": "person"},
+    ]
+    issues = translation_pollution_issues("やった！", "米吉大人！", glossary_mappings=mappings)
+
+    assert [issue["message"] for issue in issues if issue["type"] == "unsupported_glossary_name"] == [
+        "Target contains confirmed term '米吉', but source does not contain 'ミジ'.",
+    ]
+    assert not any(
+        issue["type"] == "unsupported_glossary_name"
+        for issue in translation_pollution_issues("ミジさん、やった！", "米吉大人，成功了！", glossary_mappings=mappings)
+    )
+
+
+def test_generic_person_role_target_cannot_be_auto_confirmed_as_a_name():
+    from translation.terminology import Glossary
+
+    glossary = Glossary.in_memory()
+    evidence = {
+        "type": "person",
+        "count": 55,
+        "score": 0.85,
+        "targets": {"主人": 5},
+        "evidence": ["katakana_name", "person_like", "speaker_position", "standalone_line"],
+    }
+    assert not glossary._should_auto_confirm("ヌシ", "主人", evidence)
+    evidence["targets"] = {"米吉": 5}
+    assert glossary._should_auto_confirm("ミジ", "米吉", evidence)

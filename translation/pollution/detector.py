@@ -111,20 +111,25 @@ def translation_pollution_issues(
     if not source.strip() or not translated.strip():
         return issues
 
+    checked_targets: set[str] = set()
     for mapping in glossary_mappings or []:
         src = str(mapping.get("source") or "")
         tgt = str(mapping.get("target") or "")
         typ = str(mapping.get("type") or "")
-        if not src or not tgt or tgt not in translated or src in source:
-            continue
         if (
-            typ in ("person", "place", "organization", "title")
-            and _target_used_as_honorific_name(tgt, translated)
+            not src or not tgt or typ not in ("person", "place", "organization", "title")
+            or tgt in checked_targets or tgt not in translated
+        ):
+            continue
+        checked_targets.add(tgt)
+        if (
+            _target_used_as_honorific_name(tgt, translated)
             and not _source_contains_mapping_for_target(source, tgt, glossary_mappings or [])
         ):
+            owner = str(mapping.get("owner") or src)
             issues.append({
                 "type": "unsupported_glossary_name",
-                "message": f"Target contains confirmed term {tgt!r}, but source does not contain {src!r}.",
+                "message": f"Target contains confirmed term {tgt!r}, but source does not contain {owner!r}.",
             })
 
     honorific_names = _target_honorific_names(translated)
