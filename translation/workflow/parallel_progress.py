@@ -65,7 +65,7 @@ def finalize_parallel_run(
         collection_records.clear()
         checkpoint.save_progress_many(file_path, result_records)
         result_records.clear()
-        finalize_glossary_evidence(pipeline, file_path, deferred_confirmed_terms)
+        finalize_glossary_evidence(pipeline, file_path, deferred_confirmed_terms, translated_items)
         processed_targets = finalize_mtool_compositions(
             pipeline, file_path=file_path, translated_items=translated_items,
             processed_targets=processed_targets, total_targets=total_targets,

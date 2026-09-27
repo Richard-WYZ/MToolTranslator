@@ -35,6 +35,7 @@ from translation.protection import (
 from translation.quality import QUALITY_RULES_VERSION, quality_prompt_rules
 from translation.quality.retry import RETRY_POLICY_VERSION
 from translation.terminology.candidate_policy import CANDIDATE_POLICY_VERSION
+from translation.terminology.name_preflight import NAME_PREFLIGHT_VERSION, run_name_preflight
 from translation.workflow.glossary_finalize import finalize_glossary_evidence
 
 
@@ -59,11 +60,28 @@ def translate_json_workflow(
         if mtool
         else sum(1 for key, value in items if pipeline._json_source_text(key, value, mtool).strip())
     )
+    batch_cfg = pipeline._batch_translation_config()
     if mtool and not pipeline._uses_custom_translate_cell():
         sources = [pipeline._json_source_text(key, value, mtool) for key, value in items]
-        if pipeline.glossary.preseed_from_sources(sources):
+        seeded = pipeline.glossary.preseed_from_sources(sources)
+        confirmed_names = []
+        if batch_cfg.get("name_preflight_enabled", True):
+            verifier_model = next((
+                str(model) for model in (
+                    batch_cfg.get("api_fast_model"),
+                    batch_cfg.get("api_quality_model"),
+                )
+                if model and str(model) != pipeline.model
+            ), "")
+            confirmed_names = run_name_preflight(
+                sources=sources,
+                glossary=pipeline.glossary,
+                primary_model=pipeline.model,
+                verifier_model=verifier_model,
+                call_model=pipeline._batch_translate_call,
+            )
+        if seeded or confirmed_names:
             pipeline.glossary.save()
-    batch_cfg = pipeline._batch_translation_config()
     freeze_glossary = bool(
         batch_cfg.get("glossary_freeze_during_translation", True)
     )
@@ -129,6 +147,7 @@ def translate_json_workflow(
         "retry_policy_version": RETRY_POLICY_VERSION,
         "classification_version": CLASSIFICATION_VERSION,
         "candidate_policy_version": CANDIDATE_POLICY_VERSION,
+        "name_preflight_version": NAME_PREFLIGHT_VERSION,
         "sensitivity_classifier_version": SENSITIVITY_CLASSIFIER_VERSION,
         "protected_restoration_version": PROTECTED_RESTORATION_VERSION,
         "symbol_protection_version": SYMBOL_PROTECTION_VERSION,
@@ -324,7 +343,7 @@ def translate_json_workflow(
         try:
             if freeze_glossary:
                 pipeline.glossary.thaw()
-            finalize_glossary_evidence(pipeline, file_path, {})
+            finalize_glossary_evidence(pipeline, file_path, {}, translated_items)
             checkpoint.set_glossary_version(file_path, pipeline.glossary.version(), update_entries=True)
             pipeline._update_token_usage(file_path)
         finally:

@@ -30,6 +30,12 @@ def restore_protected_translation(
     symbol_issues.extend(validate_runtime_tokens(restored, runtime_tokens, protected_text))
     restored = restore_runtime_tokens(restored, runtime_tokens)
     restored = strip_foreign_runtime_placeholders(restored, original_text)
+    missing_term_tokens = [token for token, _src, _tgt in term_tokens if restored.count(token) != 1]
+    if missing_term_tokens:
+        symbol_issues.append({
+            "type": "runtime_token_preservation",
+            "message": "Confirmed term placeholders must each occur exactly once: " + ", ".join(missing_term_tokens),
+        })
     # Glossary placeholders are protected again as runtime tokens. Restore
     # __KEEP_* to __PERSON_*/__TERM_* before resolving the glossary target.
     restored = glossary.restore_terms(restored, term_tokens)

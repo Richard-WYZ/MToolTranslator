@@ -88,9 +88,12 @@ def create_router(
             g = Glossary(file_path=checkpoint.get_glossary_path(req.file_path))
             old_target = g.terms.get(term, "")
             aliases = list((g.candidates.get(term, {}) or {}).get("targets", {}).keys())
+            term_type = str((g.candidates.get(req.source, {}) or {}).get("type") or "proper_noun")
+            if not g._passes_term_review(req.source, req.target, term_type):
+                raise HTTPException(status_code=422, detail="The proposed terminology mapping failed validation")
             if term != req.source:
                 g.remove(term)
-            g.add(req.source, req.target)
+            g.add(req.source, req.target, term_type, manual=True)
             g.save()
             sync_task_glossary(tasks, req.file_path, g)
             changed = apply_term_edit_to_outputs(
@@ -101,6 +104,7 @@ def create_router(
                 req.target,
                 tasks=tasks,
                 aliases=aliases,
+                defer_repair=was_running,
             )
             return {"ok": True, "terms": g.terms, "candidates": g.candidates, "updated_cells": changed}
         finally:
@@ -126,7 +130,7 @@ def create_router(
         try:
             g = Glossary(file_path=checkpoint.get_glossary_path(req.file_path))
             aliases = list((g.candidates.get(req.source, {}) or {}).get("targets", {}).keys())
-            if not g.promote(req.source, req.target):
+            if not g.promote(req.source, req.target, manual=True):
                 raise HTTPException(status_code=404, detail="Candidate term not found")
             g.save()
             sync_task_glossary(tasks, req.file_path, g)
@@ -138,6 +142,7 @@ def create_router(
                 req.target,
                 tasks=tasks,
                 aliases=aliases,
+                defer_repair=was_running,
             )
             return {"ok": True, "terms": g.terms, "candidates": g.candidates, "updated_cells": changed}
         finally:

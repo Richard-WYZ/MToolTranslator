@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any, TYPE_CHECKING
 
+import translation.checkpoint as checkpoint
+from translation.workflow.glossary_repair import repair_pending_glossary_entries
+
 if TYPE_CHECKING:
     from translation.workflow.pipeline import TranslationPipeline
 
@@ -10,6 +13,7 @@ def finalize_glossary_evidence(
     pipeline: TranslationPipeline,
     file_path: str,
     deferred_confirmed_terms: dict[tuple[str, str], dict[str, Any]],
+    translated_items: list[tuple[Any, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Confirm eligible candidates and apply mappings after translation workers stop."""
     glossary = pipeline.glossary
@@ -31,6 +35,11 @@ def finalize_glossary_evidence(
     confirmed = list(merged.values())
     if confirmed:
         pipeline._apply_confirmed_terms_to_outputs(file_path, confirmed)
+    if translated_items is not None:
+        checkpoint.set_glossary_version(file_path, glossary.version())
+        # UI confirmation can create pending rows during an active run, even
+        # when this finalization pass confirms no additional candidates.
+        repair_pending_glossary_entries(pipeline, file_path, translated_items)
     glossary.save()
     return confirmed
 

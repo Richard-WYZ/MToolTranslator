@@ -86,7 +86,7 @@ async function editGlossaryTerm(source) {
         var result = await API.put("/glossary/dynamic/" + encodeURIComponent(source), {
             file_path: activeFilePath(), source: source, target: target.trim(),
         });
-        toast("术语已更新；同步影响 " + Number(result.updated_cells || 0) + " 个译文", "success");
+        toast("术语已更新；检查了 " + Number(result.updated_cells || 0) + " 个受影响译文，未修复项会保留复核标记", "success");
         await loadGlossary();
         await refreshReviewCount();
     } catch (error) { toast(error.message, "error"); }
@@ -100,7 +100,7 @@ async function promoteGlossaryTerm(source) {
         var result = await API.post("/glossary/promote", {
             file_path: activeFilePath(), source: source, target: target.trim(),
         });
-        toast("术语已确认；同步影响 " + Number(result.updated_cells || 0) + " 个译文", "success");
+        toast("术语已确认；检查了 " + Number(result.updated_cells || 0) + " 个受影响译文，未修复项会保留复核标记", "success");
         await loadGlossary();
         await refreshReviewCount();
     } catch (error) { toast(error.message, "error"); }

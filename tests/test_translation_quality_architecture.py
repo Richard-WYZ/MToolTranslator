@@ -2661,7 +2661,7 @@ def test_term_alias_contract_is_shared_by_terminology_and_pipeline():
 
     assert apply_term_aliases("触手姦", "触手奸", confirmed) == "触手奸"
     assert TranslationPipeline._apply_term_aliases("触手姦", "触手奸", confirmed) == "触手奸"
-    assert apply_term_aliases("触手姦", "触手姦を使う", confirmed) == "触手奸を使う"
+    assert apply_term_aliases("触手姦", "触手姦を使う", confirmed) == "触手姦を使う"
     assert apply_term_aliases("別の語", "触手姦", confirmed) == "触手姦"
 
 
@@ -2683,7 +2683,7 @@ def test_translation_terminology_owns_glossary_implementation(tmp_path):
     assert glossary.find_hits("\u30d5\u30a3\u30fc\u30cd\u306f\u6765\u305f")[0]["target"] == "\u83f2\u59ae"
 
 
-def test_confirmed_term_backfill_updates_checkpoint_and_output(tmp_path):
+def test_confirmed_term_backfill_marks_sentence_for_source_aware_repair(tmp_path):
     import translation.checkpoint as checkpoint
     import translator.checkpoint as legacy_checkpoint
     from translation.terminology import backfill_confirmed_terms_to_outputs
@@ -2714,11 +2714,12 @@ def test_confirmed_term_backfill_updates_checkpoint_and_output(tmp_path):
 
         entry = checkpoint.get_entry(file_path, 2, 0)
         assert changed == 1
-        assert entry["translated"] == "菲妮来了"
-        assert entry["output_translation"] == "菲妮来了"
-        assert entry["status"] == "translated"
-        assert entry["issues"] == []
-        assert updates == [(2, 0, "菲妮来了")]
+        assert entry["translated"] == "菲内来了"
+        assert entry["output_translation"] == "菲内来了"
+        assert entry["status"] == "translated_needs_review"
+        assert entry["glossary_pending_sources"] == ["フィーネ"]
+        assert any(issue["type"] == "glossary_update_pending" for issue in entry["issues"])
+        assert updates == []
     finally:
         checkpoint.CHECKPOINT_DIR = old_dir
         legacy_checkpoint.CHECKPOINT_DIR = old_legacy_dir
@@ -2730,12 +2731,13 @@ def test_pipeline_confirmed_term_backfill_delegates_to_terminology(monkeypatch):
 
     calls = []
 
-    def fake_backfill(file_path, confirmed_terms, *, update_output_cell=None, glossary_mappings=None):
+    def fake_backfill(file_path, confirmed_terms, *, update_output_cell=None, glossary_mappings=None, glossary_version=None):
         calls.append({
             "file_path": file_path,
             "confirmed_terms": confirmed_terms,
             "update_output_cell": update_output_cell,
             "glossary_mappings": glossary_mappings,
+            "glossary_version": glossary_version,
         })
         return 0
 

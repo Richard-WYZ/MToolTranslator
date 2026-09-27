@@ -18,6 +18,7 @@ HARD_REVIEW_ISSUE_TYPES = {
     "unsupported_proper_name",
     "replacement_character_corruption",
     "short_fragment_repetition",
+    "duplicated_clause",
 }
 
 OPERATIONAL_DIAGNOSTIC_ISSUE_TYPES = {

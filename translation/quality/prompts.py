@@ -8,6 +8,7 @@ def quality_prompt_rules() -> str:
         "Do not replace pronouns or deictic words with guessed names or places; translate them faithfully. "
         "Render Japanese honorifics contextually in Chinese; do not silently discard them or apply a fixed global mapping. "
         "Preserve identified kanji proper names exactly unless a confirmed term explicitly overrides them. "
+        "For katakana character names, use a Chinese phonetic name rather than translating a possible ordinary-word meaning. "
         "The final output should be Chinese. Do not leave ordinary English words in the translation. "
         "Omit or localize Japanese small っ/ッ; never copy them into otherwise Chinese output. "
         "When adjacent hiragana and katakana are merely alternate-script repetitions of the same reading, "

@@ -6,9 +6,9 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from translation.quality import apply_source_conditioned_fixes
+from translation.quality import apply_source_conditioned_fixes, translation_issues, status_for_output
 
-COMPOSITION_VERSION = "mtool-line-dependencies-v6-final-normalization"
+COMPOSITION_VERSION = "mtool-line-dependencies-v7-complete-sentences"
 _LINE_BREAK_RE = re.compile(r"(\r\n|\r|\n)")
 _LAYOUT_WHITESPACE = " \t\u3000"
 
@@ -121,6 +121,15 @@ def build_mtool_composition_plan(
     pending_contexts: dict[int, list[CompositionContext]] = {}
     for parent_index, source in enumerate(sources):
         if not _has_line_break(source):
+            continue
+        # A Japanese sentence split across display lines cannot be translated
+        # independently and stitched back into grammatical Chinese. Translate
+        # that parent as one model item instead of deriving it from leaf lines.
+        source_lines = _LINE_BREAK_RE.split(source)[::2]
+        if any(
+            _requires_joint_translation(left, right)
+            for left, right in zip(source_lines, source_lines[1:])
+        ):
             continue
         pieces: list[CompositionPiece] = []
         dependency_indexes: list[int] = []
@@ -301,6 +310,13 @@ def apply_mtool_compositions(
         else:
             status = "preserved" if translated == entry.source else "translated"
 
+        issues.extend(
+            issue for issue in translation_issues(entry.source, translated)
+            if issue.get("type") == "duplicated_clause"
+        )
+        if issues:
+            status = status_for_output(entry.source, translated, issues)
+
         key, _value = translated_items[parent_index]
         translated_items[parent_index] = (key, translated)
         dependency_fingerprint = _dependency_fingerprint(dependencies)
@@ -341,6 +357,24 @@ def apply_mtool_compositions(
 
 def _has_line_break(text: str) -> bool:
     return "\n" in text or "\r" in text
+
+
+def _requires_joint_translation(left: str, right: str) -> bool:
+    preceding = left.strip(_LAYOUT_WHITESPACE)
+    following = right.strip(_LAYOUT_WHITESPACE)
+    if not preceding or not following:
+        return False
+    if re.search(r"[。！？!?」』♥♪…―ー]$", preceding):
+        return False
+    if preceding in {"こんにちは", "こんばんは"}:
+        return False
+    # A display line ending in a Japanese inflection/particle, or followed by
+    # one, is usually an unfinished clause. Standalone noun labels such as
+    # 赤い花 / 青い空 can still share a deterministic multiline parent.
+    return bool(
+        re.search(r"[\u3040-\u309f、，,]$", preceding)
+        or re.match(r"(?:を|が|は|に|へ|と|で|も|の|から|まで|より)", following)
+    )
 
 
 def _strip_layout(text: str) -> str:

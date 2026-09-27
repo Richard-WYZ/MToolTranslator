@@ -122,7 +122,7 @@ def translate_json_batched_workflow(
             idx = next_idx
     finally:
         try:
-            finalize_glossary_evidence(pipeline, file_path, deferred_confirmed_terms)
+            finalize_glossary_evidence(pipeline, file_path, deferred_confirmed_terms, translated_items)
             processed_targets = finalize_mtool_compositions(
                 pipeline,
                 file_path=file_path,

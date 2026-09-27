@@ -63,56 +63,95 @@ def apply_term_edit_to_outputs(
     *,
     tasks: MutableMapping[str, TranslationTask],
     aliases: list[str] | None = None,
+    defer_repair: bool = False,
 ) -> int:
-    if not new_tgt:
+    if not new_src or not new_tgt:
         return 0
     from translation import checkpoint
+    from translation.terminology import Glossary
+    from translation.terminology.backfill import backfill_confirmed_terms_to_outputs
 
-    cp = checkpoint.load_checkpoint(file_path)
-    changed = 0
-    affected: set[tuple[int, int]] = set()
-    for key, entry in cp.get("entries", {}).items():
-        if old_src and old_src not in entry.get("original", ""):
-            continue
-        translated = entry.get("translated", "")
-        updated = translated
-        replacements = set(aliases or [])
-        if old_tgt:
-            replacements.add(old_tgt)
-        for alias in sorted((r for r in replacements if r and r != new_tgt), key=len, reverse=True):
-            updated = updated.replace(alias, new_tgt)
-        if old_src and old_src in updated:
-            updated = updated.replace(old_src, new_tgt)
-        if updated != translated:
-            entry["translated"] = updated
-            entry["issues"] = []
-            affected.add((int(entry.get("row", 0)), int(entry.get("col", 0))))
-            changed += 1
-    if changed:
-        checkpoint.save_checkpoint(file_path, cp)
-
-    trans_path = translated_path(file_path)
-    if not os.path.isfile(trans_path):
-        return changed
     require_mtool_json_file(file_path)
+    glossary = Glossary(file_path=checkpoint.get_glossary_path(file_path))
+    if glossary.terms.get(new_src) != new_tgt:
+        raise ValueError("The confirmed glossary target changed before backfill")
+    trans_path = translated_path(file_path)
     from translation.input import load_json_items
     from translation.output import write_json_items
+    items = load_json_items(trans_path) if os.path.isfile(trans_path) else None
+    changed_rows: set[int] = set()
 
-    items = load_json_items(trans_path)
-    for row, _ in affected:
-        if row < len(items) and isinstance(items[row][1], str):
-            updated = items[row][1]
-            replacements = set(aliases or [])
-            if old_tgt:
-                replacements.add(old_tgt)
-            for alias in sorted((r for r in replacements if r and r != new_tgt), key=len, reverse=True):
-                updated = updated.replace(alias, new_tgt)
-            if old_src:
-                updated = updated.replace(old_src, new_tgt)
-            items[row] = (items[row][0], updated)
-            sync_task_output_cell(tasks, file_path, row, 0, items[row][1])
-    write_json_items(items, trans_path)
-    return changed
+    def update_cell(row: int, col: int, value: str) -> bool:
+        if items is None or col != 0 or row < 0 or row >= len(items):
+            return False
+        items[row] = (items[row][0], value)
+        changed_rows.add(row)
+        sync_task_output_cell(tasks, file_path, row, col, value)
+        return True
+
+    term = {
+        "source": new_src,
+        "target": new_tgt,
+        "aliases": list(dict.fromkeys([old_tgt, *(aliases or [])])),
+    }
+    affected = backfill_confirmed_terms_to_outputs(
+        file_path, [term], update_output_cell=update_cell,
+        glossary_mappings=[
+            {"source": source, "target": target}
+            for source, target, _owner, _type in glossary.iter_mappings()
+        ],
+        glossary_version=glossary.version(),
+    )
+    if affected:
+        checkpoint.set_glossary_version(file_path, glossary.version())
+    if items is not None and not defer_repair and affected:
+        from translation.workflow.glossary_repair import repair_pending_glossary_entries
+        from translation.workflow.pipeline import TranslationPipeline
+
+        task = get_task_for_file(tasks, file_path)
+        cp = checkpoint.load_checkpoint(file_path)
+        pipeline = TranslationPipeline(
+            model=(task.model if task else cp.get("model")) or None,
+            glossary=glossary,
+            prompt_style=(task.prompt_style if task else cp.get("prompt_style")) or "professional",
+            batch_config_override=task.batch_config_override if task else None,
+        )
+        repair_pending_glossary_entries(
+            pipeline, file_path, items, update_output_cell=update_cell,
+        )
+        _recompose_affected_parents(file_path, items, changed_rows)
+    if items is not None and changed_rows:
+        write_json_items(items, trans_path)
+    return affected
+
+
+def _recompose_affected_parents(
+    file_path: str,
+    items: list[tuple[object, object]],
+    changed_rows: set[int],
+) -> None:
+    if not changed_rows:
+        return
+    from translation.analysis import apply_mtool_compositions, build_mtool_composition_plan
+    from translation.checkpoint import load_progress, save_progress_many
+
+    plan = build_mtool_composition_plan(items)
+    plan.entries = {
+        row: entry for row, entry in plan.entries.items()
+        if changed_rows.intersection(entry.dependency_indexes)
+    }
+    if not plan.entries:
+        return
+    records: list[dict] = []
+    apply_mtool_compositions(
+        plan, translated_items=items, checkpoint_entries=load_progress(file_path),
+        file_path=file_path, progress_records=records, processed_targets=0,
+        total_targets=0, progress_callback=None,
+        save_record=lambda _path, _records, **record: records.append(record),
+        mark_dirty=lambda: None, emit_progress=lambda *_args, **_kwargs: None,
+        progress_status=lambda status: status,
+    )
+    save_progress_many(file_path, records)
 
 
 __all__ = [

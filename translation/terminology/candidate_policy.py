@@ -5,7 +5,7 @@ from collections import Counter
 from typing import Any
 
 
-CANDIDATE_POLICY_VERSION = "term-candidates-v5-deferred-auto-confirm"
+CANDIDATE_POLICY_VERSION = "term-candidates-v6-verified-names-and-honorifics"
 JP_RE = re.compile("[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]+")
 KANJI_RE = re.compile("[\u3400-\u4dbf\u4e00-\u9fff]")
 KATAKANA_NAME_RE = re.compile("[\u30a1-\u30fa\u30fc]{2,20}")
@@ -75,6 +75,8 @@ PARTICLES = {
 
 
 def has_enough_confirmed_evidence(source: str, info: dict[str, Any]) -> bool:
+    if {"preflight_verified_person", "manual_confirmed"} & set((info or {}).get("evidence", []) or []):
+        return True
     term_type = str((info or {}).get("type") or "proper_noun")
     if term_type in ("place", "item", "skill", "organization", "title"):
         return True
@@ -320,27 +322,21 @@ def guess_target(term: str, translated: str, original: str = "", evidence: str =
 
 
 def build_aliases(source: str, target: str, term_type: str) -> dict[str, str]:
-    aliases: dict[str, str] = {}
-    base = strip_honorific(source)
-    if base != source:
-        aliases[source] = target
-        aliases[base] = target
+    # Honorifics have their own contextual meaning. Mapping サンちゃん to the
+    # bare target name erases it before the model has a chance to translate it.
+    # Short surname/given-name guesses are also unsafe without entity evidence.
     if term_type == "person":
-        for suffix in HONORIFICS:
-            aliases[f"{base}{suffix}"] = target
-        if 3 <= len(base) <= 5 and len(KANJI_RE.findall(base)) >= 2 and len(target) >= 2:
-            if len(base) == 3:
-                source_parts = [base[:1], base[1:]]
-                target_parts = [target[:1], target[1:]]
-            else:
-                source_parts = [base[:2], base[2:]]
-                target_parts = [target[:2], target[2:]]
-            for source_part, target_part in zip(source_parts, target_parts):
-                if source_part and target_part:
-                    aliases[source_part] = target_part
-                    for suffix in HONORIFICS:
-                        aliases[f"{source_part}{suffix}"] = target_part
-    return aliases
+        if (
+            len(source) == len(target) == 4
+            and source[:2] == target[:2]
+            and len(KANJI_RE.findall(source)) == 4
+            and len(KANJI_RE.findall(target)) == 4
+            and source[2:] != target[2:]
+        ):
+            return {source[2:]: target[2:]}
+        return {}
+    base = strip_honorific(source)
+    return {base: target} if base != source else {}
 
 
 __all__ = [

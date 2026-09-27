@@ -15,7 +15,7 @@ from translation.protection.runtime import (
 )
 
 
-QUALITY_RULES_VERSION = "quality-rules-v16-corruption-and-fragment-guards"
+QUALITY_RULES_VERSION = "quality-rules-v18-multiline-tag-prefix"
 FIXED_TRANSLATIONS: dict[str, str] = {
     "continue": "继续",
     "new game": "新游戏",
@@ -454,6 +454,8 @@ def apply_source_conditioned_fixes(source: str, translated: str) -> str:
     result = normalize_small_tsu_residue(translated)
     if not source:
         return result
+    from translation.protection.runtime import restore_open_tag_prefixes
+    result = restore_open_tag_prefixes(source, result)
     for label in ("すべて", "なし"):
         source_label = f"<{label}>"
         if source_label in source:
@@ -541,7 +543,7 @@ def translation_issues(original: str, translated: str, short_label: bool = False
     issues: list[dict[str, str]] = []
     original = original or ""
     translated = translated or ""
-    from translation.protection.runtime import ANGLE_FRAGMENT_RE, is_runtime_angle_fragment
+    from translation.protection.runtime import ANGLE_FRAGMENT_RE, MULTILINE_TAG_PREFIX_RE, is_runtime_angle_fragment
 
     source_runtime_tags = Counter(
         match.group(0)
@@ -558,6 +560,11 @@ def translation_issues(original: str, translated: str, short_label: bool = False
             "type": "runtime_token_preservation",
             "message": "Runtime angle tags differ from the source.",
         })
+    if Counter(MULTILINE_TAG_PREFIX_RE.findall(original)) != Counter(MULTILINE_TAG_PREFIX_RE.findall(translated)):
+        issues.append({
+            "type": "runtime_token_preservation",
+            "message": "A multiline runtime tag prefix differs from the source.",
+        })
     if not translated.strip():
         issues.append({"type": "empty_translation", "message": "Translated text is empty."})
         return issues
@@ -569,6 +576,17 @@ def translation_issues(original: str, translated: str, short_label: bool = False
         })
 
     compact_target = re.sub(r"[\s，,。.!！?？、；;：:]", "", translated)
+    compact_source = re.sub(r"[\s，,。.!！?？、；;：:]", "", original)
+    if (
+        len(compact_target) >= 10
+        and len(compact_target) <= 500
+        and re.search(r"([\u3400-\u9fff]{5,})\1", compact_target)
+        and not re.search(r"([\u3040-\u30ff\u3400-\u9fff]{4,})\1", compact_source)
+    ):
+        issues.append({
+            "type": "duplicated_clause",
+            "message": "A Chinese clause is repeated without a matching repetition in the Japanese source.",
+        })
     if (
         re.fullmatch(r"[\u3040-\u30ffー]{1,4}", original.strip())
         and re.search(r"([\u3400-\u9fff])\1", compact_target)
