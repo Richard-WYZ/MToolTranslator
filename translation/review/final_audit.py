@@ -23,6 +23,7 @@ RECOMPUTED_FINAL_ISSUE_TYPES = {
     "empty_translation",
     "english_residue",
     "glossary_pollution",
+    "glossary_update_pending",
     "glossary_proper_name_pollution",
     "honorific_rendering_review",
     "identical_japanese_source",
@@ -99,6 +100,10 @@ def reconcile_final_artifact(
             if isinstance(issue, dict)
             and str(issue.get("type", "")) not in (
                 previous_artifact_issue_types | RECOMPUTED_FINAL_ISSUE_TYPES
+            )
+            and not (
+                issue.get("type") == "uncertain_person_name"
+                and str(issue.get("message", "")).rsplit(":", 1)[-1].strip() in glossary.terms
             )
         ]
         explicitly_preserved = (

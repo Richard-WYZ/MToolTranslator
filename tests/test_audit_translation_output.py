@@ -220,3 +220,34 @@ def test_final_artifact_audit_clears_stale_glossary_name_alarm(monkeypatch, tmp_
     assert report["summary"]["review_required"] == 0
     assert entry["status"] == "translated"
     assert entry["issues"] == []
+
+
+def test_final_artifact_audit_clears_name_uncertainty_after_term_confirmation(monkeypatch, tmp_path):
+    import translation.checkpoint as checkpoint
+    from translation.review import write_review_report
+    from translation.terminology import Glossary
+
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", str(tmp_path / "checkpoints"))
+    source_path = tmp_path / "source.json"
+    output_path = tmp_path / "source.translated.json"
+    source = "レイスレスを倒す。"
+    translated = "打倒无魂者。"
+    source_path.write_text(json.dumps({source: source}, ensure_ascii=False), encoding="utf-8")
+    output_path.write_text(json.dumps({source: translated}, ensure_ascii=False), encoding="utf-8")
+    checkpoint.init_checkpoint(str(source_path), total=1)
+    glossary = Glossary(file_path=checkpoint.get_glossary_path(str(source_path)))
+    glossary.add("レイスレス", "无魂者", term_type="proper_noun", manual=True)
+    glossary.save()
+    checkpoint.save_progress(
+        str(source_path), 0, 0, source, translated, status="translated_needs_review",
+        issues=[
+            {"type": "uncertain_person_name", "message": "A character-name transliteration needs confirmation: レイスレス"},
+            {"type": "glossary_update_pending", "message": "Old term version"},
+        ], json_key=source,
+    )
+
+    report = json.loads(open(write_review_report(str(source_path), str(output_path)), encoding="utf-8").read())
+    entry = checkpoint.load_checkpoint(str(source_path))["entries"]["0_0"]
+    assert report["items"] == []
+    assert entry["status"] == "translated"
+    assert entry["issues"] == []
