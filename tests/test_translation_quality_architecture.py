@@ -3441,6 +3441,11 @@ def test_quality_rules_block_corrupt_replacement_characters_and_repeated_short_f
         ("ゆらゆら", "摇摇晃晃"),
         ("ぽかぽか", "暖洋洋"),
         ("あああ", "啊啊啊"),
+        ("スンスン", "嗅嗅"),
+        ("ウヒヒ", "呜嘿嘿"),
+        ("クンクン", "嗅嗅"),
+        ("チンピラ", "小混混"),
+        ("ちゃんと", "好好地"),
     ):
         assert "short_fragment_repetition" not in {
             issue["type"] for issue in translation_issues(source, target)

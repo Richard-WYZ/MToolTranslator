@@ -133,7 +133,7 @@ def test_ai_review_only_reports_success_after_final_artifact_audit(tmp_path, iso
     ])
     records = [
         {"row": 0, "source": "こんにちは", "before": "你好", "after": "你好", "result": "confirmed", "final_status": "translated", "remaining_issues": []},
-        {"row": 1, "source": "カメラ", "before": "相机", "after": "啦啦啦", "result": "fixed", "final_status": "translated", "remaining_issues": []},
+        {"row": 1, "source": "カメラ", "before": "相机", "after": "相机__KEEP__", "result": "fixed", "final_status": "translated", "remaining_issues": []},
     ]
     models = AIReviewModels("api:review", "api:verify", "api:adult", "api:adult-verify")
     apply_ai_review_records(task_id="mixed", file_path=str(source_path), output_path=output_path, records=records, models=models)

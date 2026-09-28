@@ -589,7 +589,8 @@ def translation_issues(original: str, translated: str, short_label: bool = False
         })
     if (
         re.fullmatch(r"[\u3040-\u30ffー]{1,4}", original.strip())
-        and re.search(r"([\u3400-\u9fff])\1", compact_target)
+        and len(compact_target) >= 4
+        and re.search(r"([\u3400-\u9fff])[、，,…]+\1", translated)
         and not re.search(r"([\u3040-\u30ffー]{1,2})\1", original.strip())
     ):
         issues.append({
