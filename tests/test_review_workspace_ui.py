@@ -20,7 +20,7 @@ for (const [, id] of html.matchAll(/\bid="([^"]+)"/g)) {
         classList: {add() {}, remove() {}, toggle() {}}, setAttribute() {}, hasAttribute() { return false; },
         addEventListener() {}, closest() { return null; } };
 }
-const storage = new Map(), posts = [], gets = [];
+const storage = new Map(), posts = [], gets = [], windowListeners = {};
 let filePath = "fixture.json", failWrites = false, customPost = null, customGet = null;
 const backendItems = [
     {row: 0, columns: [{original: "原文甲", translated: "译文甲", status: "translated", manual_confirmed: false}], neighbors: []},
@@ -40,7 +40,7 @@ const context = {
     sessionStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) },
     setTimeout, clearTimeout, AbortController,
     navigate: page => {context.state.page = page;},
-    document: {addEventListener() {}}, window: {addEventListener() {}, confirm: () => true},
+    document: {addEventListener() {}}, window: {addEventListener: (name, handler) => {windowListeners[name] = handler;}, confirm: () => true},
     API: {
         get: async url => {
             gets.push(url);
@@ -201,4 +201,82 @@ assert.equal(request.query, "原文");
 nodes["editor-target"].value = "";
 assert.equal(await context.flushReviewDraft(), false, "An empty editor must remain a local draft");
 assert.equal(posts.length, 1);
+''')
+
+
+def test_native_pending_draft_cache_only_receives_boolean_changes():
+    run_ui(r'''
+const pendingStates = [];
+context.window.pywebview = {api: {set_pending_review_draft: pending => {
+    assert.equal(typeof pending, "boolean");
+    pendingStates.push(pending);
+    return Promise.resolve(pending);
+}}};
+context.initReviewWorkspace();
+assert.deepEqual(pendingStates, [false], "A clean initial workspace must initialize the native cache");
+await new Promise(resolve => setImmediate(resolve));
+seed();
+nodes["editor-target"].value = "本地草稿";
+context.captureReviewDraft();
+assert.deepEqual(pendingStates, [false, true], "Capture must immediately mark the native cache pending");
+context.captureReviewDraft();
+context.persistReviewDrafts();
+assert.deepEqual(pendingStates, [false, true], "Repeated edits with the same pending state must not push again");
+failWrites = true;
+assert.equal(await context.flushReviewDraft(), false);
+assert.deepEqual(pendingStates, [false, true], "A failed disk write must not clear native pending state");
+assert.ok(storage.get("lgt.reviewDrafts").includes("本地草稿"));
+failWrites = false;
+assert.equal(await context.flushReviewDraft(), true);
+assert.deepEqual(pendingStates, [false, true, false]);
+assert.equal(storage.get("lgt.reviewDrafts"), "[]");
+''')
+
+
+def test_native_bridge_ready_repushes_restored_drafts_without_discarding_them():
+    run_ui(r'''
+storage.set("lgt.reviewDrafts", JSON.stringify([{path: filePath, row: 0, text: "恢复草稿", original: "原文甲"}]));
+context.initReviewWorkspace();
+const pendingStates = [];
+context.window.pywebview = {api: {set_pending_review_draft: pending => {
+    pendingStates.push(pending);
+    return Promise.reject(new Error("bridge disconnected"));
+}}};
+windowListeners.pywebviewready();
+await new Promise(resolve => setImmediate(resolve));
+assert.deepEqual(pendingStates, [true]);
+assert.ok(storage.get("lgt.reviewDrafts").includes("恢复草稿"));
+seed();
+assert.equal(nodes["editor-target"].value, "恢复草稿", "A failed bridge push must retain the restored editor text");
+context.window.pywebview.api.set_pending_review_draft = pending => {pendingStates.push(pending); return Promise.resolve(pending);};
+windowListeners.pywebviewready();
+await new Promise(resolve => setImmediate(resolve));
+assert.deepEqual(pendingStates, [true, true], "Ready must retry the current state after bridge reconnection");
+assert.equal(await context.flushReviewDraft(), true);
+assert.deepEqual(pendingStates, [true, true, false]);
+''')
+
+
+def test_native_pending_pushes_are_serialized_when_disk_save_finishes_first():
+    run_ui(r'''
+const pendingStates = [];
+let finishPendingPush;
+context.window.pywebview = {api: {set_pending_review_draft: pending => {
+    pendingStates.push(pending);
+    return pending ? new Promise(resolve => {finishPendingPush = resolve;}) : Promise.resolve(pending);
+}}};
+context.initReviewWorkspace();
+await new Promise(resolve => setImmediate(resolve));
+seed();
+nodes["editor-target"].value = "很快保存的草稿";
+context.captureReviewDraft();
+assert.deepEqual(pendingStates, [false, true]);
+assert.equal(await context.flushReviewDraft(), true);
+assert.equal(storage.get("lgt.reviewDrafts"), "[]");
+assert.deepEqual(pendingStates, [false, true], "The clear push must wait for the earlier pending push");
+finishPendingPush(true);
+await new Promise(resolve => setImmediate(resolve));
+assert.deepEqual(pendingStates, [false, true, false], "The latest saved state must be delivered after the slow pending push");
+context.persistReviewDrafts();
+assert.deepEqual(pendingStates, [false, true, false]);
 ''')
