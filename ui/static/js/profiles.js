@@ -1,14 +1,43 @@
 "use strict";
 
-async function loadModels(showNotice) {
+var modelCatalogFlights = new Map();
+
+function modelCatalogContext() {
+    var settings = state.settings || {}, api = settings.api || {}, ollama = settings.ollama || {};
+    return JSON.stringify([settings.active_api_profile || "", settings.default_model || "", api.preset || "", api.base_url || "", api.style || "", api.models || [], api.disabled_models || [], api.model_protocols || {}, api.protocol_mode || "", api.model_endpoints || {}, api.disable_thinking, ollama.host || "", ollama.disabled_models || []]);
+}
+
+function loadModels(showNotice, options) {
+    options = options || {};
+    var local = Boolean(showNotice || options.discoverLocal);
+    var refresh = Boolean(showNotice || options.refresh);
+    var context = modelCatalogContext();
+    var key = context + (local ? ":local" : ":configured") + (refresh ? ":refresh" : "");
+    if (modelCatalogFlights.has(key)) return modelCatalogFlights.get(key);
+    var promise = fetchModelCatalog(context, local, refresh, showNotice).finally(function () {
+        if (modelCatalogFlights.get(key) === promise) modelCatalogFlights.delete(key);
+    });
+    modelCatalogFlights.set(key, promise);
+    return promise;
+}
+
+async function fetchModelCatalog(context, local, refresh, showNotice) {
     try {
-        var payload = await API.get("/models");
+        if (local && !(state.runtime && state.runtime.providers && state.runtime.providers.ollama && state.runtime.providers.ollama.configured)) {
+            el("local-profile-note").textContent = "正在检测本地模型…";
+        }
+        var payload = await API.get("/models" + (local ? "?discover_local=true&refresh=" + (refresh ? "true" : "false") : ""));
+        // A provider may have changed while an optional local probe was running.
+        if (context !== modelCatalogContext()) return loadModels(false);
         state.models = payload.models || [];
         state.runtime = payload.runtime || {};
+        state.modelDiscovery = payload.discovery || {};
         configureProfiles();
-        populateModelSelectors();
         renderProfile();
-        if (state.settings && !state.settingsDirty) renderSettings();
+        if (state.settings && !state.settingsDirty) {
+            initializeModelCatalog();
+            renderSettings();
+        }
         if (showNotice) toast("模型与提供方状态已刷新", "success");
     } catch (error) {
         toast(error.message, "error");
@@ -26,7 +55,12 @@ function configureProfiles() {
     var ollama = state.runtime && state.runtime.providers && state.runtime.providers.ollama;
     el("local-profile-note").textContent = ollama && ollama.configured
         ? ollama.model_count + " 个本地模型可用"
-        : "Ollama 未连接或没有模型";
+        : ollama && ollama.discovery_pending ? "正在检测本地模型…"
+        : ollama && ollama.discovery_checked === false ? "本地模型尚未检测"
+        : ollama && ollama.discovery_failed ? "Ollama 当前未连接"
+        : ollama && ollama.cached_model_count ? "本地目录需要刷新，上次发现 " + ollama.cached_model_count + " 个模型"
+        : ollama && ollama.discovery_checked ? "Ollama 已连接，尚未安装模型"
+        : "本地模型尚未检测";
 
     var saved = localStorage.getItem("lgt.executionProfile");
     var candidate = profiles.find(function (profile) { return profile.id === saved && profile.available; });

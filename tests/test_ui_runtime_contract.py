@@ -262,7 +262,8 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert 'id="btn-test-enabled-nsfw"' in html
     assert 'id="model-benchmark-panel"' in html
     assert 'id="btn-benchmark-start"' in html
-    assert '<option value="responses">OpenAI Responses</option>' in html
+    assert 'id="settings-api-style" type="hidden"' in html
+    assert '<select id="settings-api-style">' not in html
     assert 'id="settings-api-models"' not in html
     assert "/settings/connection-test" in script
     assert "/settings/models/discover" in script
@@ -271,16 +272,15 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert "api_key_action" in script
     assert "data-model-enabled" in script
     assert "data-test-model-nsfw" in script
-    assert "data-model-protocol" in script
-    assert "api_model_protocols" in script
+    assert "data-model-protocol=" not in script
+    assert "api_protocol_mode" in script
     assert "markSettingsDirty(false)" in script
     assert "availability-badge" in script
     assert "NSFW 可用" in script
     assert "NSFW 上次测试" in script
     assert "model_test_statuses" in script
     model_testing_script = (root / "ui" / "static" / "js" / "model-testing.js").read_text(encoding="utf-8")
-    assert 'protocol: item && item.protocol ? item.protocol : "auto"' in model_testing_script
-    assert "basic.protocol_attempts" in model_testing_script
+    assert 'protocol: "auto"' in model_testing_script
     assert 'id="ai-review-model"' in html
     assert 'id="ai-verifier-model"' in html
     assert 'id="ai-auto-retry"' in html
@@ -336,13 +336,14 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert "selectedRows.clear" not in filter_handler
     assert 'test_kind: testKind' in script
     assert "state.settingsConnectionDirty" in script
-    assert len(scripts) == 12
+    assert {path.name for path in scripts} >= {"main.js", "settings-autosave.js"}
+    assert all(f'/static/js/{path.name}' in html for path in scripts)
     assert {path.name for path in styles} >= {"base.css", "review-workspace.css", "simple-workflow.css"}
     assert all(f'/static/css/{path.name}' in html for path in styles)
     assert "/static/app.js" not in html
     assert "/static/style.css" not in html
     desktop_script = (root / "app" / "desktop.py").read_text(encoding="utf-8")
-    assert "create_confirmation_dialog" in desktop_script
+    assert "create_confirmation_dialog" not in desktop_script
     assert "window.evaluate_js" not in desktop_script
     assert "capture_dropped_files" in desktop_script
     assert "DOMEventHandler" in desktop_script

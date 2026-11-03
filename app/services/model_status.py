@@ -6,6 +6,7 @@ import os
 import tempfile
 import threading
 from datetime import datetime, timezone
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,8 @@ from translation.config import ollama_host, third_party_api_config
 
 
 _LOCK = threading.Lock()
+_READ_LOCK = threading.Lock()
+_READ_CACHE: dict[str, Any] = {}
 _VERSION = 1
 _PUBLIC_DIAGNOSTIC_KEYS = (
     "protocol",
@@ -32,10 +35,16 @@ def _empty_store() -> dict[str, Any]:
 def _read_store() -> dict[str, Any]:
     path = runtime_model_status_path()
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        stat = path.stat()
+        stamp = (str(path.resolve()), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        with _READ_LOCK:
+            if _READ_CACHE.get("stamp") == stamp:
+                return deepcopy(_READ_CACHE["payload"])
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or not isinstance(payload.get("models"), dict):
+                return _empty_store()
+            _READ_CACHE.update(stamp=stamp, payload=deepcopy(payload))
     except (OSError, ValueError, TypeError):
-        return _empty_store()
-    if not isinstance(payload, dict) or not isinstance(payload.get("models"), dict):
         return _empty_store()
     return payload
 
@@ -58,6 +67,8 @@ def _write_store(payload: dict[str, Any]) -> bool:
             stream.write("\n")
             temp_path = Path(stream.name)
         os.replace(temp_path, path)
+        with _READ_LOCK:
+            _READ_CACHE.clear()
         return True
     except OSError:
         if temp_path and temp_path.exists():
@@ -78,6 +89,8 @@ def _provider_context(provider: str) -> str:
             "profile_id": str(config.get("profile_id") or "legacy"),
             "disable_thinking": bool(config.get("disable_thinking", True)),
             "model_protocols": dict(config.get("model_protocols") or {}),
+            "protocol_mode": str(config.get("protocol_mode") or "legacy"),
+            "model_endpoints": dict(config.get("model_endpoints") or {}),
             "base_url": str(config.get("base_url") or ""),
             "secret_hash": secret_hash,
         }

@@ -253,6 +253,8 @@ windowListeners.pywebviewready();
 await new Promise(resolve => setImmediate(resolve));
 assert.deepEqual(pendingStates, [true, true], "Ready must retry the current state after bridge reconnection");
 assert.equal(await context.flushReviewDraft(), true);
+assert.equal(posts.length, 0, "A legacy restored draft must wait for explicit save or actual input");
+await context.saveReview("draft");
 assert.deepEqual(pendingStates, [true, true, false]);
 ''')
 
@@ -279,4 +281,147 @@ await new Promise(resolve => setImmediate(resolve));
 assert.deepEqual(pendingStates, [false, true, false], "The latest saved state must be delivered after the slow pending push");
 context.persistReviewDrafts();
 assert.deepEqual(pendingStates, [false, true, false]);
+''')
+
+
+def test_pagehide_keeps_recovery_text_without_triggering_a_leave_dialog():
+    run_ui(r'''
+const durable = new Map();
+context.localStorage = {getItem:key=>durable.get(key)||null,setItem:(key,value)=>durable.set(key,value)};
+context.initReviewWorkspace();
+seed();
+nodes["editor-target"].value = "退出前的未保存草稿";
+assert.equal(windowListeners.beforeunload, undefined);
+windowListeners.pagehide();
+assert.ok(durable.get("lgt.reviewDrafts").includes("退出前的未保存草稿"));
+assert.equal(posts.length, 0, "Retaining a recovery copy must not accept or apply it");
+storage.clear();
+context.reviewDrafts.clear();
+context.reviewDraftTouched.clear();
+context.initReviewWorkspace();
+seed();
+assert.equal(nodes["editor-target"].value,"退出前的未保存草稿");
+''')
+
+
+def test_native_recovery_is_loaded_before_pushing_and_does_not_auto_apply():
+    run_ui(r'''
+const nativeWrites = [];
+context.window.pywebview = {api:{
+    get_workspace_drafts:async kind=>{
+        assert.equal(kind,"review");
+        return [{path:filePath,row:0,text:"原生恢复草稿",original:"原文甲",base_text:"译文甲"}];
+    },
+    set_workspace_drafts:async(kind,drafts)=>{nativeWrites.push({kind,drafts});return {ok:true};},
+}};
+context.initReviewWorkspace();
+seed();
+await context.restoreReviewDraftStore();
+await new Promise(resolve=>setImmediate(resolve));
+assert.equal(nodes["editor-target"].value,"原生恢复草稿");
+assert.ok(nativeWrites.length);
+assert.equal(nativeWrites[0].drafts[0].text,"原生恢复草稿","An initial empty editor must not clear unread native drafts");
+assert.equal(posts.length,0);
+''')
+
+
+def test_delayed_recovery_does_not_resurrect_a_saved_draft_or_replace_new_input():
+    run_ui(r'''
+let restore;
+context.window.pywebview={api:{
+    get_workspace_drafts:()=>new Promise(resolve=>{restore=resolve;}),
+    set_workspace_drafts:async()=>({ok:true}),
+}};
+context.initReviewWorkspace();
+await new Promise(resolve=>setImmediate(resolve));
+seed();
+nodes["editor-target"].value="刚输入并保存的新草稿";
+context.captureReviewDraft();
+assert.equal(await context.flushReviewDraft(),true);
+assert.equal(posts[0].body.expected_original,"原文甲");
+restore([{path:filePath,row:0,text:"迟到的旧草稿",original:"原文甲",base_text:"译文甲"}]);
+await context.restoreReviewDraftStore();
+assert.equal(context.reviewDrafts.size,0);
+assert.equal(nodes["editor-target"].value,"刚输入并保存的新草稿");
+''')
+
+
+def test_old_native_draft_cannot_overwrite_a_newer_save_after_restart():
+    run_ui(r'''
+context.window.pywebview={api:{
+    get_workspace_drafts:async()=>[{path:filePath,row:0,text:"清除失败后残留的旧稿",original:"原文甲",base_text:"更早的译文"}],
+    set_workspace_drafts:async()=>{throw new Error("Native clear failed");},
+}};
+context.initReviewWorkspace();
+await context.restoreReviewDraftStore();
+seed();
+assert.equal(nodes["editor-target"].value,"译文甲","Recovery must not replace a newer saved translation");
+assert.equal(await context.flushReviewDraft(),true);
+assert.equal(posts.length,0,"A stale native copy must never be auto-applied on blur");
+''')
+
+
+@pytest.mark.parametrize("source", ["session", "local"])
+def test_legacy_browser_draft_remains_visible_but_never_overwrites_until_explicit_save(source):
+    run_ui(r'''
+const durable = new Map();
+context.localStorage = {getItem:key=>durable.get(key)||null,setItem:(key,value)=>durable.set(key,value)};
+backendItems[0].columns[0].translated = "较新的已保存译文";
+const legacy = [{path:filePath,row:0,text:"旧版未写回的人工作品",original:"原文甲"}];
+("__SOURCE__" === "session" ? storage : durable).set("lgt.reviewDrafts",JSON.stringify(legacy));
+context.initReviewWorkspace();
+seed();
+assert.equal(nodes["editor-target"].value,"旧版未写回的人工作品");
+assert.match(nodes["editor-save-note"].textContent,/旧版草稿尚未写回/);
+assert.equal(await context.flushReviewDraft(),true);
+assert.equal(posts.length,0,"Reading or blurring a legacy draft must not apply it");
+assert.equal(backendItems[0].columns[0].translated,"较新的已保存译文");
+assert.equal(context.reviewDrafts.get(context.reviewDraftKey(filePath,0)).base_text,undefined);
+assert.ok(storage.get("lgt.reviewDrafts").includes("旧版未写回的人工作品"));
+await context.saveReview("draft");
+assert.equal(posts.length,1,"One explicit save is sufficient without an extra confirmation");
+assert.equal(posts[0].body.action,"draft");
+assert.equal(posts[0].body.expected_original,"原文甲");
+assert.equal(posts[0].body.expected_translation,"较新的已保存译文");
+assert.equal(backendItems[0].columns[0].translated,"旧版未写回的人工作品");
+assert.equal(context.reviewDrafts.size,0);
+'''.replace("__SOURCE__", source))
+
+
+@pytest.mark.parametrize("source", ["session", "local"])
+def test_actual_input_after_legacy_restore_establishes_a_baseline_for_autosave(source):
+    run_ui(r'''
+const durable = new Map();
+context.localStorage = {getItem:key=>durable.get(key)||null,setItem:(key,value)=>durable.set(key,value)};
+backendItems[0].columns[0].translated = "当前已保存译文";
+("__SOURCE__" === "session" ? storage : durable).set("lgt.reviewDrafts",JSON.stringify([
+    {path:filePath,row:0,text:"旧版草稿",original:"原文甲"},
+]));
+context.initReviewWorkspace();
+seed();
+nodes["editor-target"].value = "实际继续编辑后的译文";
+context.scheduleReviewDraft();
+assert.equal(context.reviewDrafts.get(context.reviewDraftKey(filePath,0)).base_text,"当前已保存译文");
+assert.equal(await context.flushReviewDraft(),true);
+assert.equal(posts.length,1);
+assert.equal(posts[0].body.expected_translation,"当前已保存译文");
+assert.equal(posts[0].body.text,"实际继续编辑后的译文");
+assert.equal(backendItems[0].columns[0].manual_confirmed,false);
+assert.equal(context.reviewDrafts.size,0);
+'''.replace("__SOURCE__", source))
+
+
+def test_native_legacy_recovery_copy_is_retained_for_explicit_save():
+    run_ui(r'''
+context.window.pywebview={api:{
+    get_workspace_drafts:async()=>[{path:filePath,row:0,text:"旧格式本机恢复草稿",original:"原文甲"}],
+    set_workspace_drafts:async()=>({ok:true}),
+}};
+context.initReviewWorkspace();
+await context.restoreReviewDraftStore();
+seed();
+assert.equal(nodes["editor-target"].value,"旧格式本机恢复草稿");
+assert.equal(await context.flushReviewDraft(),true);
+assert.equal(posts.length,0);
+assert.equal(context.reviewDrafts.size,1);
 ''')

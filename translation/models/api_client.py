@@ -13,6 +13,7 @@ from translation.config import third_party_api_config
 import translation.usage as token_usage
 from translation.models.transport import connection_scope, request as transport_request
 from translation.models.providers import provider_preset
+from translation.models import protocols as protocol_selection
 
 
 OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
@@ -217,34 +218,10 @@ def _endpoint_for_model(cfg: dict[str, Any], model: str) -> str:
 
 
 def _normalize_protocol(value: Any) -> str:
-    rendered = str(value or "").strip().lower().replace("-", "_")
-    aliases = {
-        "chat": "chat_completions",
-        "chat/completions": "chat_completions",
-        "openai": "chat_completions",
-        "anthropic": "messages",
-        "response": "responses",
-    }
-    return aliases.get(rendered, rendered)
+    return protocol_selection.normalize_protocol(value)
 
 
-def model_protocol(cfg: dict[str, Any], model: str) -> str:
-    """Resolve one model's transport protocol without leaking policy above transport."""
-    style = _api_style(cfg)
-    model_id = _api_model_id(model)
-    overrides = cfg.get("model_protocols") or {}
-    if isinstance(overrides, dict):
-        override = _normalize_protocol(overrides.get(model_id))
-        if override in SUPPORTED_PROTOCOLS:
-            return override
-    try:
-        from app.services.model_status import model_protocol as stored_model_protocol
-
-        stored = _normalize_protocol(stored_model_protocol(f"api:{model_id}"))
-    except Exception:
-        stored = ""
-    if stored in SUPPORTED_PROTOCOLS:
-        return stored
+def _provider_protocol_hint(style: str, model_id: str) -> str:
     if style in ("anthropic", "messages"):
         return "messages"
     if style in ("response", "responses"):
@@ -254,8 +231,29 @@ def model_protocol(cfg: dict[str, Any], model: str) -> str:
             return "responses"
         if model_id in OPENCODE_GO_MESSAGES_MODELS:
             return "messages"
-        return "chat_completions"
     return "chat_completions"
+
+
+def model_protocol(cfg: dict[str, Any], model: str) -> str:
+    """Resolve a model's wire protocol from its current connection evidence."""
+    style = _api_style(cfg)
+    model_id = _api_model_id(model)
+    automatic = protocol_selection.automatic_protocols(cfg)
+    overrides = cfg.get("model_protocols") or {}
+    if not automatic and isinstance(overrides, dict):
+        override = _normalize_protocol(overrides.get(model_id))
+        if override in SUPPORTED_PROTOCOLS:
+            return override
+    try:
+        from app.services.model_status import model_protocol as stored_model_protocol
+
+        stored = _normalize_protocol(stored_model_protocol(f"api:{model_id}"))
+    except Exception:
+        stored = ""
+    hint = _provider_protocol_hint(style, model_id)
+    if automatic:
+        return protocol_selection.protocol_candidates(cfg, model_id, stored=stored, provider_hint=hint)[0]
+    return stored if stored in SUPPORTED_PROTOCOLS else hint
 
 
 def _persist_model_protocol(model: str, protocol: str) -> None:
@@ -268,58 +266,26 @@ def _persist_model_protocol(model: str, protocol: str) -> None:
 
 
 def _is_explicit_protocol_mismatch(exc: Exception) -> bool:
-    body = str(getattr(exc, "response_body", "") or "").lower()
-    message = str(exc).lower()
-    markers = (
-        "not supported for format",
-        "unsupported api format",
-        "unsupported protocol",
-        "modelprotocolunsupported",
-        "does not support this protocol",
-        "unsupported endpoint",
-        "endpoint is unavailable",
-        "endpoint unavailable",
-        "does not support this endpoint",
-        "use the responses api",
-        "use /responses",
-        "use /messages",
-    )
-    return any(marker in body or marker in message for marker in markers)
+    return protocol_selection.explicit_protocol_mismatch(exc)
 
 
-def _should_try_next_protocol(exc: Exception, *, exhaustive_probe: bool) -> bool:
-    body = str(getattr(exc, "response_body", "") or "").lower()
-    message = str(exc).lower()
-    if any(marker in body or marker in message for marker in (
-        "content_filter", "safety policy", "policy_violation", "refusal"
-    )):
+def _should_try_next_protocol(exc: Exception, *, exhaustive_probe: bool, strict: bool = False) -> bool:
+    if strict and isinstance(exc, (requests.Timeout, requests.ConnectionError, TimeoutError)):
         return False
-    if _is_explicit_protocol_mismatch(exc):
-        return True
-    status_code = getattr(exc, "status_code", None)
-    if status_code in {401, 403, 408, 409, 425, 429}:
-        return False
-    if isinstance(status_code, int) and status_code >= 500:
-        return False
-    if status_code in {404, 405, 415, 422}:
-        return True
-    if status_code == 400 and any(marker in body or marker in message for marker in (
-        "invalid temperature", "invalid_request_error", "unsupported parameter"
-    )):
-        return True
-    return exhaustive_probe
+    return protocol_selection.may_change_protocol(exc, strict=strict, exhaustive_probe=exhaustive_probe)
 
 
 def _protocol_for_request(
-    cfg: dict[str, Any], model: str, protocol_override: str | None
+    cfg: dict[str, Any], model: str, protocol_override: str | None,
 ) -> tuple[str, bool]:
-    """Resolve a one-call protocol override without mutating saved settings."""
+    """Keep old direct-call overrides available only in explicit legacy mode."""
+    if protocol_selection.automatic_protocols(cfg):
+        return model_protocol(cfg, model), True
     override = _normalize_protocol(protocol_override)
     if override == "auto":
-        model_id = _api_model_id(model)
         clean_cfg = dict(cfg)
         configured = dict(cfg.get("model_protocols") or {})
-        configured.pop(model_id, None)
+        configured.pop(_api_model_id(model), None)
         clean_cfg["model_protocols"] = configured
         return model_protocol(clean_cfg, model), True
     if override in SUPPORTED_PROTOCOLS:
@@ -368,7 +334,15 @@ def list_models() -> list[dict[str, Any]]:
     models = cfg.get("models") or []
     if not models and _api_style(cfg) == "opencode_go":
         models = OPENCODE_GO_MODELS
-    return [{"name": str(model), "provider": "api"} for model in models]
+    result = []
+    metadata = cfg.get("model_endpoints") or {}
+    for model in models:
+        item = {"name": str(model), "provider": "api"}
+        endpoints = protocol_selection.normalize_endpoint_types(metadata.get(str(model))) if isinstance(metadata, dict) else []
+        if endpoints:
+            item["supported_endpoint_types"] = endpoints
+        result.append(item)
+    return result
 
 
 def discover_models(timeout: int = 30) -> list[dict[str, Any]]:
@@ -410,7 +384,11 @@ def discover_models(timeout: int = 30) -> list[dict[str, Any]]:
         rendered = str(name or "").strip()
         if rendered and rendered not in seen:
             seen.add(rendered)
-            models.append({"name": rendered, "provider": "api"})
+            model_info = {"name": rendered, "provider": "api"}
+            endpoints = protocol_selection.catalog_endpoint_types(item)
+            if endpoints:
+                model_info["supported_endpoint_types"] = endpoints
+            models.append(model_info)
     if not models:
         raise RuntimeError("Provider returned an empty model catalog")
     return models
@@ -660,6 +638,7 @@ def translate_once(
     if not key:
         raise RuntimeError("Third-party API key is not configured")
 
+    strict_auto = protocol_selection.automatic_protocols(cfg)
     is_opencode_go = _api_style(cfg) == "opencode_go"
     stored_mode = _stored_thinking_mode(model) if is_opencode_go else ""
     preferred_mode = stored_mode if stored_mode in {"disabled", "low"} else "disabled"
@@ -669,8 +648,8 @@ def translate_once(
     modes = (
         (["low", "low", "low"] if preferred_mode == "low"
          else ["disabled", "disabled", "low"])
-        if is_opencode_go
-        else ["disabled"]
+        if is_opencode_go and not strict_auto
+        else [preferred_mode]
     )
     preferred_protocol, automatic_selection = _protocol_for_request(
         cfg, model, protocol_override
@@ -678,10 +657,12 @@ def translate_once(
     manual_selection = not automatic_selection
     protocol_candidates = [preferred_protocol]
     if automatic_selection:
-        protocol_candidates.extend(
-            protocol for protocol in SUPPORTED_PROTOCOLS
-            if protocol != preferred_protocol
-        )
+        protocol_candidates = protocol_selection.protocol_candidates(
+            cfg, _api_model_id(model), stored=preferred_protocol,
+            provider_hint=_provider_protocol_hint(_api_style(cfg), _api_model_id(model)),
+        ) if strict_auto else [preferred_protocol, *(
+            protocol for protocol in SUPPORTED_PROTOCOLS if protocol != preferred_protocol
+        )]
 
     last_error: Exception | None = None
     attempted_protocols: list[str] = []
@@ -704,9 +685,16 @@ def translate_once(
             except Exception as exc:
                 last_error = exc
                 if automatic_selection and _should_try_next_protocol(
-                    exc, exhaustive_probe=probe_all_protocols
+                    exc, exhaustive_probe=probe_all_protocols, strict=strict_auto
                 ):
+                    suggested = protocol_selection.suggested_protocol(exc) if strict_auto else ""
+                    if suggested in protocol_candidates and suggested not in attempted_protocols:
+                        index = protocol_candidates.index(protocol)
+                        protocol_candidates.remove(suggested)
+                        protocol_candidates.insert(index + 1, suggested)
                     advance_protocol = True
+                    break
+                if strict_auto:
                     break
                 continue
 

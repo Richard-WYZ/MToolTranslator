@@ -4,7 +4,7 @@ function bindEvents() {
     window.addEventListener("hashchange", function () { showPage(location.hash.slice(1)); });
     all("[data-nav]").forEach(function (node) { node.addEventListener("click", function () { navigate(node.dataset.nav); }); });
     el("btn-refresh-all").addEventListener("click", function () {
-        if (state.page === "settings" && state.settingsDirty) { toast("请先完成设置，或点击“放弃修改并重载”"); return; }
+        if (state.page === "settings" && state.settingsDirty) { toast("仍有未保存的修改"); return; }
         if (state.page === "translate") loadModels(true);
         else if (state.page === "review") loadReview();
         else if (state.page === "glossary") loadGlossary();
@@ -49,6 +49,7 @@ function bindEvents() {
         input.addEventListener("change", function () {
             state.profile = input.value;
             renderProfile();
+            if (input.value === "local") loadModels(false, { discoverLocal: true, refresh: true });
         });
     });
     ["model-select", "fast-model", "sensitive-model", "quality-model", "custom-concurrency", "custom-batch-size", "custom-max-chars", "custom-protocol"].forEach(function (id) {
@@ -123,16 +124,22 @@ function bindEvents() {
         else if (remove) deleteGlossaryTerm(remove.dataset.termDelete);
     });
 
-    window.addEventListener("beforeunload", function (event) {
-        if (window.pywebview && window.pywebview.api) return;
-        if (state.settingsDirty || glossaryHasUnsavedChanges() || ["starting", "running", "paused", "stopping", "finalizing"].includes(state.taskStatus) || aiReviewIsActive()) {
-            event.preventDefault();
-            event.returnValue = "";
-        }
-    });
 }
 
-async function init() {
+var startupHealthTimer = null;
+var startupHealthFlight = null;
+
+function refreshStartupHealth() {
+    if (startupHealthFlight) return startupHealthFlight;
+    startupHealthFlight = checkServer().finally(function () {
+        startupHealthFlight = null;
+        clearTimeout(startupHealthTimer);
+        startupHealthTimer = setTimeout(refreshStartupHealth, 30000);
+    });
+    return startupHealthFlight;
+}
+
+function init() {
     bindEvents();
     initReviewWorkspace();
     initGlossaryWorkspace();
@@ -140,8 +147,10 @@ async function init() {
     renderFile();
     resetTaskDisplay();
     showPage(location.hash.slice(1) || "translate");
-    await Promise.all([checkServer(), loadModels(false), loadRecoveryBanner()]);
-    setInterval(checkServer, 30000);
+    refreshStartupHealth();
+    // Paint and enable the configured API path before optional local discovery.
+    // Recovery checkpoints are loaded when the user opens project history.
+    loadModels(false).then(function () { loadModels(false, { discoverLocal: true }); });
 }
 
 window.LGT = {

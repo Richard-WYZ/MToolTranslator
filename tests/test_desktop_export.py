@@ -636,71 +636,30 @@ def test_export_status_allows_safe_snapshot_without_manual_review(tmp_path):
     assert response.json()["review_active"] is False
 
 
-def test_desktop_close_uses_native_confirmation_and_shutdown():
-    client = _RequestClient(dirty=True)
-    window = _Window(confirmed=True)
-
-    assert build_close_handler(window, client)() is True
-    assert window.dialogs and window.dialogs[0][0] == "确认退出"
-    assert client.posts == ["http://127.0.0.1:8000/api/desktop/shutdown"]
-
-    cancelled_client = _RequestClient(dirty=True)
-    cancelled_window = _Window(confirmed=False)
-    assert build_close_handler(cancelled_window, cancelled_client)() is False
-    assert cancelled_client.posts == []
-
-
-@pytest.mark.parametrize("confirmed", [False, True])
-def test_desktop_close_confirms_pending_review_drafts_before_shutdown(confirmed):
-    class DraftWindow(_Window):
-        def evaluate_js(self, _script):
-            pytest.fail("Closing must never synchronously evaluate JavaScript")
-
-    client = _RequestClient(dirty=False)
-    window = DraftWindow(confirmed)
-    bridge = Api()
-    assert bridge.pending_review_draft is False
-    assert bridge.set_pending_review_draft(True) is True
-
-    assert build_close_handler(window, client, lambda: bridge.pending_review_draft)() is confirmed
-    assert window.dialogs == [("确认退出", "存在尚未保存的译文草稿，退出会放弃这些修改，是否退出？")]
-    assert client.posts == (["http://127.0.0.1:8000/api/desktop/shutdown"] if confirmed else [])
-
-
-def test_desktop_close_does_not_confirm_saved_results_without_pending_drafts():
-    class SavedWindow(_Window):
-        def evaluate_js(self, _script):
-            pytest.fail("Closing must never synchronously evaluate JavaScript")
-
-    client = _RequestClient(dirty=False)
-    window = SavedWindow(confirmed=False)
-
-    bridge = Api()
-    bridge.set_pending_review_draft(True)
-    assert bridge.set_pending_review_draft(False) is False
-    assert build_close_handler(window, client, lambda: bridge.pending_review_draft)() is True
-    assert window.dialogs == []
-    assert client.posts == ["http://127.0.0.1:8000/api/desktop/shutdown"]
-
-
 @pytest.mark.parametrize("active", [False, True])
-def test_desktop_close_falls_back_to_backend_guard_when_draft_cache_callback_fails(active):
-    def unavailable_cache():
-        raise RuntimeError("Draft cache is unavailable")
+@pytest.mark.parametrize("pending", [False, True])
+def test_desktop_close_directly_shuts_down_without_dialogs_or_ui_calls(active, pending):
+    class DirectWindow:
+        def create_confirmation_dialog(self, *_args):
+            pytest.fail("Closing must not ask for confirmation")
 
-    client = _RequestClient(dirty=active)
-    window = _Window(confirmed=False)
+        def evaluate_js(self, _script):
+            pytest.fail("Closing must never synchronously evaluate JavaScript")
 
-    assert build_close_handler(window, client, unavailable_cache)() is not active
-    assert len(window.dialogs) == int(active)
-    assert client.posts == ([] if active else ["http://127.0.0.1:8000/api/desktop/shutdown"])
+    class DirectClient(_RequestClient):
+        def get(self, *_args, **_kwargs):
+            pytest.fail("Closing must not wait for an exit-state scan")
+
+    client = DirectClient(dirty=active)
+    bridge = Api()
+    bridge.set_pending_review_draft(pending)
+    assert build_close_handler(DirectWindow(), client, lambda: bridge.pending_review_draft)() is True
+    assert client.posts == ["http://127.0.0.1:8000/api/desktop/shutdown"]
 
 
-def test_desktop_close_combines_active_work_and_draft_warning_in_one_native_dialog():
-    client = _RequestClient(dirty=True)
-    window = _Window(confirmed=True)
+def test_desktop_close_does_not_block_when_the_local_service_is_unavailable():
+    class UnavailableClient:
+        def post(self, *_args, **_kwargs):
+            raise ConnectionError("Service already stopped")
 
-    assert build_close_handler(window, client, lambda: True)() is True
-    assert len(window.dialogs) == 1
-    assert "尚未保存的译文草稿" in window.dialogs[0][1]
-    assert "当前翻译或 AI 复核也会停止" in window.dialogs[0][1]
+    assert build_close_handler(_Window(confirmed=False), UnavailableClient())() is True

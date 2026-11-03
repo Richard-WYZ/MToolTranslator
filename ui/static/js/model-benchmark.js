@@ -1,7 +1,9 @@
 "use strict";
 
+var benchmarkStartPending = false;
+
 function benchmarkIsActive() {
-    return ["starting", "running", "stopping"].includes((state.modelBenchmark || {}).status);
+    return benchmarkStartPending || ["starting", "running", "stopping"].includes((state.modelBenchmark || {}).status);
 }
 
 async function loadModelBenchmark() {
@@ -99,22 +101,27 @@ function benchmarkReliability(item) {
 }
 
 async function startModelBenchmark() {
+    if (benchmarkIsActive() || state.settingsBusy
+        || (typeof settingsTaskIsActive === "function" && settingsTaskIsActive())) return;
     if (state.settingsDirty) {
         toast("请先保存模型与协议设置", "error");
         return;
     }
     var models = currentModelCatalog().filter(function (item) { return item.enabled; }).map(function (item) { return item.id; });
+    if (!models.length) { toast("请先启用至少一个模型", "error"); return; }
     var mode = el("benchmark-mode").value;
-    var calls = models.length * ({ quick: 6, standard: 10, deep: 30 }[mode] || 10);
-    if (!window.confirm("将对 " + models.length + " 个模型发送约 " + calls + " 次短请求，可能产生 Token 用量。继续吗？")) return;
+    benchmarkStartPending = true;
+    renderModelBenchmark();
     try {
         state.modelBenchmark = await API.post("/settings/benchmark/start", {
             provider: currentSettingsProvider(), models: models, mode: mode,
         });
-        renderModelBenchmark();
-        scheduleBenchmarkPoll();
     } catch (error) {
         toast(error.message, "error");
+    } finally {
+        benchmarkStartPending = false;
+        renderModelBenchmark();
+        scheduleBenchmarkPoll();
     }
 }
 

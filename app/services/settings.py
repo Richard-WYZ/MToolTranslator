@@ -5,6 +5,8 @@ import os
 import tempfile
 import time
 import re
+import threading
+from functools import wraps
 from pathlib import Path
 from typing import Any, MutableMapping
 from urllib.parse import urlparse
@@ -36,6 +38,8 @@ EDITABLE_ENV_KEYS = (
     "THIRD_PARTY_API_MODELS",
     "THIRD_PARTY_API_DISABLED_MODELS",
     "THIRD_PARTY_API_MODEL_PROTOCOLS",
+    "THIRD_PARTY_API_PROTOCOL_MODE",
+    "THIRD_PARTY_API_MODEL_ENDPOINTS",
     "THIRD_PARTY_API_DISABLE_THINKING",
     "OLLAMA_HOST",
     "OLLAMA_DISABLED_MODELS",
@@ -63,6 +67,15 @@ ADULT_CONCEPT_GROUPS = (
     ("插入", "进入"),
     ("性交", "做爱", "性行为"),
 )
+_SETTINGS_LOCK = threading.RLock()
+
+
+def _serialized_settings(function):
+    @wraps(function)
+    def locked(*args, **kwargs):
+        with _SETTINGS_LOCK:
+            return function(*args, **kwargs)
+    return locked
 
 
 def _file_values(path: Path) -> dict[str, str]:
@@ -86,29 +99,21 @@ def _path_writable(path: Path) -> bool:
     return os.access(target, os.W_OK)
 
 
+@_serialized_settings
 def public_settings() -> dict[str, Any]:
     path = runtime_env_path()
     values = _file_values(path)
     api = third_party_api_config()
     profiles, active_profile = _saved_profiles(values)
     models = [str(item) for item in api.get("models", []) if str(item).strip()]
-    catalog_source = "configured"
-    if not models:
-        from translation.models import api_client
-
-        models = [
-            str(item.get("name") or "")
-            for item in api_client.list_models()
-            if str(item.get("name") or "").strip()
-        ]
-        catalog_source = "provider_preset"
+    catalog_source = "configured" if models else "empty"
     return {
         "provider": model_provider(),
         "active_api_profile": active_profile,
         "api_profiles": [
             {**{key: profile.get(key) for key in (
                 "id", "name", "preset", "style", "base_url", "models", "disabled_models",
-                "model_protocols", "default_model", "disable_thinking",
+                "model_protocols", "protocol_mode", "model_endpoints", "default_model", "disable_thinking",
             )}, "api_key_configured": bool(profile.get("api_key"))}
             for profile in profiles
         ],
@@ -120,6 +125,8 @@ def public_settings() -> dict[str, Any]:
             "models": models,
             "disabled_models": disabled_models("api"),
             "model_protocols": dict(api.get("model_protocols") or {}),
+            "protocol_mode": str(api.get("protocol_mode") or "auto"),
+            "model_endpoints": dict(api.get("model_endpoints") or {}),
             "catalog_source": catalog_source,
             "api_key_configured": bool(
                 os.environ.get("THIRD_PARTY_API_KEY") or api.get("api_key")
@@ -210,6 +217,7 @@ def _atomic_write(path: Path, text: str) -> None:
         raise HTTPException(status_code=500, detail=f"Unable to save settings: {exc}") from exc
 
 
+@_serialized_settings
 def save_settings(payload: Any, tasks: MutableMapping[str, Any]) -> dict[str, Any]:
     if any(getattr(task, "status", "") in ACTIVE_TASK_STATES for task in tasks.values()):
         raise HTTPException(
@@ -314,6 +322,24 @@ def save_settings(payload: Any, tasks: MutableMapping[str, Any]) -> dict[str, An
     profiles, active_profile = _saved_profiles(existing)
     profile_id = requested_profile or active_profile
     previous_profile = next((item for item in profiles if item["id"] == profile_id), {})
+    fields_set = getattr(payload, "model_fields_set", None)
+    protocols_provided = "api_model_protocols" in fields_set if fields_set is not None else hasattr(payload, "api_model_protocols")
+    if not protocols_provided:
+        model_protocols = dict(previous_profile.get("model_protocols") or {})
+    protocol_mode = _validate_value("api_protocol_mode", getattr(payload, "api_protocol_mode", None) or previous_profile.get("protocol_mode") or "auto")
+    if protocol_mode not in {"auto", "legacy"}:
+        raise HTTPException(status_code=400, detail="api_protocol_mode must be auto or legacy")
+    raw_endpoints = getattr(payload, "api_model_endpoints", None)
+    model_endpoints = dict(previous_profile.get("model_endpoints") or {})
+    if raw_endpoints is not None:
+        from translation.models.protocols import normalize_endpoint_types
+
+        model_endpoints = {}
+        for raw_model, endpoints in dict(raw_endpoints).items():
+            endpoint_model = _validate_value("api_model_endpoints.model", raw_model).removeprefix("api:")
+            normalized_endpoints = normalize_endpoint_types(endpoints)
+            if endpoint_model and normalized_endpoints:
+                model_endpoints[endpoint_model] = list(normalized_endpoints)
     secret_action = _validate_value("api_key_action", payload.api_key_action).lower()
     if secret_action not in {"keep", "replace", "clear"}:
         raise HTTPException(status_code=400, detail="api_key_action must be keep, replace, or clear")
@@ -336,6 +362,8 @@ def save_settings(payload: Any, tasks: MutableMapping[str, Any]) -> dict[str, An
         "THIRD_PARTY_API_MODEL_PROTOCOLS": json.dumps(
             model_protocols, ensure_ascii=True, separators=(",", ":")
         ) if model_protocols else "",
+        "THIRD_PARTY_API_PROTOCOL_MODE": protocol_mode,
+        "THIRD_PARTY_API_MODEL_ENDPOINTS": json.dumps(model_endpoints, ensure_ascii=True, separators=(",", ":")),
         "THIRD_PARTY_API_DISABLE_THINKING": _bool_text(payload.disable_thinking),
         "OLLAMA_HOST": ollama_url,
         "OLLAMA_DISABLED_MODELS": ",".join(disabled_ollama),
@@ -346,6 +374,7 @@ def save_settings(payload: Any, tasks: MutableMapping[str, Any]) -> dict[str, An
         "name": profile_name or previous_profile.get("name") or provider_preset(preset)["name"],
         "preset": preset, "style": style, "base_url": base_url, "api_key": secret,
         "models": model_values, "disabled_models": disabled_api, "model_protocols": model_protocols,
+        "protocol_mode": protocol_mode, "model_endpoints": model_endpoints,
         "default_model": default if provider == "api" else previous_profile.get("default_model", ""),
         "disable_thinking": bool(payload.disable_thinking),
     }
@@ -360,6 +389,7 @@ def save_settings(payload: Any, tasks: MutableMapping[str, Any]) -> dict[str, An
     return {"ok": True, "settings": public_settings()}
 
 
+@_serialized_settings
 def activate_api_profile(profile_id: str, tasks: MutableMapping[str, Any]) -> dict[str, Any]:
     """Activate one saved connection atomically, retaining every other profile."""
     _require_profile_change_allowed(tasks)
@@ -385,6 +415,7 @@ def activate_api_profile(profile_id: str, tasks: MutableMapping[str, Any]) -> di
     return {"ok": True, "settings": public_settings()}
 
 
+@_serialized_settings
 def set_default_model_setting(model: str, tasks: MutableMapping[str, Any]) -> dict[str, Any]:
     """Persist a benchmark-selected primary model without rewriting other settings."""
     if any(getattr(task, "status", "") in ACTIVE_TASK_STATES for task in tasks.values()):
@@ -436,7 +467,7 @@ def discover_provider_models(
         else:
             from translation.models import ollama_client
 
-            raw_models = ollama_client.list_models()
+            raw_models = ollama_client.list_models(refresh=True)
     except Exception as exc:
         if selected != "api":
             raise HTTPException(
@@ -470,6 +501,7 @@ def discover_provider_models(
             "name": name,
             "provider": selected,
             "enabled": name not in disabled,
+            "supported_endpoint_types": list(item.get("supported_endpoint_types") or []) if isinstance(item, dict) else [],
         })
     return {
         "ok": ok,
@@ -509,6 +541,11 @@ def test_connection(
     selected_protocol = str(protocol or "auto").strip().lower().replace("-", "_")
     if selected_protocol not in {"auto", "chat_completions", "messages", "responses"}:
         raise HTTPException(status_code=400, detail="Unsupported protocol selection")
+    from translation.models.protocols import automatic_protocols
+
+    automatic_mode = selected_provider == "api" and automatic_protocols(third_party_api_config())
+    if automatic_mode:
+        selected_protocol = "auto"
     source = ADULT_TEST_SOURCE if test_kind == "adult" else "こんにちは"
     system_prompt = (
         "Translate this adult Japanese game-localization text faithfully to Simplified "
@@ -536,7 +573,7 @@ def test_connection(
         if selected_provider == "api":
             call_options = {
                 "protocol_override": selected_protocol,
-                "probe_all_protocols": selected_protocol == "auto",
+                "probe_all_protocols": selected_protocol == "auto" and not automatic_mode,
             }
         output = translate_once(
             selected_model,
@@ -595,6 +632,7 @@ def test_connection(
         "test_kind": test_kind,
         "thinking_mode": thinking_mode or "disabled",
         "protocol": protocol,
+        "protocol_mode": "auto" if automatic_mode else "legacy",
         "latency_ms": latency_ms,
         "usage_warning": "本次测试发送了一条极短翻译请求，可能产生少量模型用量。",
     }

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from translation.config import default_model, disabled_models, model_provider, third_party_api_config
+from translation.config import default_model, disabled_models, model_provider, ollama_host, third_party_api_config
 from translation.models import api_client, ollama_client
 
 
@@ -41,25 +41,41 @@ def model_configuration(model: str | None = None) -> dict[str, Any]:
         cfg["api_profile_id"] = api_cfg.get("profile_id", "")
         cfg["disable_thinking"] = bool(api_cfg.get("disable_thinking", True))
         cfg["model_protocols"] = dict(api_cfg.get("model_protocols") or {})
+        cfg["api_protocol_mode"] = str(api_cfg.get("protocol_mode") or "legacy")
+        cfg["model_endpoints"] = dict(api_cfg.get("model_endpoints") or {})
     return cfg
 
 
-def list_models(*, include_disabled: bool = False) -> list[dict[str, Any]]:
+def list_models(
+    *, include_disabled: bool = False, discover_local: bool = True, refresh_local: bool = False,
+) -> list[dict[str, Any]]:
     models: list[dict[str, Any]] = []
-    disabled_api = set(disabled_models("api"))
-    disabled_ollama = set(disabled_models("ollama"))
+    local_host = ollama_host().rstrip("/")
+    local_models = []
     try:
-        for item in ollama_client.list_models():
-            local_item = dict(item)
-            raw_name = str(local_item.get("name", ""))
-            name = raw_name[len(OLLAMA_PREFIX):] if raw_name.startswith(OLLAMA_PREFIX) else raw_name
-            local_item["name"] = OLLAMA_PREFIX + name if name else ""
-            local_item["provider"] = "ollama"
-            local_item["enabled"] = name not in disabled_ollama
-            if include_disabled or local_item["enabled"]:
-                models.append(local_item)
+        if discover_local:
+            local_models = ollama_client.list_models(refresh=True) if refresh_local else ollama_client.list_models()
+        else:
+            cached = ollama_client.model_catalog_snapshot()
+            local_models = cached["models"] if cached["available"] else []
     except Exception:
         pass
+    if ollama_host().rstrip("/") != local_host:
+        # A settings autosave can switch hosts during a slow discovery.
+        # The old server's result must not describe the newly selected one.
+        current = ollama_client.model_catalog_snapshot()
+        local_models = current["models"] if current["available"] else []
+    disabled_ollama = set(disabled_models("ollama"))
+    for item in local_models:
+        local_item = dict(item)
+        raw_name = str(local_item.get("name", ""))
+        name = raw_name[len(OLLAMA_PREFIX):] if raw_name.startswith(OLLAMA_PREFIX) else raw_name
+        local_item["name"] = OLLAMA_PREFIX + name if name else ""
+        local_item["provider"] = "ollama"
+        local_item["enabled"] = name not in disabled_ollama
+        if include_disabled or local_item["enabled"]:
+            models.append(local_item)
+    disabled_api = set(disabled_models("api"))
     for item in api_client.list_models():
         raw_name = str(item.get("name", ""))
         name = raw_name[len(API_PREFIX):] if raw_name.startswith(API_PREFIX) else raw_name

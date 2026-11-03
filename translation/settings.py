@@ -28,6 +28,8 @@ _BASE_DEFAULT_CONFIG = {
         "models": [],
         "disabled_models": [],
         "model_protocols": {},
+        "protocol_mode": "auto",
+        "model_endpoints": {},
     },
     "ollama_disabled_models": [],
     "translate_columns": [0, 1],
@@ -320,6 +322,7 @@ def _apply_dotenv(
         "THIRD_PARTY_API_STYLE": (api_config, "style"),
         "THIRD_PARTY_API_PRESET": (api_config, "preset"),
         "THIRD_PARTY_API_ACTIVE_PROFILE": (api_config, "profile_id"),
+        "THIRD_PARTY_API_PROTOCOL_MODE": (api_config, "protocol_mode"),
     }
     for env_name, (target, key) in scalar_values.items():
         if env.get(env_name):
@@ -352,6 +355,19 @@ def _apply_dotenv(
         api_config["model_protocols"] = _model_protocols(
             env["THIRD_PARTY_API_MODEL_PROTOCOLS"]
         )
+    if env.get("THIRD_PARTY_API_MODEL_ENDPOINTS"):
+        from translation.models.protocols import normalize_endpoint_types
+
+        try:
+            endpoints = json.loads(env["THIRD_PARTY_API_MODEL_ENDPOINTS"])
+        except (TypeError, ValueError):
+            endpoints = {}
+        if isinstance(endpoints, dict):
+            api_config["model_endpoints"] = {
+                str(model).removeprefix("api:"): normalized
+                for model, values in endpoints.items()
+                if (normalized := normalize_endpoint_types(values))
+            }
     if env.get("OLLAMA_DISABLED_MODELS"):
         target_config["ollama_disabled_models"] = _split_models(
             env["OLLAMA_DISABLED_MODELS"]

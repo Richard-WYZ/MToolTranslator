@@ -175,12 +175,15 @@ async function resumeAIReview() {
 }
 
 async function rollbackAIReview() {
-    if (reviewActionIsBusy()) return;
+    if (reviewActionIsBusy() || aiReviewIsActive()) return;
+    var taskId = state.review.aiTaskId, file = activeFilePath();
+    if (!taskId || !file) return;
     if (!await flushReviewDraft()) return;
-    if (!state.review.aiTaskId || !window.confirm("撤销本次 AI 复核已自动应用的译文？之后手动修改过的条目不会被覆盖。")) return;
+    if (taskId !== state.review.aiTaskId || file !== activeFilePath()) return;
     setReviewActionBusy("ai_rollback", "btn-ai-review-rollback");
     try {
-        var result = await API.post("/review/ai/" + encodeURIComponent(state.review.aiTaskId) + "/rollback", { file_path: activeFilePath() });
+        var result = await API.post("/review/ai/" + encodeURIComponent(taskId) + "/rollback", { file_path: file });
+        if (taskId !== state.review.aiTaskId || file !== activeFilePath()) return;
         toast("已恢复 " + result.restored + " 条；跳过 " + result.skipped + " 条", "success");
         if (result.restored) { state.hasUnexportedResult = true; state.exportReady = true; }
         clearReviewSelection();

@@ -4,8 +4,9 @@ from translation.config import default_model
 from translation.models import get_system_prompts, list_models, translate as model_translate
 
 
-def available_models() -> list[dict]:
-    return list_models()
+def available_models(*, discover_local: bool = False, refresh_local: bool = False) -> list[dict]:
+    """Configured API models are immediate; local network discovery is opt-in."""
+    return list_models(discover_local=discover_local, refresh_local=refresh_local)
 
 
 def system_prompts() -> dict[str, str]:

@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from translation.models.protocols import normalize_endpoint_types
+
 
 PROVIDER_PRESETS = (
     {"id": "opendesign_go", "name": "OpenDesign Go", "style": "openai",
@@ -54,6 +56,15 @@ def saved_api_profiles(values: dict[str, str]) -> tuple[list[dict[str, Any]], st
         protocols = json.loads(values.get("THIRD_PARTY_API_MODEL_PROTOCOLS") or "{}")
     except ValueError:
         protocols = {}
+    try:
+        endpoints = json.loads(values.get("THIRD_PARTY_API_MODEL_ENDPOINTS") or "{}")
+    except ValueError:
+        endpoints = {}
+    endpoints = {
+        str(model).strip().removeprefix("api:"): normalized
+        for model, declared in endpoints.items()
+        if (normalized := normalize_endpoint_types(declared))
+    } if isinstance(endpoints, dict) else {}
     profile = {
         "id": "legacy", "name": provider_preset(preset).get("name", "原有 API 配置"),
         "preset": preset, "style": style,
@@ -62,6 +73,8 @@ def saved_api_profiles(values: dict[str, str]) -> tuple[list[dict[str, Any]], st
         "models": split("THIRD_PARTY_API_MODELS", values.get("OPENCODE_GO_MODELS", "")),
         "disabled_models": split("THIRD_PARTY_API_DISABLED_MODELS"),
         "model_protocols": protocols if isinstance(protocols, dict) else {},
+        "protocol_mode": values.get("THIRD_PARTY_API_PROTOCOL_MODE") or "auto",
+        "model_endpoints": endpoints,
         "default_model": values.get("DEFAULT_MODEL", ""),
         "disable_thinking": values.get("THIRD_PARTY_API_DISABLE_THINKING", "true").lower() not in {"false", "0", "no", "off"},
     }
@@ -78,6 +91,8 @@ def profile_env_values(profile: dict[str, Any]) -> dict[str, str]:
         "THIRD_PARTY_API_MODELS": ",".join(profile.get("models") or []),
         "THIRD_PARTY_API_DISABLED_MODELS": ",".join(profile.get("disabled_models") or []),
         "THIRD_PARTY_API_MODEL_PROTOCOLS": json.dumps(profile.get("model_protocols") or {}, ensure_ascii=True, separators=(",", ":")),
+        "THIRD_PARTY_API_PROTOCOL_MODE": str(profile.get("protocol_mode") or "auto"),
+        "THIRD_PARTY_API_MODEL_ENDPOINTS": json.dumps(profile.get("model_endpoints") or {}, ensure_ascii=True, separators=(",", ":")),
         "THIRD_PARTY_API_DISABLE_THINKING": "true" if profile.get("disable_thinking", True) else "false",
         # Explicitly retire legacy aliases, which otherwise override the new profile.
         "OPENCODE_GO": "false", "OPENCODE_GO_BASE_URL": "", "OPENCODE_GO_API_KEY": "", "OPENCODE_GO_MODELS": "",

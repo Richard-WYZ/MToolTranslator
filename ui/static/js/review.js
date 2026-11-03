@@ -4,8 +4,78 @@ var reviewDrafts = new Map();
 var reviewDraftTimer = null;
 var reviewDraftBridgeState = null;
 var reviewDraftBridgeInFlight = false;
+var reviewDraftStoreReady = false;
+var reviewDraftStoreInFlight = false;
+var reviewDraftStoreSnapshot = null;
+var reviewDraftStoreRestore = null;
+var reviewDraftTouched = new Set();
 
 function reviewDraftKey(path, row) { return JSON.stringify([path, Number(row)]); }
+
+function reviewDraftSnapshot() {
+    return Array.from(reviewDrafts.values()).map(function (draft) {
+        return { path: draft.path, row: draft.row, text: draft.text, original: draft.original, base_text: draft.base_text };
+    });
+}
+
+function mergeReviewDrafts(cached, requireBaseline) {
+    if (!Array.isArray(cached)) return;
+    cached.forEach(function (draft) {
+        if (!draft || typeof draft.path !== "string" || !Number.isInteger(draft.row)
+            || typeof draft.text !== "string" || typeof draft.original !== "string"
+            || (requireBaseline && typeof draft.base_text !== "string")) return;
+        var key = reviewDraftKey(draft.path, draft.row);
+        if (!reviewDrafts.has(key) && !reviewDraftTouched.has(key)) {
+            reviewDrafts.set(key, Object.assign({}, draft, { version: 1 }));
+        }
+    });
+}
+
+function syncReviewDraftStore() {
+    var bridge = window.pywebview && window.pywebview.api;
+    if (!reviewDraftStoreReady || reviewDraftStoreInFlight || !bridge
+        || typeof bridge.set_workspace_drafts !== "function") return;
+    var snapshot = JSON.stringify(reviewDraftSnapshot());
+    if (snapshot === reviewDraftStoreSnapshot) return;
+    reviewDraftStoreSnapshot = snapshot;
+    reviewDraftStoreInFlight = true;
+    Promise.resolve().then(function () {
+        return bridge.set_workspace_drafts("review", JSON.parse(snapshot));
+    }).then(function () {
+        reviewDraftStoreInFlight = false;
+        syncReviewDraftStore();
+    }, function () {
+        reviewDraftStoreInFlight = false;
+        reviewDraftStoreSnapshot = null;
+        if (JSON.stringify(reviewDraftSnapshot()) !== snapshot) syncReviewDraftStore();
+    });
+}
+
+function restoreReviewDraftStore() {
+    var bridge = window.pywebview && window.pywebview.api;
+    if (!bridge || typeof bridge.get_workspace_drafts !== "function") return Promise.resolve();
+    if (reviewDraftStoreRestore) return reviewDraftStoreRestore;
+    reviewDraftStoreReady = false;
+    reviewDraftStoreRestore = Promise.resolve().then(function () {
+        return bridge.get_workspace_drafts("review");
+    }).then(function (cached) {
+        mergeReviewDrafts(cached);
+        reviewDraftStoreReady = true;
+        persistReviewDrafts();
+        var draft = reviewDrafts.get(reviewDraftKey(state.review.editorFilePath, state.review.editorRow));
+        if (draft && (draft.original !== state.review.editorSource
+            || typeof draft.base_text === "string" && draft.base_text !== state.review.editorSavedText)) {
+            draft.conflict = true;
+        }
+        if (draft && !draft.conflict && el("editor-target").value === state.review.editorSavedText) {
+            el("editor-target").value = draft.text;
+            reviewSaveNote(typeof draft.base_text === "string" ? "已恢复未保存草稿" : "旧版草稿尚未写回，可点击保存草稿");
+        }
+    }).catch(function () {
+        // Keep both the local copy and unread native drafts when the bridge is unavailable.
+    }).finally(function () { reviewDraftStoreRestore = null; });
+    return reviewDraftStoreRestore;
+}
 
 function syncPendingReviewDraft() {
     var bridge = window.pywebview && window.pywebview.api;
@@ -30,12 +100,13 @@ function syncPendingReviewDraft() {
 }
 
 function persistReviewDrafts() {
+    var snapshot = JSON.stringify(reviewDraftSnapshot());
     try {
-        sessionStorage.setItem("lgt.reviewDrafts", JSON.stringify(Array.from(reviewDrafts.values()).map(function (draft) {
-            return { path: draft.path, row: draft.row, text: draft.text, original: draft.original };
-        })));
+        sessionStorage.setItem("lgt.reviewDrafts", snapshot);
     } catch (error) { /* The in-memory draft remains available when browser storage is full. */ }
+    try { localStorage.setItem("lgt.reviewDrafts", snapshot); } catch (error) { /* Retain other copies. */ }
     syncPendingReviewDraft();
+    syncReviewDraftStore();
 }
 
 function reviewSaveNote(message, failed) {
@@ -43,20 +114,25 @@ function reviewSaveNote(message, failed) {
     el("editor-save-note").className = "hint" + (failed ? " draft-save-error" : "");
 }
 
-function captureReviewDraft() {
+function captureReviewDraft(fromInput) {
     var path = state.review.editorFilePath, row = state.review.editorRow;
     if (!path || row == null || path !== activeFilePath() || el("review-editor").hidden) return null;
     var text = el("editor-target").value;
     var key = reviewDraftKey(path, row), draft = reviewDrafts.get(key);
-    if (!draft && text === state.review.editorSavedText) return null;
-    if (!draft) draft = { path: path, row: row, original: state.review.editorSource, version: 0 };
+    if ((!draft || draft.conflict) && text === state.review.editorSavedText) return null;
+    if (!draft || draft.conflict) draft = { path: path, row: row, original: state.review.editorSource, base_text: state.review.editorSavedText, version: 0 };
+    // Restored legacy text has no saved baseline. Reading, blurring or leaving
+    // its editor must not turn it into permission to overwrite newer output.
+    if (typeof draft.base_text !== "string" && fromInput === true) draft.base_text = state.review.editorSavedText;
     if (draft.text !== text) { draft.text = text; draft.version += 1; draft.error = ""; }
     reviewDrafts.set(key, draft);
+    reviewDraftTouched.add(key);
     persistReviewDrafts();
     return draft;
 }
 
 async function saveReviewDraftEntry(draft) {
+    if (typeof draft.base_text !== "string") return true;
     if (draft.saving) return draft.saving;
     draft.saving = (async function () {
         while (reviewDrafts.get(reviewDraftKey(draft.path, draft.row)) === draft) {
@@ -68,7 +144,8 @@ async function saveReviewDraftEntry(draft) {
             }
             if (state.review.editorFilePath === draft.path && state.review.editorRow === draft.row) reviewSaveNote("正在保存草稿…");
             try {
-                var result = await API.post("/review/save", { file_path: draft.path, row: draft.row, col: 0, text: text, action: "draft" });
+                var result = await API.post("/review/save", { file_path: draft.path, row: draft.row, col: 0, text: text, action: "draft", expected_original: draft.original, expected_translation: draft.base_text });
+                draft.base_text = text;
                 var item = state.review.items.find(function (entry) { return entry.row === draft.row; });
                 if (activeFilePath() === draft.path && item) {
                     var column = reviewColumn(item);
@@ -79,8 +156,9 @@ async function saveReviewDraftEntry(draft) {
                 state.hasUnexportedResult = true;
                 state.exportReady = true;
                 if (state.review.editorFilePath === draft.path && state.review.editorRow === draft.row) state.review.editorSavedText = text;
-                if (version !== draft.version) continue;
+                if (version !== draft.version) { persistReviewDrafts(); continue; }
                 reviewDrafts.delete(reviewDraftKey(draft.path, draft.row));
+                reviewDraftTouched.add(reviewDraftKey(draft.path, draft.row));
                 persistReviewDrafts();
                 if (state.review.editorFilePath === draft.path && state.review.editorRow === draft.row) {
                     reviewSaveNote("草稿已保存 · 尚未人工确认");
@@ -104,7 +182,9 @@ async function saveReviewDraftEntry(draft) {
 async function flushReviewDraft() {
     clearTimeout(reviewDraftTimer);
     captureReviewDraft();
-    var pending = Array.from(reviewDrafts.values()).filter(function (draft) { return draft.path === activeFilePath(); });
+    var pending = Array.from(reviewDrafts.values()).filter(function (draft) {
+        return draft.path === activeFilePath() && !draft.conflict && typeof draft.base_text === "string";
+    });
     if (!pending.length) return true;
     if (aiReviewIsActive()) { reviewSaveNote("AI 检查期间暂不能保存；本地草稿已保留", true); return false; }
     for (var draft of pending) {
@@ -119,7 +199,7 @@ function reviewHasPendingDraft() {
 }
 
 function scheduleReviewDraft() {
-    captureReviewDraft();
+    captureReviewDraft(true);
     reviewSaveNote("编辑已保留，稍后自动保存草稿…");
     clearTimeout(reviewDraftTimer);
     reviewDraftTimer = setTimeout(function () { flushReviewDraft(); }, 700);
@@ -188,17 +268,15 @@ async function moveReviewEntry(direction) {
 
 function initReviewWorkspace() {
     try {
-        var cached = JSON.parse(sessionStorage.getItem("lgt.reviewDrafts") || "[]");
-        if (Array.isArray(cached)) cached.forEach(function (draft) {
-            if (typeof draft.path === "string" && Number.isInteger(draft.row) && typeof draft.text === "string") {
-                reviewDrafts.set(reviewDraftKey(draft.path, draft.row), Object.assign(draft, { version: 1 }));
-            }
-        });
+        mergeReviewDrafts(JSON.parse(sessionStorage.getItem("lgt.reviewDrafts") || "[]"));
     } catch (error) { /* Ignore an invalid local draft cache. */ }
+    try { mergeReviewDrafts(JSON.parse(localStorage.getItem("lgt.reviewDrafts") || "[]")); } catch (error) { /* Retain other copies. */ }
     syncPendingReviewDraft();
+    restoreReviewDraftStore();
     window.addEventListener("pywebviewready", function () {
         reviewDraftBridgeState = null;
         syncPendingReviewDraft();
+        restoreReviewDraftStore();
     });
     el("review-search-form").addEventListener("submit", function (event) { event.preventDefault(); openReviewSearch(); });
     el("review-search-scope").addEventListener("change", function () { openReviewSearch(); });
@@ -224,9 +302,9 @@ function initReviewWorkspace() {
             event.preventDefault(); moveReviewEntry(event.key === "ArrowLeft" ? -1 : 1);
         }
     });
-    window.addEventListener("beforeunload", function (event) {
+    window.addEventListener("pagehide", function () {
         captureReviewDraft();
-        if (reviewDrafts.size) { event.preventDefault(); event.returnValue = ""; }
+        persistReviewDrafts();
     });
     window.openReviewSearch = openReviewSearch;
 }
@@ -507,6 +585,11 @@ function renderReviewEditor(item) {
     state.review.editorSavedText = column.translated || "";
     state.review.editorSource = column.original || "";
     var draft = reviewDrafts.get(reviewDraftKey(activeFilePath(), item.row));
+    if (draft && (draft.conflict || draft.original !== state.review.editorSource
+        || typeof draft.base_text === "string" && draft.base_text !== state.review.editorSavedText)) {
+        draft.conflict = true;
+        draft = null;
+    }
     el("editor-target").value = draft ? draft.text : column.translated || "";
     var showTargetMatches = Boolean(state.review.query) && ["both", "target"].includes(state.review.searchScope || "both");
     el("editor-target-matches").hidden = !showTargetMatches;
@@ -558,7 +641,9 @@ function renderReviewEditor(item) {
     el("editor-generation").innerHTML = meta.map(function (entry) {
         return "<div><dt>" + escapeHtml(entry[0]) + "</dt><dd>" + escapeHtml(entry[1]) + "</dd></div>";
     }).join("");
-    reviewSaveNote(draft ? "有尚未写回的本地草稿" + (draft.error ? "：" + draft.error : "") : column.manual_confirmed ? "此译文已由人工确认" : "修改后自动保存草稿", Boolean(draft && draft.error));
+    reviewSaveNote(draft && typeof draft.base_text !== "string" ? "旧版草稿尚未写回，可点击保存草稿"
+        : draft ? "有尚未写回的本地草稿" + (draft.error ? "：" + draft.error : "")
+        : column.manual_confirmed ? "此译文已由人工确认" : "修改后自动保存草稿", Boolean(draft && draft.error));
 }
 
 function statusLabel(status) {
@@ -592,11 +677,14 @@ async function saveReview(action) {
     try {
         var result = await API.post("/review/save", {
             file_path: requestedPath, row: row, col: 0, text: text, action: action,
+            expected_original: state.review.editorSource,
+            expected_translation: state.review.editorSavedText,
         });
         if (requestedPath !== activeFilePath()) return;
         state.review.editorSavedText = result.text == null ? text : result.text;
         el("editor-target").value = state.review.editorSavedText;
         reviewDrafts.delete(reviewDraftKey(requestedPath, row));
+        reviewDraftTouched.add(reviewDraftKey(requestedPath, row));
         persistReviewDrafts();
         el("editor-save-note").textContent = action === "accept" ? "人工确认已保存" : action === "draft" ? "草稿已保存，尚未人工确认" : "已标记为保留原文";
         toast(el("editor-save-note").textContent, "success");

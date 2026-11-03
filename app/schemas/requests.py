@@ -69,6 +69,8 @@ class TranslateRequest(BaseModel):
 
 class SettingsUpdateRequest(BaseModel):
     provider: str
+    api_protocol_mode: Optional[str] = None
+    api_model_endpoints: Optional[Dict[str, List[str]]] = None
     api_profile_id: Optional[str] = None
     api_profile_name: Optional[str] = None
     api_preset: Optional[str] = None
@@ -145,6 +147,8 @@ class ReviewSaveRequest(BaseModel):
     col: int
     text: str
     action: str = "accept"
+    expected_original: str | None = None
+    expected_translation: str | None = None
 
 
 class ReviewBatchSaveRequest(BaseModel):

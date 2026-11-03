@@ -1,11 +1,13 @@
 "use strict";
 async function loadSettings(showNotice) {
+    if (typeof settingsAutosavePromise !== "undefined" && settingsAutosavePromise) await settingsAutosavePromise;
     setSettingsBusy("loading");
     try {
         state.settings = await API.get("/settings");
         state.settingsApiProfileId = state.settings.active_api_profile || "";
         state.settingsDirty = false;
         state.settingsConnectionDirty = false;
+        if (typeof resetSettingsAutosave === "function") resetSettingsAutosave();
         loadPersistedModelStatuses();
         initializeModelCatalog();
         renderSettings(); await loadModelBenchmark();
@@ -21,10 +23,10 @@ function initializeModelCatalog() {
     var api = settings.api || {};
     var ollama = settings.ollama || {};
     var apiDisabled = new Set(api.disabled_models || []);
-    var apiProtocols = api.model_protocols || {};
+    var apiEndpoints = api.model_endpoints || {};
     var localDisabled = new Set(ollama.disabled_models || []);
     state.modelCatalog.api = (api.models || []).map(function (name) {
-        return modelCatalogEntry("api", name, !apiDisabled.has(name), apiProtocols[name] || "");
+        return modelCatalogEntry("api", name, !apiDisabled.has(name), "", apiEndpoints[name] || []);
     });
     var localNames = ((state.models || []).filter(function (model) {
         return model.provider === "ollama";
@@ -45,7 +47,7 @@ function initializeModelCatalog() {
         ));
     }
 }
-function modelCatalogEntry(provider, name, enabled, protocol) {
+function modelCatalogEntry(provider, name, enabled, protocol, endpoints) {
     var clean = String(name || "").replace(/^(api|ollama):/, "").trim();
     return {
         id: provider + ":" + clean,
@@ -53,6 +55,7 @@ function modelCatalogEntry(provider, name, enabled, protocol) {
         provider: provider,
         enabled: enabled !== false,
         protocol: String(protocol || ""),
+        supported_endpoint_types: Array.isArray(endpoints) ? endpoints.slice() : [],
     };
 }
 function renderSettings() {
@@ -60,7 +63,6 @@ function renderSettings() {
     var settings = state.settings;
     var api = settings.api || {};
     var ollama = settings.ollama || {};
-    var file = settings.file || {};
     el("settings-provider").value = settings.provider || "api";
     state.settingsApiProfileId = settings.active_api_profile || "";
     renderProviderPicker();
@@ -72,16 +74,9 @@ function renderSettings() {
     el("settings-api-key").value = "";
     el("settings-clear-key").checked = false;
     el("settings-key-state").textContent = api.api_key_configured
-        ? "已配置（来源：" + keySourceLabel(api.api_key_source) + "）"
-        : "尚未配置";
-    el("settings-connect-note").textContent = api.api_key_configured && (api.models || []).length
-        ? "连接已保存。可以刷新目录，或直接使用默认模型。"
-        : "只读取模型目录，不会发送翻译或模型测试请求。";
-    el("settings-file-state").className = "settings-file-state" + (file.writable ? "" : " error");
-    el("settings-file-state").textContent = "配置文件：" + (file.path || "未知")
-        + " · " + (file.exists ? "已存在" : "保存时创建")
-        + " · " + (file.writable ? "可写" : "不可写")
-        + " · " + (settings.precedence_note || "");
+        ? "已配置" : "未配置";
+    el("settings-connect-note").textContent = !api.api_key_configured ? "尚未连接"
+        : (api.models || []).length ? "已读取 " + api.models.length + " 个模型" : "";
     renderSettingsModelPicker();
     el("settings-default-model").value = settings.default_model || "";
     renderSettingsStatus();
@@ -115,14 +110,11 @@ function renderProviderPicker() {
 
 function renderActiveProviderNote() {
     var creating = state.settingsApiProfileId !== (state.settings || {}).active_api_profile;
-    el("settings-active-provider").textContent = "当前启用：" + activeApiProviderName()
-        + (creating ? " · 正在添加新连接" : " · 选择已保存配置即可切换");
+    el("settings-active-provider").textContent = creating ? "新增提供商" : activeApiProviderName();
 }
 
 function updateApiProtocolOptions() {
     var isOpenCode = el("settings-api-preset").value === "opencode_go";
-    el("settings-opencode-protocol").hidden = !isOpenCode;
-    el("settings-opencode-protocol").disabled = !isOpenCode;
     if (!isOpenCode && el("settings-api-style").value === "opencode_go") {
         el("settings-api-style").value = "openai";
     }
@@ -164,12 +156,14 @@ function applyProviderPreset(creating) {
     el("settings-model-search").value = "";
     renderSettingsModelPicker();
     renderActiveProviderNote();
-    markSettingsDirty(true);
+    markSettingsDirty(true, true);
 }
 
 async function activateApiProvider() {
-    if (state.settingsDirty || state.settingsBusy || settingsTaskIsActive() || benchmarkIsActive()) return;
+    if (state.settingsBusy || settingsTaskIsActive() || benchmarkIsActive()) return;
+    if (typeof settingsHasSecretEdits === "function" && settingsHasSecretEdits()) { toast("请先确认保存或放弃密钥修改", "error"); return; }
     var selected = el("settings-api-profile").value;
+    if (typeof flushSettingsAutosave === "function" && !await flushSettingsAutosave()) return;
     if (!selected || selected === (state.settings || {}).active_api_profile) return;
     setSettingsBusy("switching");
     try {
@@ -178,6 +172,7 @@ async function activateApiProvider() {
         state.settingsApiProfileId = state.settings.active_api_profile;
         state.settingsDirty = false;
         state.settingsConnectionDirty = false;
+        if (typeof resetSettingsAutosave === "function") resetSettingsAutosave();
         loadPersistedModelStatuses();
         initializeModelCatalog();
         state.modelBenchmark = null;
@@ -242,7 +237,8 @@ function renderModelPickerMetadata() {
         + enabled.map(function (item) {
             return '<option value="' + escapeHtml(item.id) + '">' + escapeHtml(item.name) + "</option>";
         }).join("");
-    el("settings-default-model").value = enabled.some(function (item) { return item.id === selected; }) ? selected : "";
+    el("settings-default-model").value = enabled.some(function (item) { return item.id === selected; })
+        ? selected : selected && enabled.length ? enabled[0].id : "";
 }
 
 function renderModelRow(item) {
@@ -250,7 +246,7 @@ function renderModelRow(item) {
     var nsfwRecord = modelTestRecord(state.modelNsfwAvailability, item.id);
     var availability = basicRecord.status;
     var nsfwAvailability = nsfwRecord.status;
-    var testDisabled = state.settingsConnectionDirty || Boolean(state.settingsBusy)
+    var testDisabled = Boolean(state.settingsBusy)
         || settingsTaskIsActive();
     var status = basicRecord.stale ? {
         available: "上次可用",
@@ -273,11 +269,6 @@ function renderModelRow(item) {
         restricted: "NSFW 受限",
         error: "NSFW 测试失败",
     }[nsfwAvailability];
-    var protocolPicker = item.provider === "api"
-        ? '<select class="model-protocol-select" data-model-protocol="' + escapeHtml(item.id) + '" aria-label="' + escapeHtml(item.name) + ' 协议">'
-        + '<option value=""' + (!item.protocol ? " selected" : "") + '>协议：自动</option><option value="responses"' + (item.protocol === "responses" ? " selected" : "") + '>Responses</option>'
-        + '<option value="messages"' + (item.protocol === "messages" ? " selected" : "") + '>Messages</option><option value="chat_completions"' + (item.protocol === "chat_completions" ? " selected" : "") + '>Chat</option></select>'
-        : "";
     return '<div class="model-row" data-model-row="' + escapeHtml(item.id) + '">'
         + '<input type="checkbox" data-model-enabled="' + escapeHtml(item.id) + '"'
         + (item.enabled ? " checked" : "") + ' aria-label="启用 ' + escapeHtml(item.name) + '">'
@@ -286,7 +277,6 @@ function renderModelRow(item) {
         + "</small></span>"
         + '<span class="availability-badge ' + availability + (basicRecord.stale ? " stale" : "") + '">' + status + "</span>"
         + '<span class="availability-badge ' + nsfwAvailability + (nsfwRecord.stale ? " stale" : "") + '">' + nsfwStatus + "</span>"
-        + protocolPicker
         + '<button type="button" class="btn btn-secondary btn-sm" data-test-model="' + escapeHtml(item.id) + '"'
         + (testDisabled ? " disabled" : "") + ">"
         + (availability === "testing" ? "测试中…" : "测试可用性") + "</button>"
@@ -296,36 +286,8 @@ function renderModelRow(item) {
 }
 
 function renderSettingsStatus() {
-    if (!state.runtime) return;
-    var providers = state.runtime.providers || {};
-    var providerRows = [
-        {
-            name: activeApiProviderName(),
-            detail: providers.api ? providers.api.health_note : "未配置",
-            good: providers.api && providers.api.configured,
-            label: providers.api && providers.api.configured ? "配置完整" : "配置不完整",
-        },
-        {
-            name: "Ollama",
-            detail: providers.ollama ? providers.ollama.health_note : "未连接",
-            good: providers.ollama && providers.ollama.configured,
-            label: providers.ollama && providers.ollama.configured
-                ? providers.ollama.model_count + " 个模型" : "离线",
-        },
-    ];
-    el("provider-status-list").innerHTML = providerRows.map(function (row) {
-        return '<div class="provider-status-item"><div class="provider-copy"><strong>'
-            + escapeHtml(row.name) + "</strong><span>" + escapeHtml(row.detail || "")
-            + '</span></div><span class="health-badge ' + (row.good ? "good" : "bad")
-            + '">' + escapeHtml(row.label) + "</span></div>";
-    }).join("");
-    el("settings-profile-list").innerHTML = (state.runtime.profiles || []).map(function (profile) {
-        return '<div class="settings-profile-item"><div class="settings-profile-copy"><strong>'
-            + escapeHtml(profile.name) + (profile.recommended ? " · 推荐" : "")
-            + "</strong><span>" + escapeHtml(profile.description || "")
-            + '</span></div><span class="health-badge ' + (profile.available ? "good" : "bad")
-            + '">' + (profile.available ? "可用" : "不可用") + "</span></div>";
-    }).join("");
+    // Runtime state is rendered in the translation workspace. This hook stays
+    // available to refresh callers without rebuilding configuration help cards.
 }
 
 function settingsValidationMessage(connectionOnly) {
@@ -343,7 +305,7 @@ function settingsValidationMessage(connectionOnly) {
         var editingActive = state.settingsApiProfileId === state.settings.active_api_profile;
         var hasKey = (editingActive && (state.settings.api || {}).api_key_configured)
             || Boolean(el("settings-api-key").value.trim());
-        if (!hasKey || el("settings-clear-key").checked) return "联网 API 需要有效密钥";
+        if (!hasKey) return "联网 API 需要有效密钥";
         if (el("settings-api-style").value !== "opencode_go"
             && !el("settings-base-url").value.trim()) return "兼容 API 需要 Base URL";
     }
@@ -354,41 +316,44 @@ function updateSettingsControls() {
     var active = settingsTaskIsActive(), operationsBlocked = active || benchmarkIsActive();
     var busy = Boolean(state.settingsBusy);
     var writable = !state.settings || !state.settings.file || state.settings.file.writable;
-    var validation = settingsValidationMessage();
+    var secretDirty = Boolean(el("settings-api-key").value.trim() || el("settings-clear-key").checked);
+    var autosaving = Boolean(state.settingsAutosaving);
+    var ordinaryError = typeof settingsAutosaveError === "string" ? settingsAutosaveError : "";
+    var saveError = ordinaryError || state.settingsSecretError || "";
     el("settings-fieldset").disabled = operationsBlocked || busy;
     el("settings-dirty-badge").className = "status-badge "
-        + (busy ? "running" : state.settingsDirty ? "warning" : "neutral");
+        + (busy || autosaving ? "running" : saveError || secretDirty ? "warning" : "neutral");
     el("settings-dirty-badge").textContent = busy
         ? { loading: "正在加载", saving: "正在保存", connecting: "正在连接并读取模型", discovering: "正在获取模型", testing: "正在测试模型", switching: "正在切换提供商" }[state.settingsBusy]
-        : state.settingsDirty ? "有未保存修改" : "尚未修改";
-    el("btn-settings-refresh").disabled = busy;
-    el("settings-api-profile").disabled = operationsBlocked || busy || state.settingsDirty;
-    el("btn-provider-new").disabled = operationsBlocked || busy || state.settingsDirty;
+        : autosaving ? "自动保存中" : saveError ? "保存失败" : secretDirty ? "密钥待确认" : state.settingsDirty ? "待自动保存" : "已保存";
+    el("btn-settings-refresh").disabled = busy || autosaving;
+    el("settings-api-profile").disabled = operationsBlocked || busy || autosaving || state.settingsDirty;
+    el("btn-provider-new").disabled = operationsBlocked || busy || autosaving || state.settingsDirty;
     var connectionValidation = settingsValidationMessage(true);
     el("btn-settings-connect").disabled = operationsBlocked || busy || !writable || Boolean(connectionValidation);
     el("btn-settings-discover").disabled = el("btn-settings-connect").disabled;
-    var hasDefault = Boolean(el("settings-default-model").value);
-    el("btn-settings-save").disabled = operationsBlocked || busy || !writable || !hasDefault || Boolean(validation);
+    var missingSavedKey = currentSettingsProvider() === "api" && !(state.settings && state.settings.api && state.settings.api.api_key_configured);
+    el("btn-settings-connect").textContent = missingSavedKey ? "保存密钥并获取模型" : "连接并获取模型";
+    el("btn-settings-save").disabled = operationsBlocked || busy || !writable || !secretDirty
+        || (!el("settings-clear-key").checked && !el("settings-api-key").value.trim());
+    var retry = el("btn-settings-retry");
+    if (retry) { retry.hidden = !ordinaryError; retry.disabled = operationsBlocked || busy || autosaving; }
     var noEnabledModels = !currentModelCatalog().some(function (item) { return item.enabled; });
-    el("btn-test-enabled-models").disabled = operationsBlocked || busy || state.settingsConnectionDirty || noEnabledModels;
-    el("btn-test-enabled-nsfw").disabled = operationsBlocked || busy || state.settingsConnectionDirty || noEnabledModels;
+    el("btn-test-enabled-models").disabled = operationsBlocked || busy || noEnabledModels;
+    el("btn-test-enabled-nsfw").disabled = operationsBlocked || busy || noEnabledModels;
     all("[data-test-model], [data-test-model-nsfw]", el("settings-model-list")).forEach(function (button) {
-        button.disabled = operationsBlocked || busy || state.settingsConnectionDirty;
+        button.disabled = operationsBlocked || busy;
     });
+    el("settings-key-state").textContent = secretDirty ? "待确认保存" : missingSavedKey ? "未配置" : "已配置";
     el("settings-save-note").textContent = active
-        ? "翻译或 AI 复核活动期间不能修改、获取或测试模型。"
-        : busy ? "请等待当前设置操作完成。"
-        : !writable ? "配置目录不可写；请把软件移动到可写目录。"
-        : validation || (state.settingsConnectionDirty
-            ? "点击“连接并获取模型”，会保存连接并读取模型目录。"
-            : state.settingsDirty
-                ? "选好默认模型后，点击“完成并使用”保存选择。"
-                : "连接已就绪。可直接使用，或展开下方可选测试。");
+        ? "任务进行中" : busy ? "处理中…" : saveError || (autosaving ? "保存中…"
+            : secretDirty ? "密钥待确认" : state.settingsDirty ? "待保存" : "已保存");
 }
 
-function markSettingsDirty(connectionChanged) {
+function markSettingsDirty(connectionChanged, immediate) {
     state.settingsDirty = true;
     state.settingsConnectionDirty = state.settingsConnectionDirty || Boolean(connectionChanged);
+    if (typeof scheduleSettingsAutosave === "function") scheduleSettingsAutosave(Boolean(immediate));
     updateSettingsControls(); renderModelBenchmark();
 }
 function setSettingsBusy(mode) {
@@ -396,8 +361,8 @@ function setSettingsBusy(mode) {
     if (el("settings-fieldset")) { updateSettingsControls(); renderModelBenchmark(); }
 }
 
-function settingsPayload() {
-    return {
+function settingsPayload(includeSecret) {
+    var payload = {
         provider: currentSettingsProvider(),
         api_profile_id: state.settingsApiProfileId || undefined,
         api_profile_name: el("settings-profile-name").value.trim(),
@@ -408,29 +373,40 @@ function settingsPayload() {
         disabled_api_models: state.modelCatalog.api.filter(function (item) {
             return !item.enabled;
         }).map(function (item) { return item.name; }),
-        api_model_protocols: Object.fromEntries(state.modelCatalog.api.filter(function (item) { return Boolean(item.protocol); })
-            .map(function (item) { return [item.name, item.protocol]; })),
+        api_protocol_mode: "auto",
+        api_model_endpoints: Object.fromEntries(state.modelCatalog.api.filter(function (item) { return (item.supported_endpoint_types || []).length; })
+            .map(function (item) { return [item.name, item.supported_endpoint_types.slice()]; })),
         disabled_ollama_models: state.modelCatalog.ollama.filter(function (item) {
             return !item.enabled;
         }).map(function (item) { return item.name; }),
-        default_model: el("settings-default-model").value.trim(),
+        default_model: el("settings-default-model").value.trim() || currentSettingsProvider() + ":",
         disable_thinking: el("settings-disable-thinking").checked,
         ollama_host: el("settings-ollama-host").value.trim(),
-        api_key_action: el("settings-clear-key").checked ? "clear"
-            : el("settings-api-key").value.trim() ? "replace" : "keep",
-        api_key: el("settings-api-key").value.trim(),
+        api_key_action: "keep",
     };
+    if (includeSecret) {
+        payload.api_key_action = el("settings-clear-key").checked ? "clear"
+            : el("settings-api-key").value.trim() ? "replace" : "keep";
+        if (payload.api_key_action === "replace") payload.api_key = el("settings-api-key").value.trim();
+    }
+    return payload;
 }
 
 async function saveSettings(event) {
     event.preventDefault();
+    if (state.settingsBusy || settingsTaskIsActive() || benchmarkIsActive()) return false;
+    if (typeof flushSettingsAutosave === "function" && !await flushSettingsAutosave()) return false;
+    var secretEdited = Boolean(el("settings-api-key").value.trim() || el("settings-clear-key").checked);
+    if (!secretEdited) return true;
+    state.settingsSecretError = "";
     setSettingsBusy("saving");
     try {
-        var result = await API.put("/settings", settingsPayload());
+        var result = await API.put("/settings", settingsPayload(true));
         state.settings = result.settings;
         state.settingsApiProfileId = state.settings.active_api_profile || "";
         state.settingsDirty = false;
         state.settingsConnectionDirty = false;
+        if (typeof resetSettingsAutosave === "function") resetSettingsAutosave();
         loadPersistedModelStatuses();
         initializeModelCatalog();
         state.modelBenchmark = null;
@@ -438,10 +414,12 @@ async function saveSettings(event) {
         await loadModelBenchmark();
         renderSettings();
         invalidatePreflight();
-        toast("模型已就绪，可以开始翻译", "success");
-        if (typeof navigate === "function") navigate("translate");
+        toast("密钥修改已保存", "success");
+        return true;
     } catch (error) {
+        state.settingsSecretError = "密钥尚未保存：" + error.message;
         toast(error.message, "error");
+        return false;
     } finally {
         setSettingsBusy("");
     }
@@ -451,65 +429,50 @@ async function connectSettingsProvider() {
     if (state.settingsBusy || settingsTaskIsActive() || benchmarkIsActive()) return;
     var validation = settingsValidationMessage(true);
     if (validation) { toast(validation, "error"); return; }
+    if (typeof flushSettingsAutosave === "function" && !await flushSettingsAutosave()) return;
+    var provider = currentSettingsProvider();
+    if (provider === "api" && !(state.settings.api || {}).api_key_configured) {
+        if (!await saveSettings({ preventDefault: function () {} })) return;
+    }
     setSettingsBusy("connecting");
+    var discovered = false;
     try {
         var previousDefault = el("settings-default-model").value;
-        var provider = currentSettingsProvider();
-        // Save the connection first so discovery uses the exact entered key,
-        // endpoint and protocol. Model selection remains the final user step.
-        if (state.settingsConnectionDirty || provider !== (state.settings || {}).provider) {
-            var payload = settingsPayload();
-            if (provider === "api") {
-                payload.api_models = [];
-                payload.disabled_api_models = [];
-                payload.api_model_protocols = {};
-                payload.default_model = "";
-            } else {
-                payload.default_model = previousDefault || "ollama:";
-            }
-            var saved = await API.put("/settings", payload);
-            state.settings = saved.settings;
-            state.settingsApiProfileId = state.settings.active_api_profile || "";
-            state.settingsDirty = false;
-            state.settingsConnectionDirty = false;
-            loadPersistedModelStatuses();
-            initializeModelCatalog();
-            renderSettings();
-        }
         var result = await API.post("/settings/models/discover", { provider: provider });
         var previous = new Map(currentModelCatalog().map(function (item) { return [item.id, item]; }));
         state.modelCatalog[provider] = (result.models || []).map(function (item) {
             var old = previous.get(item.id);
-            return modelCatalogEntry(provider, item.name, old ? old.enabled : true, old ? old.protocol : "");
+            return modelCatalogEntry(provider, item.name, old ? old.enabled : true, "",
+                item.supported_endpoint_types || (old && old.supported_endpoint_types) || []);
         });
-        state.settingsDirty = true;
         renderSettingsModelPicker();
         if (currentModelCatalog().some(function (item) { return item.id === previousDefault && item.enabled; })) {
             el("settings-default-model").value = previousDefault;
+        } else {
+            var first = currentModelCatalog().find(function (item) { return item.enabled; });
+            el("settings-default-model").value = first ? first.id : "";
         }
-        state.modelBenchmark = null;
-        await loadModels(false);
-        await loadModelBenchmark();
-        invalidatePreflight();
+        discovered = true;
         el("settings-connect-note").textContent = result.ok
-            ? "已读取 " + result.models.length + " 个模型。选择默认模型后点击“完成并使用”。"
-            : "实时目录暂不可用，已保留原有模型；也可以手动添加模型 ID。";
-        toast(result.ok ? "连接成功，请选择默认模型" : result.warning || "模型目录读取失败", result.ok ? "success" : "error");
+            ? "已获取 " + result.models.length + " 个模型"
+            : "模型目录暂不可用";
+        toast(result.ok ? "模型目录已更新" : result.warning || "模型目录读取失败", result.ok ? "success" : "error");
     } catch (error) {
         toast(error.message, "error");
-        el("settings-connect-note").textContent = "连接尚未完成：" + error.message + "。可重试或展开模型管理手动添加模型。";
-        state.modelBenchmark = null;
-        await loadModels(false);
-        await loadModelBenchmark();
+        el("settings-connect-note").textContent = "获取失败：" + error.message;
     } finally {
         setSettingsBusy("");
+    }
+    if (discovered) {
+        markSettingsDirty(false, true);
+        if (typeof flushSettingsAutosave === "function") await flushSettingsAutosave();
     }
 }
 
 function setAllCurrentModels(enabled) {
     currentModelCatalog().forEach(function (item) { item.enabled = enabled; });
     renderSettingsModelPicker();
-    markSettingsDirty(false);
+    markSettingsDirty(false, true);
 }
 
 function addSettingsModel() {
@@ -524,12 +487,13 @@ function addSettingsModel() {
     el("settings-model-manual").value = "";
     renderSettingsModelPicker();
     if (!el("settings-default-model").value) el("settings-default-model").value = item.id;
-    markSettingsDirty(false);
+    markSettingsDirty(false, true);
 }
 
 function bindSettingsEvents() {
     bindModelBenchmarkEvents();
     el("settings-form").addEventListener("submit", saveSettings);
+    if (el("btn-settings-retry")) el("btn-settings-retry").addEventListener("click", function () { flushSettingsAutosave(); });
     el("settings-api-profile").addEventListener("change", activateApiProvider);
     el("btn-provider-new").addEventListener("click", newApiProvider);
     el("settings-api-preset").addEventListener("change", function () { applyProviderPreset(false); });
@@ -551,13 +515,6 @@ function bindSettingsEvents() {
     el("btn-model-select-none").addEventListener("click", function () { setAllCurrentModels(false); });
     el("settings-model-search").addEventListener("input", renderSettingsModelPicker);
     el("settings-model-list").addEventListener("change", function (event) {
-        var protocolSelect = event.target.closest("[data-model-protocol]");
-        if (protocolSelect) {
-            var protocolItem = currentModelCatalog().find(function (entry) { return entry.id === protocolSelect.dataset.modelProtocol; });
-            if (protocolItem) protocolItem.protocol = protocolSelect.value;
-            markSettingsDirty(false);
-            return;
-        }
         var checkbox = event.target.closest("[data-model-enabled]");
         if (!checkbox) return;
         var item = currentModelCatalog().find(function (entry) {
@@ -565,7 +522,7 @@ function bindSettingsEvents() {
         });
         if (item) item.enabled = checkbox.checked;
         renderModelPickerMetadata();
-        markSettingsDirty(false);
+        markSettingsDirty(false, true);
     });
     el("settings-model-list").addEventListener("click", function (event) {
         var nsfwButton = event.target.closest("[data-test-model-nsfw]");
@@ -579,16 +536,27 @@ function bindSettingsEvents() {
     el("settings-provider").addEventListener("change", function () {
         el("settings-model-search").value = "";
         renderSettingsModelPicker();
-        markSettingsDirty(false);
+        markSettingsDirty(false, true);
     });
-    el("settings-default-model").addEventListener("change", function () { markSettingsDirty(false); });
-    ["settings-api-style", "settings-base-url", "settings-api-key",
-        "settings-ollama-host", "settings-disable-thinking", "settings-clear-key"].forEach(function (id) {
+    el("settings-default-model").addEventListener("change", function () { markSettingsDirty(false, true); });
+    ["settings-base-url", "settings-ollama-host"].forEach(function (id) {
         el(id).addEventListener("input", function () {
-            if (id === "settings-api-key" && this.value) el("settings-clear-key").checked = false;
-            if (id === "settings-clear-key" && this.checked) el("settings-api-key").value = "";
             markSettingsDirty(true);
         });
-        el(id).addEventListener("change", function () { markSettingsDirty(true); });
+    });
+    el("settings-disable-thinking").addEventListener("change", function () { markSettingsDirty(true, true); });
+    el("settings-api-key").addEventListener("input", function () {
+        if (this.value) el("settings-clear-key").checked = false;
+        state.settingsSecretError = "";
+        if (typeof syncSettingsDirtyState === "function") syncSettingsDirtyState();
+        else state.settingsDirty = true;
+        updateSettingsControls();
+    });
+    el("settings-clear-key").addEventListener("change", function () {
+        if (this.checked) el("settings-api-key").value = "";
+        state.settingsSecretError = "";
+        if (typeof syncSettingsDirtyState === "function") syncSettingsDirtyState();
+        else state.settingsDirty = true;
+        updateSettingsControls();
     });
 }

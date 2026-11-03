@@ -28,22 +28,6 @@ function modelTestTimeSummary(basic, adult) {
     var parts = [];
     if (basic.tested_at) parts.push("普通上次测试 " + modelTestTime(basic));
     if (adult.tested_at) parts.push("NSFW 上次测试 " + modelTestTime(adult));
-    var protocol = basic.protocol || adult.protocol;
-    if (protocol) parts.push("协议 " + {
-        chat_completions: "Chat",
-        messages: "Messages",
-        responses: "Responses",
-        ollama: "Ollama",
-    }[protocol] || protocol);
-    if (basic.protocol_attempts && basic.protocol_attempts.length > 1) {
-        parts.push("尝试 " + basic.protocol_attempts.map(function (item) {
-            return {
-                chat_completions: "Chat",
-                messages: "Messages",
-                responses: "Responses",
-            }[item] || item;
-        }).join(" → "));
-    }
     if (basic.latency_ms) parts.push("延迟 " + basic.latency_ms + " ms");
     if (basic.http_status) parts.push("HTTP " + basic.http_status);
     return parts.join(" · ") || "尚无历史测试";
@@ -54,20 +38,24 @@ function enabledModelsForCurrentProvider() {
 }
 
 async function requestModelTest(modelId, testKind) {
-    var item = currentModelCatalog().find(function (entry) { return entry.id === modelId; });
     return API.post("/settings/connection-test", {
         provider: modelId.split(":", 1)[0],
         model: modelId,
         test_kind: testKind,
-        protocol: item && item.protocol ? item.protocol : "auto",
+        protocol: "auto",
     });
 }
 
+function modelTestsAreBlocked() {
+    return Boolean(state.settingsBusy)
+        || (typeof settingsTaskIsActive === "function" && settingsTaskIsActive())
+        || (typeof benchmarkIsActive === "function" && benchmarkIsActive());
+}
+
 async function testSingleModel(modelId, testKind) {
-    if (state.settingsConnectionDirty) {
-        toast("请先保存连接参数，再测试模型", "error");
-        return;
-    }
+    if (modelTestsAreBlocked()) return;
+    if (typeof flushSettingsAutosave === "function" && !(await flushSettingsAutosave())) return;
+    if (modelTestsAreBlocked()) return;
     var adult = testKind === "adult";
     var statusStore = adult ? state.modelNsfwAvailability : state.modelAvailability;
     statusStore[modelId] = { status: "testing", tested_at: "", stale: false };
@@ -115,10 +103,9 @@ function testModelNsfwAvailability(modelId) {
 }
 
 async function testEnabledModels(testKind) {
-    if (state.settingsConnectionDirty) {
-        toast("请先保存连接参数，再测试模型", "error");
-        return;
-    }
+    if (modelTestsAreBlocked()) return;
+    if (typeof flushSettingsAutosave === "function" && !(await flushSettingsAutosave())) return;
+    if (modelTestsAreBlocked()) return;
     var models = enabledModelsForCurrentProvider();
     if (!models.length) {
         toast("请先勾选至少一个模型", "error");
@@ -126,11 +113,6 @@ async function testEnabledModels(testKind) {
     }
     var adult = testKind === "adult";
     var description = adult ? "成人内容兼容性" : "普通连接可用性";
-    if (!window.confirm(
-        "将逐个测试当前提供方已勾选的 " + models.length + " 个模型的" + description
-        + "。每个模型都会发送一条请求并可能消耗 Token，是否继续？"
-    )) return;
-
     var statusStore = adult ? state.modelNsfwAvailability : state.modelAvailability;
     models.forEach(function (item) {
         statusStore[item.id] = { status: "testing", tested_at: "", stale: false };

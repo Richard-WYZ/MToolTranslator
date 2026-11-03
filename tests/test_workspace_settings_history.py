@@ -41,7 +41,7 @@ def run_node(script: str) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_first_connection_reads_models_then_finishes_without_manual_intermediate_save():
+def test_first_connection_saves_key_explicitly_then_model_changes_autosave():
     run_node(r'''
 const settings = {
     provider: "api", active_api_profile: "design", default_model: "api:",
@@ -74,40 +74,46 @@ Object.assign(context, {
     },
 });
 vm.runInContext(fs.readFileSync("ui/static/js/settings.js", "utf8"), context);
+vm.runInContext(fs.readFileSync("ui/static/js/settings-autosave.js", "utf8"), context);
 (async () => {
     context.initializeModelCatalog(); context.renderSettings(); context.bindSettingsEvents();
     nodes["settings-api-key"].value = "test-only-secret";
     nodes["settings-api-key"].listeners.input.call(nodes["settings-api-key"]);
     assert.equal(nodes["btn-settings-connect"].disabled, false);
     await context.connectSettingsProvider();
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 3);
     assert.equal(calls[0].path, "/settings");
     assert.equal(calls[0].body.api_key_action, "replace");
-    assert.equal(calls[0].body.default_model, "");
+    assert.equal(calls[0].body.default_model, "api:");
     assert.equal(calls[1].path, "/settings/models/discover");
     assert.equal(context.state.modelCatalog.api.length, 2);
-    assert.equal(nodes["settings-default-model"].value, "");
+    assert.equal(nodes["settings-default-model"].value, "api:first");
+    assert.equal(calls[2].body.api_key_action, "keep");
+    assert.ok(!("api_key" in calls[2].body));
     assert.equal(nodes["btn-settings-save"].disabled, true);
     nodes["settings-default-model"].value = "api:second";
     nodes["settings-default-model"].listeners.change();
-    assert.equal(nodes["btn-settings-save"].disabled, false);
-    await context.saveSettings({preventDefault() {}});
-    assert.equal(calls.length, 3);
-    assert.equal(calls[2].body.default_model, "api:second");
-    assert.equal(calls[2].body.api_models.length, 2);
-    assert.equal(calls[2].body.api_key_action, "keep");
-    assert.equal(pages.at(-1), "translate");
-    assert.equal(benchmarkLoads, 2);
+    assert.equal(nodes["btn-settings-save"].disabled, true, "Default model changes must not need the key confirmation button");
+    assert.equal(await context.flushSettingsAutosave(), true);
+    assert.equal(calls.length, 4);
+    assert.equal(calls[3].body.default_model, "api:second");
+    assert.equal(calls[3].body.api_models.length, 2);
+    assert.equal(calls[3].body.api_key_action, "keep");
+    assert.equal(pages.length, 0, "Autosaving settings must not unexpectedly navigate away");
+    assert.equal(benchmarkLoads, 3);
     nodes["settings-api-profile"].value = "other";
     await nodes["settings-api-profile"].listeners.change();
     assert.equal(calls.at(-1).path, "/settings/providers/activate");
     assert.equal(context.state.settings.active_api_profile, "other");
     const count = calls.length;
-    context.state.settingsDirty = true;
+    nodes["settings-api-key"].value = "unconfirmed-key";
+    nodes["settings-api-key"].listeners.input.call(nodes["settings-api-key"]);
     nodes["settings-api-profile"].value = "design";
     await nodes["settings-api-profile"].listeners.change();
-    assert.equal(calls.length, count, "Unsaved edits must block automatic profile switching");
-    context.state.settingsDirty = false; context.state.taskStatus = "running";
+    assert.equal(calls.length, count, "Unconfirmed keys must block automatic profile switching");
+    nodes["settings-api-key"].value = "";
+    nodes["settings-api-key"].listeners.input.call(nodes["settings-api-key"]);
+    context.state.taskStatus = "running";
     await context.activateApiProvider();
     assert.equal(calls.length, count, "Active translation must block switching");
     assert.match(html, /<details id="settings-model-tools"/);
