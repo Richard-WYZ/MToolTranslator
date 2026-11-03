@@ -59,16 +59,17 @@ function restoreReviewDraftStore() {
     reviewDraftStoreRestore = Promise.resolve().then(function () {
         return bridge.get_workspace_drafts("review");
     }).then(function (cached) {
-        mergeReviewDrafts(cached, true);
+        mergeReviewDrafts(cached);
         reviewDraftStoreReady = true;
         persistReviewDrafts();
         var draft = reviewDrafts.get(reviewDraftKey(state.review.editorFilePath, state.review.editorRow));
-        if (draft && (draft.original !== state.review.editorSource || draft.base_text !== state.review.editorSavedText)) {
+        if (draft && (draft.original !== state.review.editorSource
+            || typeof draft.base_text === "string" && draft.base_text !== state.review.editorSavedText)) {
             draft.conflict = true;
         }
         if (draft && !draft.conflict && el("editor-target").value === state.review.editorSavedText) {
             el("editor-target").value = draft.text;
-            reviewSaveNote("已恢复未保存草稿");
+            reviewSaveNote(typeof draft.base_text === "string" ? "已恢复未保存草稿" : "旧版草稿尚未写回，可点击保存草稿");
         }
     }).catch(function () {
         // Keep both the local copy and unread native drafts when the bridge is unavailable.
@@ -113,14 +114,16 @@ function reviewSaveNote(message, failed) {
     el("editor-save-note").className = "hint" + (failed ? " draft-save-error" : "");
 }
 
-function captureReviewDraft() {
+function captureReviewDraft(fromInput) {
     var path = state.review.editorFilePath, row = state.review.editorRow;
     if (!path || row == null || path !== activeFilePath() || el("review-editor").hidden) return null;
     var text = el("editor-target").value;
     var key = reviewDraftKey(path, row), draft = reviewDrafts.get(key);
     if ((!draft || draft.conflict) && text === state.review.editorSavedText) return null;
     if (!draft || draft.conflict) draft = { path: path, row: row, original: state.review.editorSource, base_text: state.review.editorSavedText, version: 0 };
-    if (draft.base_text === undefined) draft.base_text = state.review.editorSavedText;
+    // Restored legacy text has no saved baseline. Reading, blurring or leaving
+    // its editor must not turn it into permission to overwrite newer output.
+    if (typeof draft.base_text !== "string" && fromInput === true) draft.base_text = state.review.editorSavedText;
     if (draft.text !== text) { draft.text = text; draft.version += 1; draft.error = ""; }
     reviewDrafts.set(key, draft);
     reviewDraftTouched.add(key);
@@ -129,6 +132,7 @@ function captureReviewDraft() {
 }
 
 async function saveReviewDraftEntry(draft) {
+    if (typeof draft.base_text !== "string") return true;
     if (draft.saving) return draft.saving;
     draft.saving = (async function () {
         while (reviewDrafts.get(reviewDraftKey(draft.path, draft.row)) === draft) {
@@ -178,7 +182,9 @@ async function saveReviewDraftEntry(draft) {
 async function flushReviewDraft() {
     clearTimeout(reviewDraftTimer);
     captureReviewDraft();
-    var pending = Array.from(reviewDrafts.values()).filter(function (draft) { return draft.path === activeFilePath() && !draft.conflict; });
+    var pending = Array.from(reviewDrafts.values()).filter(function (draft) {
+        return draft.path === activeFilePath() && !draft.conflict && typeof draft.base_text === "string";
+    });
     if (!pending.length) return true;
     if (aiReviewIsActive()) { reviewSaveNote("AI 检查期间暂不能保存；本地草稿已保留", true); return false; }
     for (var draft of pending) {
@@ -193,7 +199,7 @@ function reviewHasPendingDraft() {
 }
 
 function scheduleReviewDraft() {
-    captureReviewDraft();
+    captureReviewDraft(true);
     reviewSaveNote("编辑已保留，稍后自动保存草稿…");
     clearTimeout(reviewDraftTimer);
     reviewDraftTimer = setTimeout(function () { flushReviewDraft(); }, 700);
@@ -635,7 +641,9 @@ function renderReviewEditor(item) {
     el("editor-generation").innerHTML = meta.map(function (entry) {
         return "<div><dt>" + escapeHtml(entry[0]) + "</dt><dd>" + escapeHtml(entry[1]) + "</dd></div>";
     }).join("");
-    reviewSaveNote(draft ? "有尚未写回的本地草稿" + (draft.error ? "：" + draft.error : "") : column.manual_confirmed ? "此译文已由人工确认" : "修改后自动保存草稿", Boolean(draft && draft.error));
+    reviewSaveNote(draft && typeof draft.base_text !== "string" ? "旧版草稿尚未写回，可点击保存草稿"
+        : draft ? "有尚未写回的本地草稿" + (draft.error ? "：" + draft.error : "")
+        : column.manual_confirmed ? "此译文已由人工确认" : "修改后自动保存草稿", Boolean(draft && draft.error));
 }
 
 function statusLabel(status) {
@@ -669,6 +677,8 @@ async function saveReview(action) {
     try {
         var result = await API.post("/review/save", {
             file_path: requestedPath, row: row, col: 0, text: text, action: action,
+            expected_original: state.review.editorSource,
+            expected_translation: state.review.editorSavedText,
         });
         if (requestedPath !== activeFilePath()) return;
         state.review.editorSavedText = result.text == null ? text : result.text;

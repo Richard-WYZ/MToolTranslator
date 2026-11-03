@@ -1,59 +1,70 @@
-name: Release
+name: Prepare Windows release artifacts
 
 on:
-  push:
-    branches:
-      - master
-    paths:
-      - VERSION
   workflow_dispatch:
+    inputs:
+      version:
+        description: Confirmed release version matching VERSION (for example 0.5.0)
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  prepare:
     runs-on: windows-latest
     timeout-minutes: 45
 
     steps:
-      - name: Checkout
+      - name: Checkout master
         uses: actions/checkout@v5
         with:
+          ref: master
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Read version
+      - name: Validate confirmed version and release commit
         id: version
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
-          if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
-            throw "VERSION must use semantic versioning, for example 0.2.0"
+          $ErrorActionPreference = "Stop"
+          if ($env:GITHUB_REF -ne "refs/heads/master") {
+            throw "Artifact preparation must be dispatched from master."
+          }
+          $version = $env:RELEASE_VERSION.Trim()
+          if ($version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+            throw "The confirmed version must use MAJOR.MINOR.PATCH."
+          }
+          $recordedVersion = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          if ($version -ne $recordedVersion) {
+            throw "The confirmed version must match VERSION."
+          }
+          $branch = (& git branch --show-current | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $branch -ne "master") {
+            throw "The checkout must be on master."
+          }
+          $status = (& git status --porcelain | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $status) {
+            throw "The release checkout must be clean."
+          }
+          $headCommit = (& git rev-parse HEAD | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Unable to read HEAD." }
+          $remoteMasterCommit = (& git rev-parse origin/master | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $headCommit -ne $remoteMasterCommit) {
+            throw "The release commit must match origin/master."
           }
           "version=$version" >> $env:GITHUB_OUTPUT
-          "tag=v$version" >> $env:GITHUB_OUTPUT
-
-      - name: Ensure version is new
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          $existing = gh release list `
-            --repo $env:GITHUB_REPOSITORY `
-            --limit 100 `
-            --json tagName `
-            --jq ".[] | select(.tagName == `"$env:TAG`") | .tagName"
-          if ($existing) {
-            throw "Release $env:TAG already exists. Increase VERSION first."
-          }
+          "artifact_name=MToolTranslator-v$version-windows-x64" >> $env:GITHUB_OUTPUT
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: requirements-dev.txt
 
       - name: Install dependencies
         shell: pwsh
@@ -61,51 +72,68 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
 
-      - name: Run tests
+      - name: Run required tests
         shell: pwsh
         run: tools\run_tests.ps1 -q
 
-      - name: Build portable Windows package
+      - name: Build isolated Windows artifact
         shell: pwsh
-        run: tools\build.ps1
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: tools\build.ps1 -Version $env:RELEASE_VERSION
 
-      - name: Package release asset
+      - name: Archive and verify the untouched artifact
         id: package
         shell: pwsh
         env:
-          TAG: ${{ steps.version.outputs.tag }}
+          ARTIFACT_NAME: ${{ steps.version.outputs.artifact_name }}
         run: |
-          $asset = "build\MToolTranslator-$env:TAG-windows-x64.zip"
-          $files = @(
-            "build\dist\MToolTranslator.exe",
-            "build\dist\.env"
-          )
-          foreach ($file in $files) {
-            if (-not (Test-Path -LiteralPath $file)) {
-              throw "Missing release file: $file"
+          $ErrorActionPreference = "Stop"
+          $artifactDirectory = Join-Path "build\dist" $env:ARTIFACT_NAME
+          $files = @(Get-ChildItem -LiteralPath $artifactDirectory -Force)
+          $executable = Join-Path $artifactDirectory "MToolTranslator.exe"
+          if ($files.Count -ne 1 -or $files[0].Name -ne "MToolTranslator.exe" -or
+              -not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+            throw "The untouched artifact directory must contain exactly MToolTranslator.exe."
+          }
+          $archive = Join-Path "build\dist" "$env:ARTIFACT_NAME.zip"
+          $checksum = "$archive.sha256"
+          if ((Test-Path -LiteralPath $archive) -or (Test-Path -LiteralPath $checksum)) {
+            throw "Artifact archives and checksums must not be overwritten."
+          }
+          Compress-Archive -LiteralPath $executable -DestinationPath $archive
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($archive)
+          try {
+            if ($zip.Entries.Count -ne 1 -or $zip.Entries[0].FullName -ne "MToolTranslator.exe") {
+              throw "The ZIP must contain exactly MToolTranslator.exe."
+            }
+            $entryStream = $zip.Entries[0].Open()
+            $hashAlgorithm = [System.Security.Cryptography.SHA256]::Create()
+            try {
+              $entryHash = [System.BitConverter]::ToString($hashAlgorithm.ComputeHash($entryStream)).Replace("-", "")
+            }
+            finally {
+              $entryStream.Dispose()
+              $hashAlgorithm.Dispose()
+            }
+            $executableHash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash
+            if ($entryHash -ne $executableHash) {
+              throw "The archived executable does not match the untouched artifact."
             }
           }
-          $keyLine = Get-Content -LiteralPath "build\dist\.env" |
-            Where-Object { $_ -match '^THIRD_PARTY_API_KEY=' }
-          if ($keyLine -ne 'THIRD_PARTY_API_KEY=') {
-            throw "Packaged .env must not contain an API key."
-          }
-          Compress-Archive -LiteralPath $files -DestinationPath $asset
-          "asset=$asset" >> $env:GITHUB_OUTPUT
+          finally { $zip.Dispose() }
+          $archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          $checksumLine = "$archiveHash  $env:ARTIFACT_NAME.zip`n"
+          [System.IO.File]::WriteAllText($checksum, $checksumLine, [System.Text.UTF8Encoding]::new($false))
+          "archive=$archive" >> $env:GITHUB_OUTPUT
+          "checksum=$checksum" >> $env:GITHUB_OUTPUT
 
-      - name: Create tag and GitHub release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-          ASSET: ${{ steps.package.outputs.asset }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag $env:TAG
-          git push origin $env:TAG
-          gh release create $env:TAG $env:ASSET `
-            --repo $env:GITHUB_REPOSITORY `
-            --verify-tag `
-            --generate-notes `
-            --title "MToolTranslator $env:TAG"
+      - name: Upload prepared artifacts for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.artifact_name }}
+          path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.checksum }}
+          if-no-files-found: error
+          compression-level: 0
