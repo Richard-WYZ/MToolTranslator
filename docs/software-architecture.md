@@ -40,6 +40,20 @@ lifecycle, and the human proofreading interface.
 Routes validate HTTP concerns and delegate to services. They must not implement
 translation, terminology, or checkpoint policy.
 
+Startup reads configured API models without waiting for local network discovery.
+The model catalog transport uses a bounded, host-scoped cache with concurrent
+request coalescing; local discovery runs separately from configuration reads.
+Settings persistence serializes writes, while `ui/static/js/settings-autosave.js`
+owns edit revisions, debounce, retries and flush barriers. Secret changes require
+an explicit action and never enter ordinary autosave payloads.
+
+`translation/models/protocols.py` ranks transport protocols using provider and
+endpoint hints, advertised catalog capability and connection-scoped successes.
+It contains no translation policy and does not issue requests. The API client
+owns HTTP requests and learns protocol capability only from actual user-triggered
+calls. Authentication, quota, safety and service errors are distinct from protocol
+incompatibility and cannot trigger an alternate protocol.
+
 ### `translation/`
 
 Owns the complete localization domain and is the only canonical translation

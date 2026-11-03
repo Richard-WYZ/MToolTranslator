@@ -12,6 +12,7 @@ PORTABLE_ENV_TEMPLATE = """# MTool 汉化工具 portable configuration
 MODEL_PROVIDER=api
 THIRD_PARTY_API_PRESET=opendesign_go
 THIRD_PARTY_API_STYLE=openai
+THIRD_PARTY_API_PROTOCOL_MODE=auto
 DEFAULT_MODEL=api:
 THIRD_PARTY_API_BASE_URL=https://amr-link.open-design.ai/v1
 THIRD_PARTY_API_KEY=

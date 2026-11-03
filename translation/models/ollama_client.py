@@ -3,23 +3,38 @@ import time
 from translation.config import ollama_host, system_prompts, think_setting
 import translation.usage as token_usage
 from translation.models.transport import connection_scope, request as transport_request
+from translation.models.catalog_cache import CatalogCache
+
+
+_MODEL_CATALOG = CatalogCache()
+MODEL_DISCOVERY_TIMEOUT = (0.5, 1.5)
 
 
 def _host():
     return ollama_host().rstrip("/")
 
 
-def list_models():
-    """获取本地模型列表，过滤嵌入模型"""
+def model_catalog_snapshot():
+    """Read the last discovery state without contacting Ollama."""
+    return _MODEL_CATALOG.snapshot(_host())
+
+
+def list_models(*, refresh=False):
+    """Discover local models with bounded latency and shared short-lived caching."""
     host = _host()
+    return _MODEL_CATALOG.get(host, lambda: _discover_models(host), refresh=refresh)
+
+
+def _discover_models(host=None):
+    host = host or _host()
     url = f"{host}/api/tags"
     try:
-        resp = transport_request("ollama", "get", url, timeout=(10, 60))
+        resp = transport_request("ollama", "get", url, timeout=MODEL_DISCOVERY_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
         models = data.get("models", [])
         # 过滤掉含 'embed' 的模型
-        filtered = [m for m in models if "embed" not in m.get("name", "").lower()]
+        filtered = [m for m in models if isinstance(m, dict) and m.get("name") and "embed" not in str(m["name"]).lower()]
         return filtered
     except requests.exceptions.ConnectionError as e:
         raise ConnectionError(f"无法连接到 Ollama 服务 ({host}): {e}")

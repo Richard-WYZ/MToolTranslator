@@ -69,6 +69,8 @@ class TranslateRequest(BaseModel):
 
 class SettingsUpdateRequest(BaseModel):
     provider: str
+    api_protocol_mode: Optional[str] = None
+    api_model_endpoints: Optional[Dict[str, List[str]]] = None
     api_profile_id: Optional[str] = None
     api_profile_name: Optional[str] = None
     api_preset: Optional[str] = None

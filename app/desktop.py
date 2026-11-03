@@ -110,6 +110,20 @@ def start_server(app):
     )
 
 
+def wait_for_server_ready(request_client=requests, timeout=10.0):
+    """Wait for local readiness without imposing a fixed startup delay."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            response = request_client.get("http://127.0.0.1:8000/health", timeout=(0.2, 0.3))
+            if response.status_code == 200 and response.json().get("status") == "ok":
+                return
+        except (requests.RequestException, ValueError):
+            pass
+        time.sleep(0.03)
+    raise TimeoutError("本机翻译服务未能启动")
+
+
 def build_close_handler(window, request_client=requests, pending_review_draft=None):
     """Build a non-reentrant desktop close guard using pywebview's native dialog."""
     def on_closing():
@@ -173,8 +187,8 @@ def run_desktop(app):
         )
         server_thread.start()
 
-        # 2. Brief wait for the server to be ready
-        time.sleep(2)
+        # 2. Open the window as soon as the server is listening.
+        wait_for_server_ready()
 
         # 3. Create the pywebview window (no address bar by default)
         api = Api()

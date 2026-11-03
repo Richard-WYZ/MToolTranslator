@@ -55,6 +55,7 @@ const context = {
     state: { settings: original, modelCatalog: {api: [], ollama: []}, models: [], modelAvailability: {}, modelNsfwAvailability: {}, taskStatus: "idle" },
     el: id => { assert.ok(nodes[id], "Missing DOM node " + id); return nodes[id]; },
     all: () => [], escapeHtml: text => String(text),
+    setTimeout: () => 1, clearTimeout: () => {},
     modelLabel: id => id.replace(/^(api|ollama):/, ""),
     modelTestRecord: () => ({ status: "untested" }), modelTestTimeSummary: () => "",
     benchmarkIsActive: () => false, renderModelBenchmark: () => {}, toast: () => {},
@@ -82,20 +83,15 @@ context.configureProfiles = () => {};
 context.populateModelSelectors = () => {};
 context.renderProfile = () => {};
 vm.runInContext(fs.readFileSync("ui/static/js/settings.js", "utf8"), context);
+vm.runInContext(fs.readFileSync("ui/static/js/settings-autosave.js", "utf8"), context);
 (async () => {
     context.initializeModelCatalog();
     context.renderSettings();
-    assert.equal(nodes["settings-opencode-protocol"].hidden, true);
-    assert.equal(nodes["settings-opencode-protocol"].disabled, true);
-    nodes["settings-api-preset"].value = "opencode_go";
-    context.updateApiProtocolOptions();
-    assert.equal(nodes["settings-opencode-protocol"].hidden, false);
-    assert.equal(nodes["settings-opencode-protocol"].disabled, false);
+    assert.equal(nodes["settings-api-style"].tag, "input", "Protocol selection must be automatic");
     nodes["settings-api-style"].value = "opencode_go";
     nodes["settings-api-preset"].value = "opendesign_go";
     context.updateApiProtocolOptions();
     assert.equal(nodes["settings-api-style"].value, "openai");
-    assert.equal(nodes["settings-opencode-protocol"].disabled, true);
     assert.equal(nodes["settings-default-model"].value, "api:old-model");
     assert.ok(nodes["settings-default-model"].innerHTML.includes("old-model"));
     context.state.modelAvailability = {"api:old-model": {status: "available"}};
@@ -109,8 +105,10 @@ vm.runInContext(fs.readFileSync("ui/static/js/settings.js", "utf8"), context);
     nodes["settings-api-key"].value = "new-test-key";
     assert.equal(context.settingsValidationMessage(), "");
     const draft = context.settingsPayload();
-    assert.equal(draft.default_model, "");
-    assert.equal(draft.api_key_action, "replace");
+    assert.equal(draft.default_model, "api:");
+    assert.equal(draft.api_key_action, "keep");
+    assert.ok(!("api_key" in draft));
+    assert.equal(context.settingsPayload(true).api_key_action, "replace");
     assert.equal(draft.api_models.length, 0);
     assert.equal(draft.api_preset, "opendesign_go");
     nodes["settings-api-profile"].value = "saved";
@@ -123,6 +121,7 @@ vm.runInContext(fs.readFileSync("ui/static/js/settings.js", "utf8"), context);
     assert.equal(context.settingsPayload().api_models[0], "new-model");
     context.state.settingsDirty = false;
     context.state.settingsConnectionDirty = false;
+    context.resetSettingsAutosave();
     context.initializeModelCatalog();
     context.renderSettings();
     nodes["settings-api-profile"].value = "saved";
@@ -136,6 +135,7 @@ vm.runInContext(fs.readFileSync("ui/static/js/settings.js", "utf8"), context);
     assert.equal(runtimeLoads, 1, "Provider activation must reload models and runtime routes");
     assert.equal(context.state.runtime.profile_id, "saved");
     assert.equal(context.state.modelBenchmark.profile_id, "saved");
+    nodes["settings-api-key"].value = "explicit-test-key";
     await context.saveSettings({preventDefault: () => {}});
     assert.equal(benchmarkLoads, 2, "Saving a provider must reload the benchmark");
     assert.equal(runtimeLoads, 2, "Saving a provider must reload models and runtime routes");

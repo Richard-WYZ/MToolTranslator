@@ -53,9 +53,9 @@ development takes place on `dev`; `master` is reserved for stable releases.
 1. Download `MToolTranslator-vX.Y.Z-windows-x64.zip` from GitHub Releases.
 2. Extract it to any writable directory. Installation is not required.
 3. Run `MToolTranslator.exe`.
-4. Add a provider profile in Settings, choose OpenDesign Go or another preset,
-   enter the API key, and click Connect and fetch models. Select a default model
-   and finish setup. Connection and NSFW tests remain available as optional actions.
+4. Select a provider in Settings and explicitly confirm API key changes. Fetch
+   models and choose a default. Other valid settings save automatically; connection
+   and NSFW tests remain available as optional actions.
 5. Run the per-model basic and NSFW checks first. Tests send requests and may
    consume tokens.
 6. Export `ManualTransFile.json` from MTool.
@@ -233,6 +233,15 @@ Test status is persisted by connection context and model ID. Newly discovered mo
 untested; existing models retain history; changes to protocol, endpoint, key,
 or Ollama host mark older results as stale references. Returning to an earlier
 connection restores that connection's test history.
+
+Ordinary settings autosave with serialized writes and retry on failure. Pending
+API key replacement or removal is applied only after explicit confirmation.
+Protocols are automatic, using connection hints, advertised model endpoints,
+and successful calls cached for the current connection. Only explicit endpoint
+incompatibility triggers protocol fallback; authentication, quota, content and
+service failures do not. No separate paid protocol probes run in the background.
+Configured API models load before local discovery, Ollama discovery is cached,
+and project history loads when opened.
 
 ## References and acknowledgements
 

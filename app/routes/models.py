@@ -16,10 +16,17 @@ router = APIRouter()
 
 
 @router.get("/api/models")
-def get_models():
+def get_models(discover_local: bool = False, refresh: bool = False):
     try:
-        models = available_models()
+        models = available_models(discover_local=True, refresh_local=refresh) if discover_local or refresh else available_models()
         runtime = public_runtime_configuration(models)
+        from translation.models.ollama_client import model_catalog_snapshot
+        local = model_catalog_snapshot()
+        runtime["providers"]["ollama"].update({
+            "discovery_checked": local["checked"], "discovery_pending": local["pending"],
+            "discovery_stale": local["stale"], "cached_model_count": len(local["models"]),
+            "discovery_failed": bool(local["error"]),
+        })
         enriched = []
         for item in models:
             model = dict(item)
@@ -34,7 +41,7 @@ def get_models():
                 else runtime["providers"]["ollama"]["health"]
             )
             enriched.append(model)
-        return {"models": enriched, "runtime": runtime}
+        return {"models": enriched, "runtime": runtime, "discovery": {"ollama": local}}
     except ConnectionError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -78,8 +85,9 @@ def preflight(req: PreflightRequest):
     checkpoint_model = str(checkpoint_data.get("model") or "")
     checkpoint_model_match = bool(checkpoint_stats) and checkpoint_model == selected_model
     warnings = []
-    runtime = public_runtime_configuration(available_models())
     provider_name = "ollama" if selected_model.startswith("ollama:") else "api"
+    current_models = available_models(discover_local=True, refresh_local=True) if provider_name == "ollama" else available_models()
+    runtime = public_runtime_configuration(current_models)
     provider_status = runtime["providers"][provider_name]
     if not provider_status.get("configured"):
         warnings.append("所选提供方当前不可用或配置不完整。")

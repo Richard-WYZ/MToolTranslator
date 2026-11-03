@@ -22,7 +22,6 @@ async function applyImportedFile(result, fallbackSize) {
     state.review.aiTaskId = ""; state.review.aiTaskStatus = "idle"; state.review.aiProgress = null;
     state.hasUnexportedResult = false; state.exportReady = false;
     await loadPreview(); renderFile(); invalidatePreflight();
-    toast("文件已导入，尚未发送给任何模型", "success");
 }
 
 async function chooseSourceFile() {
@@ -182,26 +181,30 @@ function renderPreflight() {
     var notices = (payload.warnings || []).map(function (warning) {
         return '<div class="notice warning">' + escapeHtml(warning) + "</div>";
     });
-    if (payload.ok) notices.unshift('<div class="notice success">文件结构、执行方案与提供方配置检查通过。</div>');
     el("preflight-warnings").innerHTML = notices.join("");
 }
 
 async function startTranslation() {
     if (!state.filePath || state.startPreparing || ["starting", "running", "paused", "stopping", "finalizing"].includes(state.taskStatus) || aiReviewIsActive()) return;
-    var request = {
-        file_path: state.filePath,
-        model: selectedModel(),
-        provider: selectedModel().startsWith("ollama:") ? "ollama" : "api",
-        prompt_style: "professional",
-        execution_profile: state.profile,
-        profile_options: profileOptions(),
-    };
     state.startPreparing = true;
-    state.taskStatus = "starting";
     updateTaskStatus("starting");
     el("btn-start").textContent = "正在准备…";
     updateActionStates();
     try {
+        if (typeof flushSettingsAutosave === "function" && !(await flushSettingsAutosave())) {
+            state.taskStatus = "idle";
+            updateTaskStatus("idle", "设置未能保存，请重试。");
+            return;
+        }
+        state.taskStatus = "starting";
+        var request = {
+            file_path: state.filePath,
+            model: selectedModel(),
+            provider: selectedModel().startsWith("ollama:") ? "ollama" : "api",
+            prompt_style: "professional",
+            execution_profile: state.profile,
+            profile_options: profileOptions(),
+        };
         if (typeof flushReviewDraft === "function" && !(await flushReviewDraft())) {
             state.taskStatus = "idle";
             updateTaskStatus("idle", "译文尚未保存，请先处理保存错误。");
@@ -355,9 +358,7 @@ function renderResult(progress) {
         ? (needs ? "翻译完成，仍有 " + needs + " 条需要人工复核" : "翻译与质量检查完成")
         : progress.status === "cancelled" ? "任务已停止，部分结果已安全写盘" : "任务异常结束，检查点已保留";
     el("result-title").textContent = title;
-    el("result-description").textContent = progress.status === "completed"
-        ? "“完成”表示流水线结束，不代表所有译文都已人工确认。"
-        : "你可以先复核现有结果，或从历史与恢复中继续任务。";
+    el("result-description").textContent = progress.error || "";
     var metrics = [
         ["已翻译", summary.translated || 0],
         ["待复核", summary.translated_needs_review || 0],
@@ -371,7 +372,7 @@ function renderResult(progress) {
 
 function updateActionStates(progress) {
     var status = state.taskStatus;
-    var active = ["running", "paused", "stopping", "finalizing", "starting"].includes(status);
+    var active = state.startPreparing || ["running", "paused", "stopping", "finalizing", "starting"].includes(status);
     el("btn-start").disabled = active || state.startPreparing || !state.filePath || aiReviewIsActive();
     el("btn-pause").disabled = status !== "running";
     el("btn-resume").disabled = status !== "paused";

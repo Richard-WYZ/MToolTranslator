@@ -339,6 +339,8 @@ def test_model_availability_test_is_explicit_and_reports_usage(monkeypatch, tmp_
 def test_manual_protocol_connection_test_uses_unsaved_one_call_override(monkeypatch, tmp_path):
     import translation.models
 
+    monkeypatch.setattr(settings_service, "third_party_api_config", lambda: {"protocol_mode": "legacy"})
+
     monkeypatch.setattr(
         model_status, "runtime_model_status_path", lambda: tmp_path / ".model-status.json"
     )
