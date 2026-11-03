@@ -2,8 +2,32 @@
 
 var reviewDrafts = new Map();
 var reviewDraftTimer = null;
+var reviewDraftBridgeState = null;
+var reviewDraftBridgeInFlight = false;
 
 function reviewDraftKey(path, row) { return JSON.stringify([path, Number(row)]); }
+
+function syncPendingReviewDraft() {
+    var bridge = window.pywebview && window.pywebview.api;
+    if (!bridge || typeof bridge.set_pending_review_draft !== "function") return;
+    if (reviewDraftBridgeInFlight) return;
+    var pending = reviewDrafts.size > 0;
+    if (reviewDraftBridgeState === pending) return;
+    reviewDraftBridgeState = pending;
+    reviewDraftBridgeInFlight = true;
+    try {
+        Promise.resolve(bridge.set_pending_review_draft(pending)).then(function () {
+            reviewDraftBridgeInFlight = false;
+            // A fast save can clear the draft while the native "pending" push
+            // is still running. Send the latest value only after it completes.
+            syncPendingReviewDraft();
+        }, function () {
+            reviewDraftBridgeInFlight = false;
+            reviewDraftBridgeState = null;
+            if ((reviewDrafts.size > 0) !== pending) syncPendingReviewDraft();
+        });
+    } catch (error) { reviewDraftBridgeState = null; reviewDraftBridgeInFlight = false; }
+}
 
 function persistReviewDrafts() {
     try {
@@ -11,6 +35,7 @@ function persistReviewDrafts() {
             return { path: draft.path, row: draft.row, text: draft.text, original: draft.original };
         })));
     } catch (error) { /* The in-memory draft remains available when browser storage is full. */ }
+    syncPendingReviewDraft();
 }
 
 function reviewSaveNote(message, failed) {
@@ -170,6 +195,11 @@ function initReviewWorkspace() {
             }
         });
     } catch (error) { /* Ignore an invalid local draft cache. */ }
+    syncPendingReviewDraft();
+    window.addEventListener("pywebviewready", function () {
+        reviewDraftBridgeState = null;
+        syncPendingReviewDraft();
+    });
     el("review-search-form").addEventListener("submit", function (event) { event.preventDefault(); openReviewSearch(); });
     el("review-search-scope").addEventListener("change", function () { openReviewSearch(); });
     el("btn-review-search-clear").addEventListener("click", function () { openReviewSearch({ query: "" }); });

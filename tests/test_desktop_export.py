@@ -653,14 +653,16 @@ def test_desktop_close_uses_native_confirmation_and_shutdown():
 @pytest.mark.parametrize("confirmed", [False, True])
 def test_desktop_close_confirms_pending_review_drafts_before_shutdown(confirmed):
     class DraftWindow(_Window):
-        def evaluate_js(self, script):
-            assert script == "Boolean(window.LGT && window.LGT.hasPendingReviewDraft && window.LGT.hasPendingReviewDraft())"
-            return True
+        def evaluate_js(self, _script):
+            pytest.fail("Closing must never synchronously evaluate JavaScript")
 
     client = _RequestClient(dirty=False)
     window = DraftWindow(confirmed)
+    bridge = Api()
+    assert bridge.pending_review_draft is False
+    assert bridge.set_pending_review_draft(True) is True
 
-    assert build_close_handler(window, client)() is confirmed
+    assert build_close_handler(window, client, lambda: bridge.pending_review_draft)() is confirmed
     assert window.dialogs == [("确认退出", "存在尚未保存的译文草稿，退出会放弃这些修改，是否退出？")]
     assert client.posts == (["http://127.0.0.1:8000/api/desktop/shutdown"] if confirmed else [])
 
@@ -668,39 +670,37 @@ def test_desktop_close_confirms_pending_review_drafts_before_shutdown(confirmed)
 def test_desktop_close_does_not_confirm_saved_results_without_pending_drafts():
     class SavedWindow(_Window):
         def evaluate_js(self, _script):
-            return False
+            pytest.fail("Closing must never synchronously evaluate JavaScript")
 
     client = _RequestClient(dirty=False)
     window = SavedWindow(confirmed=False)
 
-    assert build_close_handler(window, client)() is True
+    bridge = Api()
+    bridge.set_pending_review_draft(True)
+    assert bridge.set_pending_review_draft(False) is False
+    assert build_close_handler(window, client, lambda: bridge.pending_review_draft)() is True
     assert window.dialogs == []
     assert client.posts == ["http://127.0.0.1:8000/api/desktop/shutdown"]
 
 
 @pytest.mark.parametrize("active", [False, True])
-def test_desktop_close_falls_back_to_backend_guard_when_webview_evaluation_fails(active):
-    class UnavailableWindow(_Window):
-        def evaluate_js(self, _script):
-            raise RuntimeError("WebView is closing")
+def test_desktop_close_falls_back_to_backend_guard_when_draft_cache_callback_fails(active):
+    def unavailable_cache():
+        raise RuntimeError("Draft cache is unavailable")
 
     client = _RequestClient(dirty=active)
-    window = UnavailableWindow(confirmed=False)
+    window = _Window(confirmed=False)
 
-    assert build_close_handler(window, client)() is not active
+    assert build_close_handler(window, client, unavailable_cache)() is not active
     assert len(window.dialogs) == int(active)
     assert client.posts == ([] if active else ["http://127.0.0.1:8000/api/desktop/shutdown"])
 
 
 def test_desktop_close_combines_active_work_and_draft_warning_in_one_native_dialog():
-    class DraftWindow(_Window):
-        def evaluate_js(self, _script):
-            return True
-
     client = _RequestClient(dirty=True)
-    window = DraftWindow(confirmed=True)
+    window = _Window(confirmed=True)
 
-    assert build_close_handler(window, client)() is True
+    assert build_close_handler(window, client, lambda: True)() is True
     assert len(window.dialogs) == 1
     assert "尚未保存的译文草稿" in window.dialogs[0][1]
     assert "当前翻译或 AI 复核也会停止" in window.dialogs[0][1]

@@ -30,6 +30,14 @@ from app.services.desktop_sources import desktop_source_registry
 class Api:
     """pywebview JS-Python bridge API for desktop features."""
 
+    def __init__(self):
+        self.pending_review_draft = False
+
+    def set_pending_review_draft(self, pending: bool):
+        """Cache frontend draft state without evaluating JavaScript during close."""
+        self.pending_review_draft = bool(pending)
+        return self.pending_review_draft
+
     def save_file_dialog(self, default_filename):
         """Open a native save-file dialog and return the chosen path.
 
@@ -102,7 +110,7 @@ def start_server(app):
     )
 
 
-def build_close_handler(window, request_client=requests):
+def build_close_handler(window, request_client=requests, pending_review_draft=None):
     """Build a non-reentrant desktop close guard using pywebview's native dialog."""
     def on_closing():
         try:
@@ -114,27 +122,25 @@ def build_close_handler(window, request_client=requests):
         except Exception:
             state = {"requires_confirmation": False}
 
-        pending_review_draft = False
+        has_pending_draft = False
         try:
-            evaluate = getattr(window, "evaluate_js", None)
-            if callable(evaluate):
-                pending_review_draft = bool(evaluate(
-                    "Boolean(window.LGT && window.LGT.hasPendingReviewDraft && window.LGT.hasPendingReviewDraft())"
-                ))
+            if callable(pending_review_draft):
+                has_pending_draft = bool(pending_review_draft())
         except Exception:
-            # A closing/older WebView may not support evaluation. Keep the
-            # existing backend activity guard usable in that case.
+            # The native closing event blocks the WebView's UI thread. Read a
+            # bridge-maintained Python flag; synchronous evaluate_js deadlocks
+            # WebView2's UI-scheduled script completion callback.
             pass
 
         active_work = state.get("requires_confirmation", state.get("dirty", False))
-        if pending_review_draft or active_work:
+        if has_pending_draft or active_work:
             message = (
                 "存在尚未保存的译文草稿，退出会放弃这些修改，是否退出？"
-                if pending_review_draft
+                if has_pending_draft
                 else "当前仍有翻译或 AI 复核正在运行。退出会停止后台任务，"
                      "已保存的断点与临时结果会保留，是否退出？"
             )
-            if pending_review_draft and active_work:
+            if has_pending_draft and active_work:
                 message += "\n\n当前翻译或 AI 复核也会停止，已保存进度会保留。"
             confirmed = window.create_confirmation_dialog(
                 "确认退出",
@@ -181,7 +187,7 @@ def run_desktop(app):
             js_api=api,
         )
 
-        on_closing = build_close_handler(window)
+        on_closing = build_close_handler(window, pending_review_draft=lambda: api.pending_review_draft)
 
         try:
             window.events.closing += on_closing
