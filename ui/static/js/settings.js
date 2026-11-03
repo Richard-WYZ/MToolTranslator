@@ -3,6 +3,7 @@ async function loadSettings(showNotice) {
     setSettingsBusy("loading");
     try {
         state.settings = await API.get("/settings");
+        state.settingsApiProfileId = state.settings.active_api_profile || "";
         state.settingsDirty = false;
         state.settingsConnectionDirty = false;
         loadPersistedModelStatuses();
@@ -35,7 +36,7 @@ function initializeModelCatalog() {
     });
     var configured = String(settings.default_model || "");
     var parts = configured.split(":", 2);
-    if (parts.length === 2 && state.modelCatalog[parts[0]]
+    if (parts.length === 2 && parts[1] && state.modelCatalog[parts[0]]
         && !state.modelCatalog[parts[0]].some(function (item) { return item.id === configured; })) {
         state.modelCatalog[parts[0]].push(modelCatalogEntry(
             parts[0],
@@ -61,9 +62,11 @@ function renderSettings() {
     var ollama = settings.ollama || {};
     var file = settings.file || {};
     el("settings-provider").value = settings.provider || "api";
+    state.settingsApiProfileId = settings.active_api_profile || "";
+    renderProviderPicker();
     el("settings-api-style").value = api.style || "opencode_go";
+    updateApiProtocolOptions();
     el("settings-base-url").value = api.base_url || "";
-    el("settings-default-model").value = settings.default_model || "";
     el("settings-ollama-host").value = ollama.host || "http://localhost:11434";
     el("settings-disable-thinking").checked = api.disable_thinking !== false;
     el("settings-api-key").value = "";
@@ -77,8 +80,114 @@ function renderSettings() {
         + " · " + (file.writable ? "可写" : "不可写")
         + " · " + (settings.precedence_note || "");
     renderSettingsModelPicker();
+    el("settings-default-model").value = settings.default_model || "";
     renderSettingsStatus();
     updateSettingsControls();
+}
+function activeApiProviderName() {
+    var settings = state.settings || {};
+    var profile = (settings.api_profiles || []).find(function (item) {
+        return item.id === settings.active_api_profile;
+    });
+    var runtimeApi = state.runtime && state.runtime.providers && state.runtime.providers.api || {};
+    return profile && profile.name || (settings.api || {}).provider_name || runtimeApi.provider_name || "联网 API";
+}
+
+function renderProviderPicker() {
+    var settings = state.settings || {};
+    var profiles = settings.api_profiles || [];
+    var current = profiles.find(function (item) { return item.id === state.settingsApiProfileId; });
+    el("settings-api-profile").innerHTML = profiles.map(function (item) {
+        return '<option value="' + escapeHtml(item.id) + '">' + escapeHtml(item.name)
+            + (item.id === settings.active_api_profile ? " · 当前启用" : "") + "</option>";
+    }).join("");
+    el("settings-api-profile").value = settings.active_api_profile || "";
+    el("settings-api-preset").innerHTML = (settings.provider_presets || []).map(function (item) {
+        return '<option value="' + escapeHtml(item.id) + '">' + escapeHtml(item.name) + "</option>";
+    }).join("");
+    el("settings-api-preset").value = current && current.preset || (settings.api || {}).preset || "openai";
+    el("settings-profile-name").value = current && current.name || activeApiProviderName();
+    renderActiveProviderNote();
+}
+
+function renderActiveProviderNote() {
+    var creating = state.settingsApiProfileId !== (state.settings || {}).active_api_profile;
+    el("settings-active-provider").textContent = "当前启用：" + activeApiProviderName()
+        + (creating ? " · 正在新建配置，保存后启用" : " · 选择其他配置后点击“启用此配置”切换");
+}
+
+function updateApiProtocolOptions() {
+    var isOpenCode = el("settings-api-preset").value === "opencode_go";
+    el("settings-opencode-protocol").hidden = !isOpenCode;
+    el("settings-opencode-protocol").disabled = !isOpenCode;
+    if (!isOpenCode && el("settings-api-style").value === "opencode_go") {
+        el("settings-api-style").value = "openai";
+    }
+}
+
+function newApiProvider() {
+    if (state.settingsDirty) return;
+    state.settingsApiProfileId = "provider-" + Date.now().toString(36);
+    el("settings-provider").value = "api";
+    el("settings-api-profile").value = "";
+    el("settings-api-preset").value = "opendesign_go";
+    applyProviderPreset(true);
+    renderActiveProviderNote();
+}
+
+function applyProviderPreset(creating) {
+    var preset = ((state.settings || {}).provider_presets || []).find(function (item) {
+        return item.id === el("settings-api-preset").value;
+    });
+    if (!preset) return;
+    // A different endpoint never inherits a saved key, model catalog, or tests.
+    // When editing an existing configuration, use a new profile to retain it.
+    if (!creating && state.settingsApiProfileId === (state.settings || {}).active_api_profile) {
+        state.settingsApiProfileId = "provider-" + Date.now().toString(36);
+        el("settings-api-profile").value = "";
+    }
+    el("settings-profile-name").value = preset.name;
+    el("settings-api-style").value = preset.style;
+    updateApiProtocolOptions();
+    el("settings-base-url").value = preset.base_url || "";
+    el("settings-disable-thinking").checked = preset.disable_thinking !== false;
+    el("settings-api-key").value = "";
+    el("settings-clear-key").checked = false;
+    el("settings-key-state").textContent = "新配置尚未设置密钥";
+    state.modelCatalog.api = [];
+    state.modelAvailability = {};
+    state.modelNsfwAvailability = {};
+    el("settings-default-model").value = "";
+    el("settings-model-search").value = "";
+    renderSettingsModelPicker();
+    renderActiveProviderNote();
+    markSettingsDirty(true);
+}
+
+async function activateApiProvider() {
+    if (state.settingsDirty || state.settingsBusy) return;
+    var selected = el("settings-api-profile").value;
+    if (!selected || selected === (state.settings || {}).active_api_profile) return;
+    setSettingsBusy("switching");
+    try {
+        var result = await API.post("/settings/providers/activate", { profile_id: selected });
+        state.settings = result.settings;
+        state.settingsApiProfileId = state.settings.active_api_profile;
+        state.settingsDirty = false;
+        state.settingsConnectionDirty = false;
+        loadPersistedModelStatuses();
+        initializeModelCatalog();
+        state.modelBenchmark = null;
+        await loadModels(false);
+        await loadModelBenchmark();
+        renderSettings();
+        invalidatePreflight();
+        toast("已启用 " + activeApiProviderName(), "success");
+    } catch (error) {
+        toast(error.message, "error");
+    } finally {
+        setSettingsBusy("");
+    }
 }
 function keySourceLabel(source) {
     return {
@@ -90,6 +199,11 @@ function keySourceLabel(source) {
 
 function currentSettingsProvider() {
     return el("settings-provider").value || "api";
+}
+
+function settingsTaskIsActive() {
+    return ["starting", "running", "paused", "stopping", "preparing", "finalizing"].includes(state.taskStatus)
+        || (typeof aiReviewIsActive === "function" && aiReviewIsActive());
 }
 
 function currentModelCatalog() {
@@ -113,12 +227,18 @@ function renderModelPickerMetadata() {
     var provider = currentSettingsProvider();
     var catalog = currentModelCatalog();
     var enabled = catalog.filter(function (item) { return item.enabled; });
+    ["settings-api-profiles-field", "settings-profile-name-field", "settings-preset-field"].forEach(function (id) {
+        el(id).hidden = provider !== "api";
+    });
     el("settings-key-field").hidden = provider !== "api";
     el("settings-model-summary").textContent = enabled.length + " / " + catalog.length
-        + " 个模型已启用 · " + (provider === "api" ? "联网 API" : "本地 Ollama");
-    el("settings-model-options").innerHTML = enabled.map(function (item) {
-        return '<option value="' + escapeHtml(item.id) + '"></option>';
-    }).join("");
+        + " 个模型已启用 · " + (provider === "api" ? el("settings-profile-name").value || activeApiProviderName() : "本地 Ollama");
+    var selected = el("settings-default-model").value;
+    el("settings-default-model").innerHTML = '<option value="">' + (enabled.length ? "请选择默认模型" : "请先获取或添加模型") + '</option>'
+        + enabled.map(function (item) {
+            return '<option value="' + escapeHtml(item.id) + '">' + escapeHtml(item.name) + "</option>";
+        }).join("");
+    el("settings-default-model").value = enabled.some(function (item) { return item.id === selected; }) ? selected : "";
 }
 
 function renderModelRow(item) {
@@ -127,7 +247,7 @@ function renderModelRow(item) {
     var availability = basicRecord.status;
     var nsfwAvailability = nsfwRecord.status;
     var testDisabled = state.settingsConnectionDirty || Boolean(state.settingsBusy)
-        || ["running", "paused", "stopping"].includes(state.taskStatus);
+        || settingsTaskIsActive();
     var status = basicRecord.stale ? {
         available: "上次可用",
         unavailable: "上次不可用",
@@ -176,7 +296,7 @@ function renderSettingsStatus() {
     var providers = state.runtime.providers || {};
     var providerRows = [
         {
-            name: "联网 API",
+            name: activeApiProviderName(),
             detail: providers.api ? providers.api.health_note : "未配置",
             good: providers.api && providers.api.configured,
             label: providers.api && providers.api.configured ? "配置完整" : "配置不完整",
@@ -208,13 +328,16 @@ function settingsValidationMessage() {
     if (!state.settings) return "设置尚未加载";
     var provider = currentSettingsProvider();
     var defaultModel = el("settings-default-model").value.trim();
-    if (!defaultModel.startsWith(provider + ":")) return "默认模型必须匹配当前提供方";
+    var emptyApiCatalog = provider === "api" && !currentModelCatalog().length && !defaultModel;
+    if (!emptyApiCatalog && !defaultModel.startsWith(provider + ":")) return "默认模型必须匹配当前提供方";
     var selected = currentModelCatalog().find(function (item) {
         return item.id === defaultModel && item.enabled;
     });
-    if (!selected) return "默认模型必须在上方列表中保持勾选";
+    if (!selected && !emptyApiCatalog) return "默认模型必须在上方列表中保持勾选";
     if (provider === "api") {
-        var hasKey = (state.settings.api || {}).api_key_configured
+        if (!el("settings-profile-name").value.trim()) return "请填写提供商配置名称";
+        var editingActive = state.settingsApiProfileId === state.settings.active_api_profile;
+        var hasKey = (editingActive && (state.settings.api || {}).api_key_configured)
             || Boolean(el("settings-api-key").value.trim());
         if (!hasKey || el("settings-clear-key").checked) return "联网 API 需要有效密钥";
         if (el("settings-api-style").value !== "opencode_go"
@@ -224,17 +347,21 @@ function settingsValidationMessage() {
 }
 
 function updateSettingsControls() {
-    var active = ["running", "paused", "stopping"].includes(state.taskStatus), operationsBlocked = active || benchmarkIsActive();
+    var active = settingsTaskIsActive(), operationsBlocked = active || benchmarkIsActive();
     var busy = Boolean(state.settingsBusy);
     var writable = !state.settings || !state.settings.file || state.settings.file.writable;
     var validation = settingsValidationMessage();
-    el("settings-fieldset").disabled = active || busy;
+    el("settings-fieldset").disabled = operationsBlocked || busy;
     el("settings-dirty-badge").className = "status-badge "
         + (busy ? "running" : state.settingsDirty ? "warning" : "neutral");
     el("settings-dirty-badge").textContent = busy
-        ? { loading: "正在加载", saving: "正在保存", discovering: "正在获取模型", testing: "正在测试模型" }[state.settingsBusy]
+        ? { loading: "正在加载", saving: "正在保存", discovering: "正在获取模型", testing: "正在测试模型", switching: "正在切换提供商" }[state.settingsBusy]
         : state.settingsDirty ? "有未保存修改" : "尚未修改";
     el("btn-settings-refresh").disabled = busy;
+    el("settings-api-profile").disabled = operationsBlocked || busy || state.settingsDirty;
+    el("btn-provider-new").disabled = operationsBlocked || busy || state.settingsDirty;
+    el("btn-provider-activate").disabled = operationsBlocked || busy || state.settingsDirty
+        || !el("settings-api-profile").value || el("settings-api-profile").value === (state.settings || {}).active_api_profile;
     el("btn-settings-save").disabled = operationsBlocked || busy || !writable || !state.settingsDirty || Boolean(validation);
     el("btn-settings-discover").disabled = operationsBlocked || busy || state.settingsConnectionDirty
         || (currentSettingsProvider() === "api"
@@ -246,7 +373,7 @@ function updateSettingsControls() {
         button.disabled = operationsBlocked || busy || state.settingsConnectionDirty;
     });
     el("settings-save-note").textContent = active
-        ? "翻译任务活动期间不能修改、获取或测试模型。"
+        ? "翻译或 AI 复核活动期间不能修改、获取或测试模型。"
         : busy ? "请等待当前设置操作完成。"
         : !writable ? "配置目录不可写；请把软件移动到可写目录。"
         : validation || (state.settingsConnectionDirty
@@ -269,6 +396,9 @@ function setSettingsBusy(mode) {
 function settingsPayload() {
     return {
         provider: currentSettingsProvider(),
+        api_profile_id: state.settingsApiProfileId || undefined,
+        api_profile_name: el("settings-profile-name").value.trim(),
+        api_preset: el("settings-api-preset").value,
         api_style: el("settings-api-style").value,
         api_base_url: el("settings-base-url").value.trim(),
         api_models: state.modelCatalog.api.map(function (item) { return item.name; }),
@@ -295,12 +425,16 @@ async function saveSettings(event) {
     try {
         var result = await API.put("/settings", settingsPayload());
         state.settings = result.settings;
+        state.settingsApiProfileId = state.settings.active_api_profile || "";
         state.settingsDirty = false;
         state.settingsConnectionDirty = false;
         loadPersistedModelStatuses();
         initializeModelCatalog();
+        state.modelBenchmark = null;
         await loadModels(false);
+        await loadModelBenchmark();
         renderSettings();
+        invalidatePreflight();
         toast("设置已保存；翻译页只会显示已勾选模型", "success");
     } catch (error) {
         toast(error.message, "error");
@@ -343,9 +477,33 @@ function setAllCurrentModels(enabled) {
     markSettingsDirty(false);
 }
 
+function addSettingsModel() {
+    var raw = el("settings-model-manual").value.trim();
+    var provider = currentSettingsProvider();
+    if (!raw || /[\s,]/.test(raw)) { toast("请填写单个有效模型 ID", "error"); return; }
+    var item = modelCatalogEntry(provider, raw, true);
+    if (currentModelCatalog().some(function (entry) { return entry.id === item.id; })) {
+        toast("该模型已在列表中", "error"); return;
+    }
+    state.modelCatalog[provider].push(item);
+    el("settings-model-manual").value = "";
+    renderSettingsModelPicker();
+    if (!el("settings-default-model").value) el("settings-default-model").value = item.id;
+    markSettingsDirty(false);
+}
+
 function bindSettingsEvents() {
     bindModelBenchmarkEvents();
     el("settings-form").addEventListener("submit", saveSettings);
+    el("settings-api-profile").addEventListener("change", updateSettingsControls);
+    el("btn-provider-activate").addEventListener("click", activateApiProvider);
+    el("btn-provider-new").addEventListener("click", newApiProvider);
+    el("settings-api-preset").addEventListener("change", function () { applyProviderPreset(false); });
+    el("settings-profile-name").addEventListener("input", function () { markSettingsDirty(false); });
+    el("btn-model-add").addEventListener("click", addSettingsModel);
+    el("settings-model-manual").addEventListener("keydown", function (event) {
+        if (event.key === "Enter") { event.preventDefault(); addSettingsModel(); }
+    });
     el("btn-settings-refresh").addEventListener("click", function () { loadSettings(true); });
     el("btn-settings-discover").addEventListener("click", discoverSettingsModels);
     el("btn-test-enabled-models").addEventListener("click", function () {
@@ -388,7 +546,7 @@ function bindSettingsEvents() {
         renderSettingsModelPicker();
         markSettingsDirty(false);
     });
-    el("settings-default-model").addEventListener("input", function () { markSettingsDirty(false); });
+    el("settings-default-model").addEventListener("change", function () { markSettingsDirty(false); });
     ["settings-api-style", "settings-base-url", "settings-api-key",
         "settings-ollama-host", "settings-disable-thinking", "settings-clear-key"].forEach(function (id) {
         el(id).addEventListener("input", function () {

@@ -9,6 +9,7 @@ from app.schemas import (
     SettingsBenchmarkStartRequest,
     SettingsConnectionTestRequest,
     SettingsModelDiscoveryRequest,
+    SettingsProviderActivateRequest,
     SettingsUpdateRequest,
 )
 from app.services.model_benchmark import (
@@ -19,6 +20,7 @@ from app.services.model_benchmark import (
     start_benchmark,
 )
 from app.services.settings import (
+    activate_api_profile,
     discover_provider_models,
     public_settings,
     save_settings,
@@ -62,6 +64,11 @@ def create_router(*, tasks: MutableMapping[str, Any], ai_review_tasks: MutableMa
     def discover_models(req: SettingsModelDiscoveryRequest):
         require_benchmark_idle()
         return discover_provider_models(req.provider, all_tasks())
+
+    @router.post("/api/settings/providers/activate")
+    def activate_provider(req: SettingsProviderActivateRequest):
+        require_benchmark_idle()
+        return activate_api_profile(req.profile_id, all_tasks())
 
     @router.get("/api/settings/benchmark")
     def get_benchmark():

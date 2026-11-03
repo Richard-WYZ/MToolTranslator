@@ -69,6 +69,9 @@ class TranslateRequest(BaseModel):
 
 class SettingsUpdateRequest(BaseModel):
     provider: str
+    api_profile_id: Optional[str] = None
+    api_profile_name: Optional[str] = None
+    api_preset: Optional[str] = None
     api_style: str = "opencode_go"
     api_base_url: str = ""
     api_models: List[str] = []
@@ -87,6 +90,10 @@ class SettingsConnectionTestRequest(BaseModel):
     model: Optional[str] = None
     test_kind: Literal["basic", "adult"] = "basic"
     protocol: Literal["auto", "chat_completions", "messages", "responses"] = "auto"
+
+
+class SettingsProviderActivateRequest(BaseModel):
+    profile_id: str
 
 
 class SettingsModelDiscoveryRequest(BaseModel):

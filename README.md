@@ -33,7 +33,7 @@ MTool 自身提供多种翻译引擎，其中部分高级引擎或功能需要�
 1. 从 GitHub Releases 下载 `MToolTranslator-vX.Y.Z-windows-x64.zip`。
 2. 解压到任意可写目录，不需要安装。
 3. 运行 `MToolTranslator.exe`。
-4. 在“设置”中填写 OpenCode Go API Key，获取模型并勾选允许用于翻译的模型。
+4. 在“设置”中新增提供商配置，选择 OpenDesign Go 或其他预设，填写 API Key 并保存；获取模型后勾选允许使用的模型，选择默认模型并再次保存。
 5. 建议先执行单模型普通测试和 NSFW 测试；测试会发送请求并可能消耗 Token。
 6. 在 MTool 中导出原始翻译文件 `ManualTransFile.json`。
 7. 在翻译页导入该 JSON，选择执行方案后开始翻译。
@@ -91,8 +91,8 @@ tools\build.ps1 -Version 0.2.6
 
 ## 当前状态
 
-- 目前只对 **OpenCode Go** 接入路径做过实际验证。
-- OpenCode Go 返回的模型目录会随服务变化；界面里出现某个模型，不代表该模型已经通过质量、成人内容或完整文件测试。请使用普通/NSFW 测试按钮自行验证。
+- **OpenDesign Go** 已验证模型目录发现和少量普通日文批量翻译；尚未完成成人内容或全文件质量、速度验证。OpenCode Go 保留兼容支持及此前的验证记录。
+- 提供商返回的模型目录会随账号和服务变化；界面里出现某个模型，不代表该模型已经通过质量、成人内容或完整文件测试。请使用普通/NSFW 测试按钮自行验证。
 - Ollama、OpenAI 兼容接口和 Anthropic Messages 传输代码仍属于实验功能，暂未作为正式支持的提供方完成系统验证。
 - 不含日文的条目会保持不变；英文到中文及其他翻译方向暂不支持。
 - 软件不会附带 API 密钥。密钥只能保存在本机 `.env` 或通过设置界面写入。
@@ -143,9 +143,11 @@ tools/        测试、打包、审计和性能工具
 
 ## 配置与模型
 
-复制 `.env.example` 为 `.env`，或直接通过设置界面修改。已知 API URL 会自动填写，高级连接参数默认折叠。获取模型目录本身不执行推理；普通和 NSFW 可用性测试会逐个模型发送极短请求并消耗少量 Token。
+复制 `.env.example` 为 `.env`，或直接通过设置界面修改。先选择或新增提供商配置，再选择模型。预设会填写 API URL 和默认协议，高级连接参数仍可调整。OpenDesign Go 使用 Chat Completions，不会沿用 OpenCode Go 的会话头或专用模型路由。获取模型目录本身不执行推理；普通和 NSFW 可用性测试会逐个模型发送极短请求并消耗少量 Token。
 
-模型测试结果会按模型 ID 持久化。模型目录更新时，新模型默认勾选并显示“未测试”；仍存在的模型保留历史；连接协议、地址或密钥变化后，旧结果会显示为过期参考。
+每套提供商配置独立保存名称、地址、密钥、模型目录、启用状态、协议和默认模型。选择已有配置后点击“启用”切换；存在未保存修改或运行中的任务时不能切换。新配置不会继承其他提供商的密钥或模型目录。配置和密钥均保存在本机 `.env`，设置接口只返回密钥是否已配置。旧版单提供商配置仍可读取。
+
+模型测试结果按连接上下文和模型 ID 持久化。模型目录更新时，新模型默认勾选并显示“未测试”；仍存在的模型保留历史；连接协议、地址或密钥变化后，旧结果会显示为过期参考。切换回原连接时可继续查看其历史测试记录。
 
 ## 参考与致谢
 
@@ -154,7 +156,9 @@ tools/        测试、打包、审计和性能工具
 - [MTool](https://mtool.app/)：游戏文本导出、导入和运行时加载工作流；
 - [GalTransl](https://github.com/GalTransl/GalTransl)：Galgame 批量翻译、上下文和术语工作流；
 - [SakuraLLM](https://github.com/SakuraLLM/SakuraLLM)：日中轻小说/Galgame 翻译模型与提示格式；
-- [OpenCode Go](https://opencode.ai/docs/providers#opencode-go)：当前唯一实际验证过的第三方 API 接入；
+- [OpenDesign Cloud API](https://open-design.ai/help/cloud-api/)：OpenDesign Go 的连接方式和协议说明；
+- [CCSwitch](https://github.com/farion1231/cc-switch) 和 [Magpie](https://github.com/yetone/magpie)：提供商预设、连接与模型分层选择的设计参考；
+- [OpenCode Go](https://opencode.ai/docs/providers#opencode-go)：保留兼容的第三方 API 接入；
 - [Ollama](https://ollama.com/)：本地模型传输接口的实验性支持。
 
 请分别遵守上述项目、模型和服务的许可证及使用条款。

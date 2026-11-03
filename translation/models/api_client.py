@@ -12,6 +12,7 @@ import requests
 from translation.config import third_party_api_config
 import translation.usage as token_usage
 from translation.models.transport import connection_scope, request as transport_request
+from translation.models.providers import provider_preset
 
 
 OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
@@ -146,6 +147,8 @@ def _base_url(cfg: dict[str, Any]) -> str:
     base_url = str(os.environ.get("THIRD_PARTY_API_BASE_URL") or cfg.get("base_url") or "").rstrip("/")
     if not base_url and _api_style(cfg) == "opencode_go":
         return OPENCODE_GO_BASE_URL
+    if not base_url:
+        return str(provider_preset(str(cfg.get("preset") or "")).get("base_url") or "")
     return base_url
 
 
@@ -454,6 +457,8 @@ def _openai_translate_once(
             if thinking_mode == "low"
             else "none"
         )
+    elif cfg.get("preset") == "opendesign_go" and cfg.get("disable_thinking", True):
+        payload["reasoning_effort"] = "none"
 
     request_started = token_usage.record_request_start("api", model_id)
     try:
@@ -486,12 +491,10 @@ def _anthropic_translate_once(
     thinking_mode: str = "disabled",
 ) -> str:
     url = _endpoint_url(base_url, "messages")
-    headers = {
-        "x-api-key": key,
+    headers = _request_headers(key, style=_api_style(cfg), auth_header="x-api-key")
+    headers.update({
         "anthropic-version": str(cfg.get("anthropic_version") or "2023-06-01"),
-        "x-opencode-session": str(uuid.uuid4()),
-        "Content-Type": "application/json",
-    }
+    })
     model_id = _api_model_id(model) if _api_style(cfg) == "opencode_go" else model
     payload: dict[str, Any] = {
         "model": model_id,
@@ -507,6 +510,8 @@ def _anthropic_translate_once(
             if thinking_mode == "low"
             else {"type": "disabled"}
         )
+    elif cfg.get("preset") == "opendesign_go" and cfg.get("disable_thinking", True):
+        payload["thinking"] = {"type": "disabled"}
     if options:
         if "temperature" in options:
             payload["temperature"] = options["temperature"]
@@ -570,6 +575,8 @@ def _responses_translate_once(
             if thinking_mode == "low"
             else "none"
         }
+    elif cfg.get("preset") == "opendesign_go" and cfg.get("disable_thinking", True):
+        payload["reasoning"] = {"effort": "none"}
 
     request_started = token_usage.record_request_start("api", model_id)
     try:

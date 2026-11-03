@@ -126,7 +126,7 @@
                             <div class="field" id="primary-model-field">
                                 <label for="model-select">主模型</label>
                                 <select id="model-select"></select>
-                                <small id="model-help">质量优先方案使用固定的已验证路由。</small>
+                                <small id="model-help">使用当前提供商可用的模型或已应用的测试策略。</small>
                             </div>
                             <button id="btn-refresh-models" class="btn btn-secondary btn-sm">刷新模型</button>
                         </div>
@@ -390,11 +390,28 @@
                         <fieldset id="settings-fieldset" disabled>
                             <div class="settings-form-grid">
                                 <div class="field">
-                                    <label for="settings-provider">默认提供方</label>
+                                    <label for="settings-provider">运行方式</label>
                                     <select id="settings-provider">
                                         <option value="api">联网 API</option>
                                         <option value="ollama">本地 Ollama</option>
                                     </select>
+                                </div>
+                                <div class="field settings-span-2" id="settings-api-profiles-field">
+                                    <label for="settings-api-profile">已保存的 API 提供商</label>
+                                    <div class="provider-picker-row">
+                                        <select id="settings-api-profile" aria-describedby="settings-active-provider"></select>
+                                        <button id="btn-provider-activate" type="button" class="btn btn-secondary btn-sm">启用此配置</button>
+                                        <button id="btn-provider-new" type="button" class="btn btn-secondary btn-sm">新增提供商</button>
+                                    </div>
+                                    <small id="settings-active-provider">正在读取当前提供商</small>
+                                </div>
+                                <div class="field" id="settings-profile-name-field">
+                                    <label for="settings-profile-name">配置名称</label>
+                                    <input id="settings-profile-name" type="text" autocomplete="off" placeholder="例如：OpenDesign Go">
+                                </div>
+                                <div class="field" id="settings-preset-field">
+                                    <label for="settings-api-preset">提供商预设</label>
+                                    <select id="settings-api-preset"></select>
                                 </div>
                                 <div class="field" id="settings-key-field">
                                     <label for="settings-api-key">API 密钥</label>
@@ -402,9 +419,9 @@
                                     <small id="settings-key-state">尚未读取状态</small>
                                 </div>
                                 <div class="field settings-span-2">
-                                    <label for="settings-default-model">默认模型（必须已勾选）</label>
-                                    <input id="settings-default-model" type="text" list="settings-model-options" autocomplete="off" placeholder="api:qwen3.7-plus">
-                                    <datalist id="settings-model-options"></datalist>
+                                    <label for="settings-default-model">默认模型</label>
+                                    <select id="settings-default-model"></select>
+                                    <small>仅显示当前提供商中已启用的模型。</small>
                                 </div>
                             </div>
 
@@ -426,6 +443,10 @@
                                     <button id="btn-model-select-none" type="button" class="btn btn-ghost btn-sm">全不选</button>
                                 </div>
                                 <div id="settings-model-list" class="settings-model-list"></div>
+                                <div class="model-manual-row">
+                                    <input id="settings-model-manual" type="text" autocomplete="off" aria-label="手动添加模型 ID" placeholder="提供商不支持模型发现时，可填写模型 ID">
+                                    <button id="btn-model-add" type="button" class="btn btn-secondary btn-sm">添加模型</button>
+                                </div>
                                 <p class="model-usage-note">获取模型目录不发送推理请求；普通与成人内容测试都会逐模型发送一条极短翻译请求，可能消耗 Token。成人测试通过后标记为“NSFW 可用”。</p>
                             </section>
 
@@ -459,15 +480,15 @@
                                     <div class="field">
                                         <label for="settings-api-style">API 协议</label>
                                         <select id="settings-api-style">
-                                            <option value="opencode_go">OpenCode Go</option>
-                                            <option value="openai">OpenAI 兼容</option>
+                                            <option id="settings-opencode-protocol" value="opencode_go">OpenCode Go 自动协议（旧配置）</option>
+                                            <option value="openai">OpenAI Chat Completions</option>
                                             <option value="anthropic">Anthropic Messages</option>
                                             <option value="responses">OpenAI Responses</option>
                                         </select>
                                     </div>
                                     <div class="field">
                                         <label for="settings-base-url">API Base URL</label>
-                                        <input id="settings-base-url" type="url" autocomplete="off" placeholder="OpenCode Go 可留空使用内置地址">
+                                        <input id="settings-base-url" type="url" autocomplete="off" placeholder="https://example.com/v1">
                                     </div>
                                     <div class="field settings-span-2">
                                         <label for="settings-ollama-host">Ollama 地址</label>
@@ -475,7 +496,7 @@
                                     </div>
                                     <label class="check-row">
                                         <input id="settings-disable-thinking" type="checkbox" checked>
-                                        <span><b>翻译请求禁用思考输出</b><small>OpenCode Go 会按端点发送对应参数。</small></span>
+                                        <span><b>翻译请求禁用思考输出</b><small>按提供商和端点支持发送对应参数。</small></span>
                                     </label>
                                     <label class="check-row danger-check">
                                         <input id="settings-clear-key" type="checkbox">
@@ -508,7 +529,7 @@
                         <div><strong>密钥安全</strong><span>读取接口只返回“已配置 / 未配置”和来源；密钥正文永不回显。</span></div>
                         <div><strong>配置优先级</strong><span>操作系统进程环境变量高于 .env，界面保存无法覆盖进程环境变量。</span></div>
                         <div><strong>模型健康</strong><span>Ollama 列表是实时检测；API 列表来自配置，只有连接测试或翻译时才会发送请求。</span></div>
-                        <div><strong>任务参数</strong><span>质量优先方案使用经过验证的固定路由；自定义批量参数仍是任务级覆盖。</span></div>
+                        <div><strong>任务参数</strong><span>质量优先方案使用当前提供商可用的模型或已应用的测试策略；自定义批量参数仅对当前任务生效。</span></div>
                     </div>
                 </section>
             </div>

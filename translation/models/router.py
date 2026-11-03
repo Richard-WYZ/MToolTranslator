@@ -36,6 +36,11 @@ def model_configuration(model: str | None = None) -> dict[str, Any]:
         api_cfg = third_party_api_config()
         cfg["base_url"] = api_cfg.get("base_url", "")
         cfg["api_key_env"] = api_cfg.get("api_key_env", "THIRD_PARTY_API_KEY")
+        cfg["api_style"] = api_cfg.get("style", "openai")
+        cfg["api_preset"] = api_cfg.get("preset", "")
+        cfg["api_profile_id"] = api_cfg.get("profile_id", "")
+        cfg["disable_thinking"] = bool(api_cfg.get("disable_thinking", True))
+        cfg["model_protocols"] = dict(api_cfg.get("model_protocols") or {})
     return cfg
 
 

@@ -65,7 +65,7 @@ function fillModelSelect(select, models, selected, allowEmpty) {
         var provider = model.provider || "other";
         if (!groups[provider]) {
             groups[provider] = document.createElement("optgroup");
-            groups[provider].label = provider === "api" ? "联网 API（配置列表）" : "本地 Ollama（实时）";
+            groups[provider].label = provider === "api" ? activeApiProviderName() : "本地 Ollama（实时）";
             select.appendChild(groups[provider]);
         }
         var option = document.createElement("option");
@@ -155,7 +155,7 @@ function renderProfile() {
     el("advanced-config").style.display = state.profile === "custom" ? "block" : "none";
     if (state.profile === "custom") el("advanced-config").open = true;
     var descriptions = {
-        quality_first: "质量优先方案使用固定的已验证路由。",
+        quality_first: "使用当前提供商可用的模型或已应用的测试策略。",
         single_model: "整个任务只使用这个 API 模型。",
         local: "整个任务只使用这个本地 Ollama 模型。",
         custom: "此模型用于普通文本；其他模型在高级配置中选择。",
@@ -199,14 +199,14 @@ function renderRouteMap() {
     el("privacy-badge").textContent = privacy === "local" ? "仅本机" : privacy === "hybrid" ? "混合" : "联网";
     el("privacy-copy").textContent = privacy === "local"
         ? "文本只发送到本机 Ollama 服务。"
-        : "文本会通过已配置的 OpenCode Go API 发送给路由模型。";
+        : "文本会通过 " + activeApiProviderName() + " 发送给所选模型。";
     el("summary-profile").textContent = profileName;
     el("summary-model").textContent = modelLabel(selectedModel()) || "未选择";
     var options = profileOptions();
     var concurrency = state.profile === "quality_first" ? 10 : state.profile === "custom" ? options.api_concurrency : state.profile === "local" ? 1 : 10;
     var batch = state.profile === "quality_first" ? 40 : state.profile === "custom" ? options.json_batch_size : 40;
     el("summary-batch").textContent = concurrency + " / " + batch;
-    el("top-provider").textContent = privacy === "local" ? "Ollama · 本地" : privacy === "hybrid" ? "本地 + API" : "OpenCode Go · 联网";
+    el("top-provider").textContent = privacy === "local" ? "Ollama · 本地" : privacy === "hybrid" ? "本地 + API" : activeApiProviderName() + " · 联网";
     el("btn-start").textContent = state.profile === "quality_first" ? "开始质量优先翻译" : "开始翻译";
 }
 

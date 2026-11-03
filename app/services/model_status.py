@@ -74,6 +74,10 @@ def _provider_context(provider: str) -> str:
         values = {
             "provider": "api",
             "style": str(config.get("style") or ""),
+            "preset": str(config.get("preset") or ""),
+            "profile_id": str(config.get("profile_id") or "legacy"),
+            "disable_thinking": bool(config.get("disable_thinking", True)),
+            "model_protocols": dict(config.get("model_protocols") or {}),
             "base_url": str(config.get("base_url") or ""),
             "secret_hash": secret_hash,
         }
@@ -105,6 +109,29 @@ def _public_record(
     return result
 
 
+def _context_tests(payload: dict[str, Any], model_id: str, *, create: bool = False) -> dict[str, Any]:
+    """Keep same-named model results separate for each saved connection."""
+    context = _provider_context(model_id.split(":", 1)[0])
+    latest = payload.setdefault("models", {}).get(model_id, {})
+    histories = payload.setdefault("contexts", {})
+    current = histories.get(context, {}).get(model_id)
+    if isinstance(current, dict):
+        if create:
+            payload["models"][model_id] = current
+        return current
+    if not create:
+        return latest if isinstance(latest, dict) else {}
+    # Migrate prior schema-one results to their original context before a new
+    # provider's test replaces the latest public view.
+    if isinstance(latest, dict):
+        for kind, record in latest.items():
+            if isinstance(record, dict) and record.get("context"):
+                histories.setdefault(record["context"], {}).setdefault(model_id, {}).setdefault(kind, dict(record))
+    current = histories.setdefault(context, {}).setdefault(model_id, {})
+    payload["models"][model_id] = current
+    return current
+
+
 def public_model_statuses() -> dict[str, dict[str, dict[str, Any]]]:
     payload = _read_store()
     contexts = {
@@ -112,7 +139,8 @@ def public_model_statuses() -> dict[str, dict[str, dict[str, Any]]]:
         "ollama": _provider_context("ollama"),
     }
     result: dict[str, dict[str, dict[str, Any]]] = {}
-    for model_id, tests in payload["models"].items():
+    for model_id in list(payload["models"]):
+        tests = _context_tests(payload, model_id)
         if not isinstance(model_id, str) or not isinstance(tests, dict):
             continue
         result[model_id] = {}
@@ -128,7 +156,7 @@ def public_model_statuses() -> dict[str, dict[str, dict[str, Any]]]:
 def model_thinking_mode(model_id: str) -> str:
     """Return the persisted thinking mode required by a model, if known."""
     payload = _read_store()
-    tests = payload.get("models", {}).get(model_id, {})
+    tests = _context_tests(payload, model_id)
     if not isinstance(tests, dict):
         return ""
     discovered_modes: list[str] = []
@@ -155,7 +183,7 @@ def record_model_thinking_mode(model_id: str, thinking_mode: str) -> bool:
         return False
     with _LOCK:
         payload = _read_store()
-        tests = payload.setdefault("models", {}).setdefault(model_id, {})
+        tests = _context_tests(payload, model_id, create=True)
         changed = False
         for test_kind in ("basic", "adult"):
             record = tests.get(test_kind)
@@ -177,7 +205,7 @@ def record_model_thinking_mode(model_id: str, thinking_mode: str) -> bool:
 def model_protocol(model_id: str) -> str:
     """Return a protocol learned for the current provider context, if any."""
     payload = _read_store()
-    tests = payload.get("models", {}).get(model_id, {})
+    tests = _context_tests(payload, model_id)
     if not isinstance(tests, dict):
         return ""
     capability = tests.get("_capabilities")
@@ -197,7 +225,7 @@ def record_model_protocol(model_id: str, protocol: str) -> bool:
     provider = model_id.split(":", 1)[0]
     with _LOCK:
         payload = _read_store()
-        tests = payload.setdefault("models", {}).setdefault(model_id, {})
+        tests = _context_tests(payload, model_id, create=True)
         current = tests.get("_capabilities")
         context = _provider_context(provider)
         if (
@@ -254,8 +282,7 @@ def record_model_test(
         record[key] = value
     with _LOCK:
         payload = _read_store()
-        models = payload.setdefault("models", {})
-        tests = models.setdefault(model_id, {})
+        tests = _context_tests(payload, model_id, create=True)
         tests[test_kind] = record
         persisted = _write_store(payload)
     public = _public_record(model_id, record)
