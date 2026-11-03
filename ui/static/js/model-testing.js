@@ -46,8 +46,16 @@ async function requestModelTest(modelId, testKind) {
     });
 }
 
+function modelTestsAreBlocked() {
+    return Boolean(state.settingsBusy)
+        || (typeof settingsTaskIsActive === "function" && settingsTaskIsActive())
+        || (typeof benchmarkIsActive === "function" && benchmarkIsActive());
+}
+
 async function testSingleModel(modelId, testKind) {
+    if (modelTestsAreBlocked()) return;
     if (typeof flushSettingsAutosave === "function" && !(await flushSettingsAutosave())) return;
+    if (modelTestsAreBlocked()) return;
     var adult = testKind === "adult";
     var statusStore = adult ? state.modelNsfwAvailability : state.modelAvailability;
     statusStore[modelId] = { status: "testing", tested_at: "", stale: false };
@@ -95,7 +103,9 @@ function testModelNsfwAvailability(modelId) {
 }
 
 async function testEnabledModels(testKind) {
+    if (modelTestsAreBlocked()) return;
     if (typeof flushSettingsAutosave === "function" && !(await flushSettingsAutosave())) return;
+    if (modelTestsAreBlocked()) return;
     var models = enabledModelsForCurrentProvider();
     if (!models.length) {
         toast("请先勾选至少一个模型", "error");
@@ -103,11 +113,6 @@ async function testEnabledModels(testKind) {
     }
     var adult = testKind === "adult";
     var description = adult ? "成人内容兼容性" : "普通连接可用性";
-    if (!window.confirm(
-        "将逐个测试当前提供方已勾选的 " + models.length + " 个模型的" + description
-        + "。每个模型都会发送一条请求并可能消耗 Token，是否继续？"
-    )) return;
-
     var statusStore = adult ? state.modelNsfwAvailability : state.modelAvailability;
     models.forEach(function (item) {
         statusStore[item.id] = { status: "testing", tested_at: "", stale: false };

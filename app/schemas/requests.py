@@ -147,6 +147,8 @@ class ReviewSaveRequest(BaseModel):
     col: int
     text: str
     action: str = "accept"
+    expected_original: str | None = None
+    expected_translation: str | None = None
 
 
 class ReviewBatchSaveRequest(BaseModel):

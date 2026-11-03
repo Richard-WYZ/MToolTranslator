@@ -90,6 +90,23 @@ def test_manual_confirmation_requires_saved_matching_evidence(search_file):
         assert client.get("/api/review", params={"file_path": search_file, "row": 3}).json()["columns"][0]["manual_confirmed"] is False
 
 
+def test_restored_draft_refuses_changed_source_before_writing(search_file):
+    from pathlib import Path
+
+    output = Path(translated_path(search_file))
+    before_output = output.read_bytes()
+    before_checkpoint = checkpoint.get_entry(search_file, 3, 0)
+    payload = {"file_path": search_file, "row": 3, "col": 0, "text": "恢复的译文草稿", "action": "draft"}
+    with client_for_review() as client:
+        refused = client.post("/api/review/save", json={**payload, "expected_original": "旧版本原文"})
+        assert refused.status_code == 409
+        assert output.read_bytes() == before_output
+        assert checkpoint.get_entry(search_file, 3, 0) == before_checkpoint
+        saved = client.post("/api/review/save", json={**payload, "expected_original": "名前3です。"})
+        assert saved.status_code == 200
+        assert saved.json()["text"] == "恢复的译文草稿"
+
+
 @pytest.fixture
 def term_file(tmp_path):
     path = str(tmp_path / "术语.json")

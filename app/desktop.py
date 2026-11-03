@@ -25,6 +25,7 @@ import uvicorn
 import webview
 
 from app.services.desktop_sources import desktop_source_registry
+from app.services import workspace_drafts
 
 
 class Api:
@@ -37,6 +38,14 @@ class Api:
         """Cache frontend draft state without evaluating JavaScript during close."""
         self.pending_review_draft = bool(pending)
         return self.pending_review_draft
+
+    def get_workspace_drafts(self, kind):
+        """Restore recovery text without applying it to a translation or glossary."""
+        return workspace_drafts.get_workspace_drafts(kind)
+
+    def set_workspace_drafts(self, kind, drafts):
+        """Keep an editor recovery copy independently of native close events."""
+        return workspace_drafts.set_workspace_drafts(kind, drafts)
 
     def save_file_dialog(self, default_filename):
         """Open a native save-file dialog and return the chosen path.
@@ -125,43 +134,8 @@ def wait_for_server_ready(request_client=requests, timeout=10.0):
 
 
 def build_close_handler(window, request_client=requests, pending_review_draft=None):
-    """Build a non-reentrant desktop close guard using pywebview's native dialog."""
+    """Close directly; drafts are cached as they are edited, before this event."""
     def on_closing():
-        try:
-            resp = request_client.get(
-                "http://127.0.0.1:8000/api/desktop/exit-state",
-                timeout=1,
-            )
-            state = resp.json()
-        except Exception:
-            state = {"requires_confirmation": False}
-
-        has_pending_draft = False
-        try:
-            if callable(pending_review_draft):
-                has_pending_draft = bool(pending_review_draft())
-        except Exception:
-            # The native closing event blocks the WebView's UI thread. Read a
-            # bridge-maintained Python flag; synchronous evaluate_js deadlocks
-            # WebView2's UI-scheduled script completion callback.
-            pass
-
-        active_work = state.get("requires_confirmation", state.get("dirty", False))
-        if has_pending_draft or active_work:
-            message = (
-                "存在尚未保存的译文草稿，退出会放弃这些修改，是否退出？"
-                if has_pending_draft
-                else "当前仍有翻译或 AI 复核正在运行。退出会停止后台任务，"
-                     "已保存的断点与临时结果会保留，是否退出？"
-            )
-            if has_pending_draft and active_work:
-                message += "\n\n当前翻译或 AI 复核也会停止，已保存进度会保留。"
-            confirmed = window.create_confirmation_dialog(
-                "确认退出",
-                message,
-            )
-            if not confirmed:
-                return False
         try:
             request_client.post(
                 "http://127.0.0.1:8000/api/desktop/shutdown",

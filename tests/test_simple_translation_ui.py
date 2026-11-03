@@ -102,6 +102,30 @@ vm.runInContext(fs.readFileSync('ui/static/js/export.js','utf8'),context);
 ''')
 
 
+def test_overwrite_button_exports_directly_without_a_second_confirmation():
+    run_ui_script(r'''
+const assert=require('node:assert/strict'), fs=require('node:fs'), vm=require('node:vm');
+const calls=[];
+const context={
+    state:{sessionId:'session',filePath:'work.json',fileName:'game.json',originalFilePath:'original.json'},
+    window:{pywebview:{api:{save_file_dialog(){throw new Error('Overwrite must not ask for a destination');}}},confirm(){throw new Error('Unexpected confirmation');}},
+    el:()=>({disabled:false}), toast(){}, updateActionStates(){}, flushReviewDraft:async()=>true,
+    API:{async post(path,payload){calls.push({path,payload});return {export_path:'original.json',overwrote_original:true};}},
+};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync('ui/static/js/export.js','utf8'),context);
+(async()=>{
+    await context.exportResult(true);
+    assert.equal(calls.length,1);
+    assert.equal(calls[0].path,'/export');
+    assert.equal(calls[0].payload.overwrite_original,true);
+    assert.equal(calls[0].payload.file_path,'work.json');
+    assert.equal(calls[0].payload.output_path,null);
+    assert.equal(context.state.exportBusy,false);
+})().catch(error=>{console.error(error);process.exitCode=1;});
+''')
+
+
 def test_export_double_click_uses_original_project_snapshot():
     run_ui_script(r'''
 const assert=require('node:assert/strict'), fs=require('node:fs'), vm=require('node:vm');

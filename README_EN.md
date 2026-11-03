@@ -99,9 +99,11 @@ Runtime files beside the executable include:
 - Export is blocked while translation or AI review is writing. After the task
   reaches a structurally complete snapshot, export remains available even if
   review items remain.
-- Export keeps the working copy, so review and repeated exports can continue.
-  Desktop exit uses a native confirmation dialog and preserves checkpoints and
-  temporary results.
+- Actions run directly without a second confirmation dialog. Overwriting the
+  original retains its first backup; export keeps the working copy for review.
+- Desktop exit stops background work and preserves checkpoints. Unapplied review
+  and glossary edits have local recovery copies, restored when the project is
+  reopened. Recovery does not mark translations approved or apply glossary terms.
 
 ### Run from source
 

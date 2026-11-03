@@ -47,6 +47,13 @@ Settings persistence serializes writes, while `ui/static/js/settings-autosave.js
 owns edit revisions, debounce, retries and flush barriers. Secret changes require
 an explicit action and never enter ordinary autosave payloads.
 
+Actions and window closing do not ask for a second confirmation. Editor recovery
+copies belong to `app/services/workspace_drafts.py`, separately from translations
+and confirmed terminology. The native bridge stores atomic snapshots as edits
+arrive; browser storage supports browser recovery. Restoring a draft never applies
+it, and draft writes verify the authoritative original before changing output.
+Native closing only requests shutdown and never evaluates frontend JavaScript.
+
 `translation/models/protocols.py` ranks transport protocols using provider and
 endpoint hints, advertised catalog capability and connection-scoped successes.
 It contains no translation policy and does not issue requests. The API client

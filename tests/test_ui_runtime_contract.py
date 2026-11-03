@@ -343,7 +343,7 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert "/static/app.js" not in html
     assert "/static/style.css" not in html
     desktop_script = (root / "app" / "desktop.py").read_text(encoding="utf-8")
-    assert "create_confirmation_dialog" in desktop_script
+    assert "create_confirmation_dialog" not in desktop_script
     assert "window.evaluate_js" not in desktop_script
     assert "capture_dropped_files" in desktop_script
     assert "DOMEventHandler" in desktop_script

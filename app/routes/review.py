@@ -116,6 +116,15 @@ def create_router(
             if req.row < 0 or req.row >= len(translated_items):
                 raise HTTPException(status_code=400, detail=f"Row out of range: {req.row}")
 
+            original_text = ""
+            if req.row < len(original_items):
+                cp_entry = translation_checkpoint.get_entry(req.file_path, req.row, 0)
+                original_text = json_original_text(original_items[req.row][0], original_items[req.row][1], cp_entry, mtool=mtool)
+            if req.expected_original is not None and req.expected_original != original_text:
+                raise HTTPException(status_code=409, detail="原文已变化，草稿仍保留，请重新检查此条译文")
+            if req.expected_translation is not None and req.expected_translation != translated_items[req.row][1]:
+                raise HTTPException(status_code=409, detail="译文已变化，草稿仍保留，请重新检查此条译文")
+
             action = str(req.action or "accept").lower()
             if action not in ("accept", "draft", "preserve"):
                 raise HTTPException(status_code=400, detail=f"Unsupported review action: {action}")
@@ -124,10 +133,6 @@ def create_router(
             translated_items[req.row] = (key, saved_text)
             write_json_items(translated_items, output_path)
 
-            original_text = ""
-            if req.row < len(original_items):
-                cp_entry = translation_checkpoint.get_entry(req.file_path, req.row, 0)
-                original_text = json_original_text(original_items[req.row][0], original_items[req.row][1], cp_entry, mtool=mtool)
             translation_checkpoint.save_progress(
                 req.file_path,
                 req.row,

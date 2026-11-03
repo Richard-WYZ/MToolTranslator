@@ -1,8 +1,111 @@
 "use strict";
 
+var glossaryEditDrafts = new Map();
+var glossaryDraftTouched = new Set();
+var glossaryDraftRevision = 0;
+var glossaryDraftNativeRevision = -1;
+var glossaryDraftNativeLoaded = false;
+var glossaryDraftNativeLoading = null;
+var glossaryDraftNativeWriting = false;
+var glossaryDeletingTerms = new Set();
+
+function glossaryDraftKey(file, source) { return JSON.stringify([file, source]); }
+
+function validGlossaryDraft(draft) {
+    return draft && typeof draft.file === "string" && Boolean(draft.file) && typeof draft.source === "string" && Boolean(draft.source) && typeof draft.target === "string";
+}
+
+function glossaryDraftValues() {
+    return Array.from(glossaryEditDrafts.values()).map(function (draft) {
+        var value = { file: draft.file, source: draft.source, target: draft.target };
+        if (typeof draft.initialTarget === "string") value.initialTarget = draft.initialTarget;
+        return value;
+    });
+}
+
+function persistGlossaryDrafts() {
+    try {
+        if (typeof localStorage !== "undefined") localStorage.setItem("lgt.glossaryDrafts", JSON.stringify(glossaryDraftValues()));
+    } catch (error) { /* The in-memory copy remains available if browser storage is full. */ }
+    syncGlossaryNativeDrafts();
+}
+
+function syncGlossaryNativeDrafts() {
+    var bridge = window.pywebview && window.pywebview.api;
+    if (!bridge || typeof bridge.get_workspace_drafts !== "function" || typeof bridge.set_workspace_drafts !== "function") return;
+    if (!glossaryDraftNativeLoaded) {
+        if (glossaryDraftNativeLoading) return;
+        var loading;
+        try { loading = bridge.get_workspace_drafts("glossary"); }
+        catch (error) { return; }
+        glossaryDraftNativeLoading = Promise.resolve(loading).then(function (drafts) {
+            if (Array.isArray(drafts)) drafts.filter(validGlossaryDraft).forEach(function (draft) {
+                var key = glossaryDraftKey(draft.file, draft.source);
+                if (!glossaryDraftTouched.has(key) && !glossaryEditDrafts.has(key)) glossaryEditDrafts.set(key, draft);
+            });
+            glossaryDraftNativeLoaded = true;
+            glossaryDraftRevision += 1;
+            restoreVisibleGlossaryDraft();
+            persistGlossaryDrafts();
+        }).catch(function () { /* Retain local drafts; retry when the bridge becomes ready again. */ })
+            .finally(function () { glossaryDraftNativeLoading = null; });
+        return;
+    }
+    if (glossaryDraftNativeWriting || glossaryDraftNativeRevision === glossaryDraftRevision) return;
+    var revision = glossaryDraftRevision;
+    glossaryDraftNativeWriting = true;
+    var writing;
+    try { writing = bridge.set_workspace_drafts("glossary", glossaryDraftValues()); }
+    catch (error) { glossaryDraftNativeWriting = false; return; }
+    Promise.resolve(writing).then(function () {
+        glossaryDraftNativeRevision = revision;
+        glossaryDraftNativeWriting = false;
+        if (revision !== glossaryDraftRevision) syncGlossaryNativeDrafts();
+    }).catch(function () { glossaryDraftNativeWriting = false; });
+}
+
+function stashGlossaryDraft() {
+    var file = state.glossary.detailFile, source = state.glossary.detailSource;
+    if (!file || !source) return true;
+    var target = el("glossary-detail-target").value;
+    var key = glossaryDraftKey(file, source);
+    if (target !== state.glossary.detailInitialTarget) {
+        var previous = glossaryEditDrafts.get(key);
+        var initialTarget = previous && typeof previous.initialTarget === "string" ? previous.initialTarget : state.glossary.detailInitialTarget || "";
+        glossaryEditDrafts.set(key, { file: file, source: source, target: target, initialTarget: initialTarget });
+        glossaryDraftTouched.add(key);
+        glossaryDraftRevision += 1;
+        persistGlossaryDrafts();
+    }
+    return true;
+}
+
+function clearGlossaryDraft(file, source) {
+    glossaryEditDrafts.delete(glossaryDraftKey(file, source));
+    glossaryDraftTouched.add(glossaryDraftKey(file, source));
+    glossaryDraftRevision += 1;
+    persistGlossaryDrafts();
+}
+
+function restoreVisibleGlossaryDraft() {
+    var draft = glossaryEditDrafts.get(glossaryDraftKey(state.glossary.detailFile, state.glossary.detailSource));
+    if (!draft || state.glossary.detailDirty || el("glossary-detail").hidden
+        || el("glossary-detail-target").value !== state.glossary.detailInitialTarget) return;
+    el("glossary-detail-target").value = draft.target;
+    state.glossary.detailDirty = draft.target !== state.glossary.detailInitialTarget;
+    state.glossary.detailDraftStale = typeof draft.initialTarget === "string" && draft.initialTarget !== state.glossary.detailInitialTarget;
+    state.glossary.detailPreview = null;
+    state.glossary.detailRequest = (state.glossary.detailRequest || 0) + 1;
+    state.glossary.detailBusy = false;
+    el("glossary-detail-note").textContent = state.glossary.detailDraftStale
+        ? "当前术语译法已有更新；已保留旧草稿，请核对。" : "已恢复未应用的译法草稿";
+    updateGlossaryDetailControls();
+}
+
 async function loadGlossary() {
     var path = activeFilePath();
     if (state.glossary.detailFile && state.glossary.detailFile !== path) {
+        stashGlossaryDraft();
         state.glossary.detailSource = "";
         state.glossary.detailDirty = false;
         state.glossary.detailBusy = false;
@@ -109,13 +212,19 @@ async function promoteGlossaryTerm(source) {
 
 async function deleteGlossaryTerm(source) {
     if (state.glossary.detailBusy) return;
-    if (!window.confirm("移除术语“" + source + "”？已生成译文不会被自动回滚。")) return;
+    if (typeof aiReviewIsActive === "function" && aiReviewIsActive()) { toast("AI 检查进行中，暂不能修改术语", "error"); return; }
+    var file = activeFilePath(), key = glossaryDraftKey(file, source);
+    if (!file || glossaryDeletingTerms.has(key)) return;
+    glossaryDeletingTerms.add(key);
     try {
-        await API.delete("/glossary/dynamic/" + encodeURIComponent(source) + "?file_path=" + encodeURIComponent(activeFilePath()));
+        await API.delete("/glossary/dynamic/" + encodeURIComponent(source) + "?file_path=" + encodeURIComponent(file));
+        clearGlossaryDraft(file, source);
+        if (file !== activeFilePath()) return;
         toast("术语已移除", "success");
         if (state.glossary.detailSource === source) closeGlossaryDetail(true);
         await loadGlossary();
     } catch (error) { toast(error.message, "error"); }
+    finally { glossaryDeletingTerms.delete(key); }
 }
 
 function glossaryHasUnsavedChanges() {
@@ -123,7 +232,7 @@ function glossaryHasUnsavedChanges() {
 }
 
 function confirmGlossaryLeave() {
-    return !glossaryHasUnsavedChanges() || window.confirm("术语译法尚未应用，放弃这次修改吗？");
+    return stashGlossaryDraft();
 }
 
 function closeGlossaryDetail(force) {
@@ -144,9 +253,12 @@ async function openGlossaryDetail(source) {
     state.glossary.detailInitialTarget = row.target || "";
     state.glossary.detailDirty = false;
     state.glossary.detailPreview = null;
+    var draft = glossaryEditDrafts.get(glossaryDraftKey(state.glossary.detailFile, source));
+    state.glossary.detailDraftStale = Boolean(draft && typeof draft.initialTarget === "string" && draft.initialTarget !== state.glossary.detailInitialTarget);
     el("glossary-detail").hidden = false;
     el("glossary-detail-title").textContent = source + " · " + glossaryStatusLabel(row.status);
-    el("glossary-detail-target").value = row.target || "";
+    el("glossary-detail-target").value = draft ? draft.target : row.target || "";
+    state.glossary.detailDirty = Boolean(draft && draft.target !== state.glossary.detailInitialTarget);
     el("btn-glossary-apply").textContent = row.confirmed ? "更新并检查译文" : "确认并应用";
     await previewGlossaryImpact(0);
     if (el("glossary-detail").scrollIntoView) el("glossary-detail").scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -183,7 +295,9 @@ async function previewGlossaryImpact(offset) {
         state.glossary.detailPreview = result;
         el("glossary-detail-summary").textContent = "出现 " + result.occurrence_count + " 次，分布在 " + result.entry_count + " 条原文中；" + result.affected_count + " 条已有译文需要检查";
         el("glossary-detail-note").textContent = !target ? "填写统一译法后预览影响。"
-            : result.target_valid ? "预览只读取当前结果；确认应用后才会更新术语与相关译文。" : "该译法未通过术语检查，请核对后修改。";
+            : !result.target_valid ? "该译法未通过术语检查，请核对后修改。"
+            : state.glossary.detailDraftStale ? "当前术语译法已有更新；草稿尚未应用，请核对。"
+            : "预览只读取当前结果；确认应用后才会更新术语与相关译文。";
         renderGlossaryOccurrences(result);
     } catch (error) {
         if (requestId === state.glossary.detailRequest) {
@@ -223,6 +337,8 @@ async function applyGlossaryDetail(event) {
         if (file !== activeFilePath()) return;
         state.glossary.detailDirty = false;
         state.glossary.detailInitialTarget = target;
+        state.glossary.detailDraftStale = false;
+        clearGlossaryDraft(file, source);
         state.glossary.detailConfirmed = true;
         el("glossary-detail-title").textContent = source + " · 已确认，会统一使用";
         el("btn-glossary-apply").textContent = "更新并检查译文";
@@ -239,6 +355,14 @@ async function applyGlossaryDetail(event) {
 function initGlossaryWorkspace() {
     if (state.glossary.workspaceBound) return;
     state.glossary.workspaceBound = true;
+    try {
+        var drafts = typeof localStorage !== "undefined" ? JSON.parse(localStorage.getItem("lgt.glossaryDrafts") || "[]") : [];
+        if (Array.isArray(drafts)) drafts.filter(validGlossaryDraft).forEach(function (draft) {
+            glossaryEditDrafts.set(glossaryDraftKey(draft.file, draft.source), draft);
+        });
+    } catch (error) { /* Ignore malformed browser draft data. */ }
+    syncGlossaryNativeDrafts();
+    if (typeof window.addEventListener === "function") window.addEventListener("pywebviewready", syncGlossaryNativeDrafts);
     el("glossary-body").addEventListener("click", function (event) {
         var button = event.target.closest("[data-term-details]");
         if (button) openGlossaryDetail(button.dataset.termDetails);
@@ -246,6 +370,8 @@ function initGlossaryWorkspace() {
     el("btn-glossary-close").addEventListener("click", function () { closeGlossaryDetail(false); });
     el("glossary-detail-target").addEventListener("input", function () {
         state.glossary.detailDirty = this.value !== state.glossary.detailInitialTarget;
+        if (state.glossary.detailDirty) stashGlossaryDraft();
+        else clearGlossaryDraft(state.glossary.detailFile, state.glossary.detailSource);
         state.glossary.detailPreview = null;
         el("glossary-detail-note").textContent = "译法已修改，请重新预览影响。";
         updateGlossaryDetailControls();

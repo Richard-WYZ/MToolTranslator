@@ -211,12 +211,11 @@ async function resumeHistory(path) {
 
 async function deleteHistory(path) {
     if (historyActionIsBusy()) return;
-    var fileName = path.split(/[\\/]/).pop() || "未命名任务";
-    var confirmed = window.confirm(
-        "确定删除“" + fileName + "”的历史记录吗？\n\n"
-        + "将删除检查点、翻译快照和复核数据。已导出的文件与外部原始文件不会删除。此操作无法撤销。"
-    );
-    if (!confirmed) return;
+    var project = (state.history.projects || []).find(function (item) { return sameHistoryPath(item.file_path, path); });
+    if (project && project.active || sameHistoryPath(activeFilePath(), path)
+        && typeof settingsTaskIsActive === "function" && settingsTaskIsActive()) {
+        toast("任务进行中，暂不能删除此记录", "error"); return;
+    }
     state.history.deletingPaths.add(path);
     syncHistoryActionState();
     try {

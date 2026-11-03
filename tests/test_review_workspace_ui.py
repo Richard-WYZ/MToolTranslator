@@ -280,3 +280,80 @@ assert.deepEqual(pendingStates, [false, true, false], "The latest saved state mu
 context.persistReviewDrafts();
 assert.deepEqual(pendingStates, [false, true, false]);
 ''')
+
+
+def test_pagehide_keeps_recovery_text_without_triggering_a_leave_dialog():
+    run_ui(r'''
+const durable = new Map();
+context.localStorage = {getItem:key=>durable.get(key)||null,setItem:(key,value)=>durable.set(key,value)};
+context.initReviewWorkspace();
+seed();
+nodes["editor-target"].value = "退出前的未保存草稿";
+assert.equal(windowListeners.beforeunload, undefined);
+windowListeners.pagehide();
+assert.ok(durable.get("lgt.reviewDrafts").includes("退出前的未保存草稿"));
+assert.equal(posts.length, 0, "Retaining a recovery copy must not accept or apply it");
+storage.clear();
+context.reviewDrafts.clear();
+context.reviewDraftTouched.clear();
+context.initReviewWorkspace();
+seed();
+assert.equal(nodes["editor-target"].value,"退出前的未保存草稿");
+''')
+
+
+def test_native_recovery_is_loaded_before_pushing_and_does_not_auto_apply():
+    run_ui(r'''
+const nativeWrites = [];
+context.window.pywebview = {api:{
+    get_workspace_drafts:async kind=>{
+        assert.equal(kind,"review");
+        return [{path:filePath,row:0,text:"原生恢复草稿",original:"原文甲",base_text:"译文甲"}];
+    },
+    set_workspace_drafts:async(kind,drafts)=>{nativeWrites.push({kind,drafts});return {ok:true};},
+}};
+context.initReviewWorkspace();
+seed();
+await context.restoreReviewDraftStore();
+await new Promise(resolve=>setImmediate(resolve));
+assert.equal(nodes["editor-target"].value,"原生恢复草稿");
+assert.ok(nativeWrites.length);
+assert.equal(nativeWrites[0].drafts[0].text,"原生恢复草稿","An initial empty editor must not clear unread native drafts");
+assert.equal(posts.length,0);
+''')
+
+
+def test_delayed_recovery_does_not_resurrect_a_saved_draft_or_replace_new_input():
+    run_ui(r'''
+let restore;
+context.window.pywebview={api:{
+    get_workspace_drafts:()=>new Promise(resolve=>{restore=resolve;}),
+    set_workspace_drafts:async()=>({ok:true}),
+}};
+context.initReviewWorkspace();
+await new Promise(resolve=>setImmediate(resolve));
+seed();
+nodes["editor-target"].value="刚输入并保存的新草稿";
+context.captureReviewDraft();
+assert.equal(await context.flushReviewDraft(),true);
+assert.equal(posts[0].body.expected_original,"原文甲");
+restore([{path:filePath,row:0,text:"迟到的旧草稿",original:"原文甲",base_text:"译文甲"}]);
+await context.restoreReviewDraftStore();
+assert.equal(context.reviewDrafts.size,0);
+assert.equal(nodes["editor-target"].value,"刚输入并保存的新草稿");
+''')
+
+
+def test_old_native_draft_cannot_overwrite_a_newer_save_after_restart():
+    run_ui(r'''
+context.window.pywebview={api:{
+    get_workspace_drafts:async()=>[{path:filePath,row:0,text:"清除失败后残留的旧稿",original:"原文甲",base_text:"更早的译文"}],
+    set_workspace_drafts:async()=>{throw new Error("Native clear failed");},
+}};
+context.initReviewWorkspace();
+await context.restoreReviewDraftStore();
+seed();
+assert.equal(nodes["editor-target"].value,"译文甲","Recovery must not replace a newer saved translation");
+assert.equal(await context.flushReviewDraft(),true);
+assert.equal(posts.length,0,"A stale native copy must never be auto-applied on blur");
+''')

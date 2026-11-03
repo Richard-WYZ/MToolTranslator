@@ -124,13 +124,6 @@ function bindEvents() {
         else if (remove) deleteGlossaryTerm(remove.dataset.termDelete);
     });
 
-    window.addEventListener("beforeunload", function (event) {
-        if (window.pywebview && window.pywebview.api) return;
-        if (state.settingsDirty || glossaryHasUnsavedChanges() || ["starting", "running", "paused", "stopping", "finalizing"].includes(state.taskStatus) || aiReviewIsActive()) {
-            event.preventDefault();
-            event.returnValue = "";
-        }
-    });
 }
 
 var startupHealthTimer = null;

@@ -25,10 +25,6 @@ async function exportResult(overwriteRequested) {
         if (typeof flushReviewDraft === "function" && !(await flushReviewDraft())) return;
         var overwriteOriginal = overwriteRequested === true && isDesktop && Boolean(project.originalFilePath);
         var destination = { isDesktop: isDesktop, path: "" };
-        if (overwriteOriginal && !window.confirm(
-                "是否用当前翻译结果覆盖源文件？\n\n" + project.originalFilePath
-                + "\n\n首次覆盖会在源文件旁保留 .bak 备份。"
-            )) return;
         if (!overwriteOriginal && isDesktop) {
             destination = await chooseDesktopExportPath(project.fileName || "ManualTransFile.json");
             if (!destination.path) {
