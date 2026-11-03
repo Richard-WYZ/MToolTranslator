@@ -69,12 +69,16 @@ def api_configuration_status() -> dict[str, Any]:
     key_env = str(cfg.get("api_key_env") or "THIRD_PARTY_API_KEY")
     key_configured = bool(cfg.get("api_key") or os.environ.get(key_env))
     style = str(cfg.get("style") or "openai")
-    base_url_configured = bool(str(cfg.get("base_url") or "").strip()) or style == "opencode_go"
+    from translation.models.providers import provider_preset
+    base_url_configured = bool(str(cfg.get("base_url") or "").strip()) or style == "opencode_go" or bool(provider_preset(str(cfg.get("preset") or "")).get("base_url"))
     return {
         "configured": key_configured and base_url_configured,
         "key_configured": key_configured,
         "base_url_configured": base_url_configured,
         "style": style,
+        "preset": str(cfg.get("preset") or style),
+        "profile_id": str(cfg.get("profile_id") or "legacy"),
+        "provider_name": str(provider_preset(str(cfg.get("preset") or style)).get("name") or "联网 API"),
         "health": "configured" if key_configured and base_url_configured else "unconfigured",
         "health_note": "模型列表来自配置；为避免产生用量，未发送推理请求。",
     }
@@ -128,6 +132,23 @@ def resolve_execution_profile(
             "api_sensitive_model": sensitive_model,
             "api_sensitive_fallback_model": sensitive_fallback,
         })
+        api = third_party_api_config()
+        if api.get("preset") == "opendesign_go" or str(api.get("profile_id") or "legacy") != "legacy":
+            enabled_catalog = {
+                "api:" + str(name).removeprefix("api:")
+                for name in api.get("models") or []
+                if str(name).removeprefix("api:") not in set(disabled_models("api"))
+            }
+            benchmark_models = set(benchmark_profile.values()) - {""}
+            if not benchmark_profile or not benchmark_models.issubset(enabled_catalog):
+                selected_model = canonical_model_id(model, "api") or configured_default_model()
+                if selected_model not in enabled_catalog:
+                    selected_model = next(iter(sorted(enabled_catalog)), "api:")
+                cfg.update({
+                    "api_model_routing_enabled": False, "api_fast_model": "",
+                    "api_quality_model": "", "api_sensitive_routing_enabled": False,
+                    "api_sensitive_model": "", "api_sensitive_fallback_model": "",
+                })
     elif profile == "single_model":
         if not selected_model.startswith("api:") or selected_model == "api:":
             raise HTTPException(status_code=400, detail="Online single-model profile requires an API model")
@@ -194,6 +215,12 @@ def _require_enabled_model(model: str) -> None:
     if not canonical.startswith(("api:", "ollama:")):
         return
     provider, name = canonical.split(":", 1)
+    if not name:
+        raise HTTPException(status_code=409, detail="Choose an enabled model in settings before starting translation")
+    api = third_party_api_config() if provider == "api" else {}
+    if api and (api.get("preset") == "opendesign_go" or str(api.get("profile_id") or "legacy") != "legacy"):
+        if name not in {str(item).removeprefix("api:") for item in api.get("models") or []}:
+            raise HTTPException(status_code=409, detail=f"Model is not in the active provider catalog: {canonical}")
     if name in set(disabled_models(provider)):
         raise HTTPException(
             status_code=409,
@@ -287,6 +314,9 @@ def public_runtime_configuration(models: list[dict[str, Any]]) -> dict[str, Any]
                 "available": api_status["configured"] and quality_models_present,
                 "recommended": True,
                 "description": (
+                    "使用当前提供商选择的模型；运行并应用模型评测后可启用跨模型路由。"
+                    if not quality_cfg.get("api_model_routing_enabled")
+                    else
                     "使用已应用的 benchmark 路由；可靠性先达标，再按所选的质量、速度或综合策略分配模型。"
                     if benchmark_routes_applied
                     else "短标签与敏感文本使用 MiniMax，普通文本与质量修复使用 Qwen。"

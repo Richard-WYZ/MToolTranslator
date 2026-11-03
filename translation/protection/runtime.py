@@ -20,6 +20,9 @@ VARIABLE_RE = re.compile(
     r"(%[A-Za-z0-9_]+%|\{[^{}\n]{1,40}\}|\\\\[A-Za-z]+\[[^\]]+\]|https?://\S+)"
 )
 ANGLE_FRAGMENT_RE = re.compile(r"<[^<>\n]{1,80}>")
+MULTILINE_TAG_PREFIX_RE = re.compile(r"<[A-Za-z][A-Za-z0-9_.-]{1,30}:(?![^\r\n]*>)")
+_SOURCE_TAG_PREFIX_RE = re.compile(r"^(?P<indent>[ \t\u3000]*)(?P<prefix><[A-Za-z][A-Za-z0-9_.-]{1,30}:)")
+_TARGET_TAG_PREFIX_RE = re.compile(r"^[ \t\u3000]*<[^<>\r\n:：]{1,32}[:：]")
 RESOURCE_REFERENCE_RE = re.compile(
     r"(?<![A-Za-z0-9_])"
     r"(?:"
@@ -69,11 +72,34 @@ class ProtectedToken:
 def runtime_token_kind(value: str) -> str:
     if value in ("\n", "\r", "\r\n"):
         return "line_break"
-    if any(character.isdigit() for character in value):
+    # Person/term references and game variables can change position with
+    # Chinese grammar. Formatting controls such as \C[1] remain ordered.
+    if re.fullmatch(r"__(?:PERSON|TERM)_\d+__", value):
+        return "movable_reference"
+    if re.fullmatch(r"\\(?:V|N|P)\[[^\]]+\]", value, re.IGNORECASE):
+        return "movable_reference"
+    if NUMERIC_TOKEN_RE.fullmatch(value):
         return "numeric"
     if value.startswith(("http://", "https://")):
         return "url"
     return "runtime"
+
+
+def restore_open_tag_prefixes(source: str, translated: str) -> str:
+    """Restore source-authoritative command prefixes without replacing body text."""
+    source_lines = source.splitlines(keepends=True)
+    target_lines = translated.splitlines(keepends=True)
+    if len(source_lines) != len(target_lines):
+        return translated
+    repaired: list[str] = []
+    for original_line, target_line in zip(source_lines, target_lines):
+        source_match = _SOURCE_TAG_PREFIX_RE.match(original_line)
+        target_match = _TARGET_TAG_PREFIX_RE.match(target_line)
+        if source_match and target_match:
+            repaired.append(source_match.group("indent") + source_match.group("prefix") + target_line[target_match.end():])
+        else:
+            repaired.append(target_line)
+    return "".join(repaired)
 
 
 def normalize_fixed_key(text: str) -> str:
@@ -92,7 +118,20 @@ def is_runtime_angle_fragment(value: str) -> bool:
     return bool(
         inner.startswith(("/", "!", "?"))
         or re.search(r"(?:^|\s)[A-Za-z_:][A-Za-z0-9_.:-]*\s*=", inner)
+        # Plugin tags can join an ASCII namespace directly to a Japanese
+        # command name, for example <HMすり抜け禁止>.
+        or re.match(r"[A-Za-z][A-Za-z0-9_.-]{1,20}[\u3040-\u30ff\u3400-\u9fff]", inner)
         or re.search(r"[=:]", inner)
+    )
+
+
+def is_runtime_angle_block(value: str) -> bool:
+    """A multiline block of plugin tags is opaque even if one tag has no colon."""
+    lines = [line.strip() for line in str(value or "").splitlines() if line.strip()]
+    return bool(
+        len(lines) > 1
+        and all(ANGLE_FRAGMENT_RE.fullmatch(line) for line in lines)
+        and any(is_runtime_angle_fragment(line) for line in lines)
     )
 
 
@@ -120,6 +159,9 @@ def protect_runtime_tokens(text: str) -> tuple[str, list[ProtectedToken]]:
         else match.group(0),
         protected,
     )
+    # Keep the command prefix of a multiline tag, while allowing its body to
+    # be translated. A complete single-line tag was protected above.
+    protected = MULTILINE_TAG_PREFIX_RE.sub(lambda match: add_token(match.group(0)), protected)
     protected = RESOURCE_REFERENCE_RE.sub(lambda m: add_token(m.group(0)), protected)
     protected = RESOURCE_EXTENSION_RE.sub(lambda m: add_token(m.group(0)), protected)
     protected = CODE_EXPRESSION_RE.sub(lambda m: add_token(m.group(0)), protected)
@@ -257,7 +299,7 @@ def validate_runtime_tokens(
     order_sensitive = [
         token
         for token in tokens
-        if runtime_token_kind(token.value) != "numeric"
+        if runtime_token_kind(token.value) not in {"numeric", "movable_reference"}
     ]
     expected_order = [token.token for token in order_sensitive]
     if expected_text is not None:
@@ -294,6 +336,7 @@ __all__ = [
     "reconcile_line_break_placeholders",
     "restore_runtime_tokens",
     "runtime_token_kind",
+    "restore_open_tag_prefixes",
     "strip_foreign_runtime_placeholders",
     "validate_runtime_tokens",
 ]

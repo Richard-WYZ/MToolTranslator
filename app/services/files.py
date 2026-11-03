@@ -326,6 +326,7 @@ def export_mtool_json(
         metadata["original_last_known_sha256"] = output_hash
     elif output_path:
         destination = Path(output_path)
+        _validate_export_destination(destination, source_path, metadata)
         if destination.exists() and destination.is_dir():
             raise HTTPException(status_code=400, detail="Export destination must be a file, not a directory")
         if not destination.parent.is_dir():
@@ -337,12 +338,13 @@ def export_mtool_json(
         export_path = str(destination)
     elif output_dir:
         output_dir_path = Path(output_dir)
+        destination = output_dir_path / Path(source_path).name
+        _validate_export_destination(destination, source_path, metadata)
         if not output_dir_path.is_dir():
             try:
                 output_dir_path.mkdir(parents=True, exist_ok=True)
             except Exception as exc:
                 raise HTTPException(status_code=400, detail=f"Unable to create export directory: {exc}") from exc
-        destination = output_dir_path / Path(source_path).name
         _atomic_copy(translated_output_path, destination)
         export_path = str(destination)
     else:
@@ -358,6 +360,25 @@ def export_mtool_json(
         "filename": Path(source_path).name if not output_path and not output_dir else Path(export_path).name,
         "overwrote_original": bool(overwrite_original),
     }
+
+
+def _validate_export_destination(destination: Path, source_path: str, metadata: dict[str, Any]) -> None:
+    """Keep Save As from bypassing source protection and original-file backups."""
+    protected_paths = [(source_path, "The internal working source cannot be an export destination")]
+    original_path = str(metadata.get("original_path") or "")
+    if original_path:
+        protected_paths.append((original_path, "Use the explicit overwrite-original action to export to the original file"))
+    try:
+        resolved_destination = os.path.normcase(str(destination.resolve()))
+        for path, message in protected_paths:
+            protected = Path(path)
+            same_path = resolved_destination == os.path.normcase(str(protected.resolve()))
+            if not same_path and destination.exists() and protected.exists():
+                same_path = destination.samefile(protected)
+            if same_path:
+                raise HTTPException(status_code=409, detail=message)
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"Unable to validate export destination: {exc}") from exc
 
 
 def is_mtool_items(items: list[tuple[Any, Any]]) -> bool:

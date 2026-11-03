@@ -114,11 +114,31 @@ def build_close_handler(window, request_client=requests):
         except Exception:
             state = {"requires_confirmation": False}
 
-        if state.get("requires_confirmation", state.get("dirty", False)):
+        pending_review_draft = False
+        try:
+            evaluate = getattr(window, "evaluate_js", None)
+            if callable(evaluate):
+                pending_review_draft = bool(evaluate(
+                    "Boolean(window.LGT && window.LGT.hasPendingReviewDraft && window.LGT.hasPendingReviewDraft())"
+                ))
+        except Exception:
+            # A closing/older WebView may not support evaluation. Keep the
+            # existing backend activity guard usable in that case.
+            pass
+
+        active_work = state.get("requires_confirmation", state.get("dirty", False))
+        if pending_review_draft or active_work:
+            message = (
+                "存在尚未保存的译文草稿，退出会放弃这些修改，是否退出？"
+                if pending_review_draft
+                else "当前仍有翻译或 AI 复核正在运行。退出会停止后台任务，"
+                     "已保存的断点与临时结果会保留，是否退出？"
+            )
+            if pending_review_draft and active_work:
+                message += "\n\n当前翻译或 AI 复核也会停止，已保存进度会保留。"
             confirmed = window.create_confirmation_dialog(
                 "确认退出",
-                "当前仍有翻译或 AI 复核正在运行。退出会停止后台任务，"
-                "已保存的断点与临时结果会保留，是否退出？",
+                message,
             )
             if not confirmed:
                 return False

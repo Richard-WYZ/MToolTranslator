@@ -234,6 +234,8 @@ def build_ai_review_items(
     scope: str,
     rows: list[int] | None = None,
     filter_name: str = "issues",
+    query: str = "",
+    search_scope: str = "both",
 ) -> list[dict[str, Any]]:
     ctx = load_review_context(file_path)
     requested_rows: list[int]
@@ -242,7 +244,7 @@ def build_ai_review_items(
     elif scope == "all":
         requested_rows = list(matching_review_rows(ctx, "issues"))
     elif scope == "filter":
-        requested_rows = list(matching_review_rows(ctx, filter_name))
+        requested_rows = list(matching_review_rows(ctx, filter_name, query, search_scope))
     elif scope == "selected":
         requested_rows = list(dict.fromkeys(int(row) for row in rows or []))
     else:
@@ -311,6 +313,20 @@ def build_reclassification_records(file_path: str) -> list[dict[str, Any]]:
         dict(ctx["cp_entries"]),
         glossary=glossary,
     )
+
+
+def _scoped_reclassification_records(
+    file_path: str, *, scope: str, rows: list[int] | None,
+    filter_name: str, query: str, search_scope: str,
+) -> list[dict[str, Any]]:
+    records = build_reclassification_records(file_path)
+    if scope == "selected":
+        allowed = set(rows or [])
+    elif scope == "filter":
+        allowed = set(matching_review_rows(load_review_context(file_path), filter_name, query, search_scope))
+    else:
+        return records
+    return [record for record in records if int(record["row"]) in allowed]
 
 
 def _related_translation_examples(
@@ -408,12 +424,14 @@ def ai_review_preflight(
     review_model: str | None,
     verifier_model: str | None,
     sensitive_model: str | None,
+    query: str = "",
+    search_scope: str = "both",
 ) -> dict[str, Any]:
     output_path = translated_path(file_path)
     if not Path(output_path).is_file():
         raise FileNotFoundError("Translated output does not exist; finish translation first")
-    items = build_ai_review_items(file_path, scope=scope, rows=rows, filter_name=filter_name)
-    reclassification_records = build_reclassification_records(file_path)
+    items = build_ai_review_items(file_path, scope=scope, rows=rows, filter_name=filter_name, query=query, search_scope=search_scope)
+    reclassification_records = _scoped_reclassification_records(file_path, scope=scope, rows=rows, filter_name=filter_name, query=query, search_scope=search_scope)
     reclassified_rows = {int(record["row"]) for record in reclassification_records}
     model_items = [item for item in items if int(item.get("row", -1)) not in reclassified_rows]
     needs_sensitive = any(item.get("sensitive") for item in model_items)
@@ -507,9 +525,11 @@ def start_ai_review_task(
     translator: TranslateFunc | None = None,
     translation_tasks: Mapping[str, Any] | None = None,
     coordinator: TaskCoordinator | None = None,
+    query: str = "",
+    search_scope: str = "both",
 ) -> AIReviewTask:
-    items = build_ai_review_items(file_path, scope=scope, rows=rows, filter_name=filter_name)
-    reclassification_records = build_reclassification_records(file_path)
+    items = build_ai_review_items(file_path, scope=scope, rows=rows, filter_name=filter_name, query=query, search_scope=search_scope)
+    reclassification_records = _scoped_reclassification_records(file_path, scope=scope, rows=rows, filter_name=filter_name, query=query, search_scope=search_scope)
     if not items and not reclassification_records:
         raise ValueError("No entries match the selected AI review scope")
     reclassified_rows = {int(record["row"]) for record in reclassification_records}

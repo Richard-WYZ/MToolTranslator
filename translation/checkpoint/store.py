@@ -336,7 +336,7 @@ def set_glossary_version(file_path: str, glossary_version: str, *, update_entrie
     data["glossary_version"] = glossary_version
     if update_entries:
         for entry in data.get("entries", {}).values():
-            if isinstance(entry, dict):
+            if isinstance(entry, dict) and not entry.get("glossary_pending_sources"):
                 entry["glossary_version"] = glossary_version
     save_checkpoint(file_path, data)
 

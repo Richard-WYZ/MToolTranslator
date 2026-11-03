@@ -15,6 +15,7 @@ def compose_label_prompt(
         "Output only the translation, with no explanation, notes, quotes, prefixes, or alternatives.",
         "Translate literally and concisely. Preserve numbers, brackets, punctuation, symbols, and version markers.",
         "Do not invent extra context. Do not romanize Japanese. Do not leave ordinary English words.",
+        "If this label is a katakana person's name, use a concise Chinese phonetic name, not the literal meaning of a common word.",
         "If the label contains mature or explicit game terminology, still translate it faithfully as a localization label.",
     ]
     if quality_rules:

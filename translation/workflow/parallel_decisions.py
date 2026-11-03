@@ -17,6 +17,7 @@ _STRUCTURAL_QUALITY_ISSUE_TYPES = frozenset({
     "marker_lost",
     "version_marker_lost",
     "term_placeholder_leak",
+    "duplicated_clause",
 })
 
 Candidate = dict[str, Any]

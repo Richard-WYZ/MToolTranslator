@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from app.schemas import DynamicGlossaryRequest, GlossaryTermRequest, PromoteGlossaryRequest
 from app.services.glossary import (
     apply_term_edit_to_outputs,
+    glossary_occurrences,
     pause_and_flush_for_edit,
     resume_after_edit,
     sync_task_glossary,
@@ -80,6 +81,13 @@ def create_router(
             sync_task_glossary(tasks, file_path, g)
         return g.as_payload()
 
+    @router.get("/api/glossary/occurrences")
+    def get_term_occurrences(
+        file_path: str = Query(...), source: str = Query(...),
+        offset: int = Query(0), limit: int = Query(20), target: str | None = Query(None),
+    ):
+        return glossary_occurrences(file_path, source, offset=offset, limit=limit, target=target)
+
     @router.put("/api/glossary/dynamic/{term}")
     def update_dynamic_glossary(term: str, req: DynamicGlossaryRequest):
         ensure_ai_review_idle(req.file_path)
@@ -88,9 +96,12 @@ def create_router(
             g = Glossary(file_path=checkpoint.get_glossary_path(req.file_path))
             old_target = g.terms.get(term, "")
             aliases = list((g.candidates.get(term, {}) or {}).get("targets", {}).keys())
+            term_type = str((g.candidates.get(req.source, {}) or {}).get("type") or "proper_noun")
+            if not g._passes_term_review(req.source, req.target, term_type):
+                raise HTTPException(status_code=422, detail="The proposed terminology mapping failed validation")
             if term != req.source:
                 g.remove(term)
-            g.add(req.source, req.target)
+            g.add(req.source, req.target, term_type, manual=True)
             g.save()
             sync_task_glossary(tasks, req.file_path, g)
             changed = apply_term_edit_to_outputs(
@@ -101,6 +112,7 @@ def create_router(
                 req.target,
                 tasks=tasks,
                 aliases=aliases,
+                defer_repair=was_running,
             )
             return {"ok": True, "terms": g.terms, "candidates": g.candidates, "updated_cells": changed}
         finally:
@@ -115,6 +127,8 @@ def create_router(
             g.remove(term)
             g.save()
             sync_task_glossary(tasks, file_path, g)
+            from app.services.review import invalidate_review_cache
+            invalidate_review_cache(file_path)
             return {"ok": True, "terms": g.terms, "candidates": g.candidates}
         finally:
             resume_after_edit(task, was_running)
@@ -126,7 +140,7 @@ def create_router(
         try:
             g = Glossary(file_path=checkpoint.get_glossary_path(req.file_path))
             aliases = list((g.candidates.get(req.source, {}) or {}).get("targets", {}).keys())
-            if not g.promote(req.source, req.target):
+            if not g.promote(req.source, req.target, manual=True):
                 raise HTTPException(status_code=404, detail="Candidate term not found")
             g.save()
             sync_task_glossary(tasks, req.file_path, g)
@@ -138,6 +152,7 @@ def create_router(
                 req.target,
                 tasks=tasks,
                 aliases=aliases,
+                defer_repair=was_running,
             )
             return {"ok": True, "terms": g.terms, "candidates": g.candidates, "updated_cells": changed}
         finally:

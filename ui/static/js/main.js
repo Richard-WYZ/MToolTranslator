@@ -4,6 +4,7 @@ function bindEvents() {
     window.addEventListener("hashchange", function () { showPage(location.hash.slice(1)); });
     all("[data-nav]").forEach(function (node) { node.addEventListener("click", function () { navigate(node.dataset.nav); }); });
     el("btn-refresh-all").addEventListener("click", function () {
+        if (state.page === "settings" && state.settingsDirty) { toast("请先完成设置，或点击“放弃修改并重载”"); return; }
         if (state.page === "translate") loadModels(true);
         else if (state.page === "review") loadReview();
         else if (state.page === "glossary") loadGlossary();
@@ -13,8 +14,6 @@ function bindEvents() {
     });
     el("btn-refresh-models").addEventListener("click", function () { loadModels(true); });
     bindSettingsEvents();
-    el("btn-refresh-history").addEventListener("click", loadHistory);
-    el("btn-clear-history").addEventListener("click", clearAllHistory);
 
     var zone = el("upload-zone");
     zone.addEventListener("click", function () { if (!zone.classList.contains("disabled")) chooseSourceFile(); });
@@ -64,16 +63,14 @@ function bindEvents() {
     el("btn-pause").addEventListener("click", pauseTranslation);
     el("btn-resume").addEventListener("click", resumeTranslation);
     el("btn-stop").addEventListener("click", stopTranslation);
-    el("btn-export").addEventListener("click", exportResult);
-    el("btn-review-export").addEventListener("click", exportResult);
+    el("btn-export").addEventListener("click", function () { exportResult(); });
+    el("btn-review-export").addEventListener("click", function () { exportResult(); });
+    el("btn-export-original").addEventListener("click", function () { exportResult(true); });
 
     el("review-filters").addEventListener("click", function (event) {
         var button = event.target.closest("[data-filter]");
         if (!button) return;
-        state.review.filter = button.dataset.filter;
-        state.review.offset = 0;
-        all("#review-filters button").forEach(function (node) { node.classList.toggle("active", node === button); });
-        loadReviewList(0).catch(function (error) { toast(error.message, "error"); });
+        setReviewFilter(button.dataset.filter).catch(function (error) { toast(error.message, "error"); });
     });
     el("review-queue").addEventListener("click", function (event) {
         var checkbox = event.target.closest("[data-review-check]");
@@ -126,25 +123,9 @@ function bindEvents() {
         else if (remove) deleteGlossaryTerm(remove.dataset.termDelete);
     });
 
-    el("recovery-list").addEventListener("click", function (event) {
-        var remove = event.target.closest("[data-delete-history-path]");
-        var resume = event.target.closest("[data-resume-path]");
-        var rename = event.target.closest("[data-rename-history-path]");
-        if (remove) deleteHistory(remove.dataset.deleteHistoryPath);
-        else if (resume) resumeHistory(resume.dataset.resumePath);
-        else if (rename) renameHistoryProject(rename.dataset.renameHistoryPath, rename.dataset.projectName, rename.dataset.projectDisplayName);
-    });
-    el("history-list").addEventListener("click", function (event) {
-        var remove = event.target.closest("[data-delete-history-path]");
-        var open = event.target.closest("[data-open-path]");
-        var rename = event.target.closest("[data-rename-history-path]");
-        if (remove) deleteHistory(remove.dataset.deleteHistoryPath);
-        else if (open) adoptHistoryFile(open.dataset.openPath);
-        else if (rename) renameHistoryProject(rename.dataset.renameHistoryPath, rename.dataset.projectName, rename.dataset.projectDisplayName);
-    });
     window.addEventListener("beforeunload", function (event) {
         if (window.pywebview && window.pywebview.api) return;
-        if (state.settingsDirty || ["starting", "running", "paused", "stopping", "finalizing"].includes(state.taskStatus) || aiReviewIsActive()) {
+        if (state.settingsDirty || glossaryHasUnsavedChanges() || ["starting", "running", "paused", "stopping", "finalizing"].includes(state.taskStatus) || aiReviewIsActive()) {
             event.preventDefault();
             event.returnValue = "";
         }
@@ -153,10 +134,13 @@ function bindEvents() {
 
 async function init() {
     bindEvents();
+    initReviewWorkspace();
+    initGlossaryWorkspace();
+    initHistoryWorkspace();
     renderFile();
     resetTaskDisplay();
-    await Promise.all([checkServer(), loadModels(false), loadRecoveryBanner()]);
     showPage(location.hash.slice(1) || "translate");
+    await Promise.all([checkServer(), loadModels(false), loadRecoveryBanner()]);
     setInterval(checkServer, 30000);
 }
 
@@ -167,6 +151,7 @@ window.LGT = {
     loadModels: loadModels,
     loadReview: loadReview,
     loadGlossary: loadGlossary,
+    hasPendingReviewDraft: reviewHasPendingDraft,
 };
 
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

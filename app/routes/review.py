@@ -30,12 +30,14 @@ def create_router(
         offset: int = Query(0),
         limit: int = Query(20),
         filter: str = Query("all"),
+        query: str = Query(""),
+        scope: str = Query("both"),
     ):
         ctx = load_review_context(file_path)
         if ctx["total_rows"] == 0:
             raise HTTPException(status_code=404, detail="File has no data")
         limit = max(1, min(int(limit), 100))
-        matched_rows = matching_review_rows(ctx, filter)
+        matched_rows = matching_review_rows(ctx, filter, query, scope)
         offset = max(0, min(int(offset), max(0, len(matched_rows) - 1))) if matched_rows else 0
         page_rows = matched_rows[offset: offset + limit]
         return {
@@ -43,6 +45,8 @@ def create_router(
             "header": ctx["header"],
             "total_rows": ctx["total_rows"],
             "filter": filter,
+            "query": query,
+            "scope": scope,
             "offset": offset,
             "limit": limit,
             "matched_total": len(matched_rows),
@@ -55,12 +59,14 @@ def create_router(
         row: int = Query(...),
         limit: int = Query(20),
         filter: str = Query("all"),
+        query: str = Query(""),
+        scope: str = Query("both"),
     ):
         ctx = load_review_context(file_path)
         if row < 0 or row >= ctx["total_rows"]:
             raise HTTPException(status_code=400, detail=f"Row out of range: {row}, total rows: {ctx['total_rows']}")
         limit = max(1, min(int(limit), 100))
-        matched_rows = matching_review_rows(ctx, filter)
+        matched_rows = matching_review_rows(ctx, filter, query, scope)
         if row not in matched_rows:
             return {
                 "found": False,
@@ -134,6 +140,7 @@ def create_router(
                     "preserve": "preserved",
                 }[action],
                 issues=[],
+                manual_review={"action": action, "source": original_text, "translation": saved_text},
             )
             sync_task_output_cell(tasks, req.file_path, req.row, 0, saved_text)
             invalidate_review_cache(req.file_path)
@@ -196,6 +203,7 @@ def create_router(
                         "preserve": "preserved",
                     }[action],
                     issues=[],
+                    manual_review={"action": action, "source": original_text, "translation": saved_text},
                 )
                 sync_task_output_cell(tasks, req.file_path, edit_row, 0, saved_text)
                 saved_count += 1

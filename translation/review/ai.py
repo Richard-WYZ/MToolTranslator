@@ -40,7 +40,7 @@ from translation.review import write_review_report
 from translation.terminology import Glossary
 
 
-AI_REVIEW_VERSION = "ai-review-v11-auto-retry"
+AI_REVIEW_VERSION = "ai-review-v12-corruption-and-fragment-guards"
 AI_REVIEW_ACTIVE_STATUSES = {"preparing", "reviewing", "verifying", "applying", "finalizing"}
 AI_REVIEW_TERMINAL_STATUSES = {"completed", "cancelled", "error"}
 NON_WAIVABLE_ISSUE_TYPES = set(HARD_REVIEW_ISSUE_TYPES) | {
@@ -516,7 +516,6 @@ def run_ai_review(
         [*deterministic_records, *model_records],
         key=lambda record: int(record.get("row", -1)),
     )
-    counts = _record_counts(records)
     applied = 0
     if auto_apply:
         progress({"status": "applying", "phase": "applying", "current": total, "total": total})
@@ -536,13 +535,14 @@ def run_ai_review(
             status="candidate_ready",
             applied=0,
         )
+    counts = _record_counts(records)
     counts["applied"] = applied
     _persist_retry_metadata(
         file_path=file_path,
         task_id=task_id,
         rounds=retry_rounds,
         no_progress_rounds=no_progress_rounds,
-        remaining=len(pending),
+        remaining=counts["unresolved"] + counts["conflict"],
         enabled=auto_retry,
     )
     progress({"status": "finalizing", "phase": "finalizing", "current": total, "total": total})
@@ -556,7 +556,7 @@ def run_ai_review(
         "auto_retry": bool(auto_retry),
         "retry_rounds": retry_rounds,
         "no_progress_rounds": no_progress_rounds,
-        "remaining": len(pending),
+        "remaining": counts["unresolved"] + counts["conflict"],
         "store_path": ai_review_store_path(file_path),
     }
 
@@ -665,6 +665,16 @@ def apply_ai_review_records(
         _atomic_write_json_items(output_path, output_items)
         checkpoint.save_progress_many(file_path, progress_records)
         write_review_report(file_path, output_path)
+        audited_entries = checkpoint.load_checkpoint(file_path).get("entries", {})
+        for record in records:
+            if not record.get("applied"):
+                continue
+            audited = audited_entries.get(f'{int(record["row"])}_0', {})
+            if audited.get("status") in {"review_required", "translated_needs_review"}:
+                record["result"] = "unresolved"
+                record["final_status"] = str(audited["status"])
+                record["remaining_issues"] = list(audited.get("issues", []) or [])
+                record["message"] = "Final artifact audit still requires review."
     _persist_session(
         task_id=task_id,
         file_path=file_path,
@@ -753,6 +763,8 @@ def _append_recomposed_parent_records(
         checkpoint_entries[(int(record["row"]), int(record.get("col", 0)))] = {
             "status": str(record.get("status", "translated")),
         }
+    directly_reviewed_rows = {int(record["row"]) for record in progress_records}
+    reviewed_values = {row: output_items[row] for row in directly_reviewed_rows}
 
     composition_records: list[dict[str, Any]] = []
 
@@ -773,7 +785,12 @@ def _append_recomposed_parent_records(
         emit_progress=lambda *args, **kwargs: None,
         progress_status=lambda status: status,
     )
-    progress_records.extend(composition_records)
+    for row, value in reviewed_values.items():
+        output_items[row] = value
+    progress_records.extend(
+        record for record in composition_records
+        if int(record["row"]) not in directly_reviewed_rows
+    )
 
 
 def _prepare_item(item: dict[str, Any], glossary: Glossary) -> dict[str, Any]:

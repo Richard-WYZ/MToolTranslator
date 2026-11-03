@@ -35,6 +35,15 @@ function modelTestTimeSummary(basic, adult) {
         responses: "Responses",
         ollama: "Ollama",
     }[protocol] || protocol);
+    if (basic.protocol_attempts && basic.protocol_attempts.length > 1) {
+        parts.push("尝试 " + basic.protocol_attempts.map(function (item) {
+            return {
+                chat_completions: "Chat",
+                messages: "Messages",
+                responses: "Responses",
+            }[item] || item;
+        }).join(" → "));
+    }
     if (basic.latency_ms) parts.push("延迟 " + basic.latency_ms + " ms");
     if (basic.http_status) parts.push("HTTP " + basic.http_status);
     return parts.join(" · ") || "尚无历史测试";
@@ -45,10 +54,12 @@ function enabledModelsForCurrentProvider() {
 }
 
 async function requestModelTest(modelId, testKind) {
+    var item = currentModelCatalog().find(function (entry) { return entry.id === modelId; });
     return API.post("/settings/connection-test", {
         provider: modelId.split(":", 1)[0],
         model: modelId,
         test_kind: testKind,
+        protocol: item && item.protocol ? item.protocol : "auto",
     });
 }
 
@@ -73,11 +84,21 @@ async function testSingleModel(modelId, testKind) {
             supported ? "success" : "error"
         );
     } catch (error) {
-        statusStore[modelId] = {
+        var failedStatus = {
             status: adult ? "error" : "unavailable",
             tested_at: new Date().toISOString(),
             stale: false,
         };
+        var attemptedMatch = String(error.message || "").match(/protocols \[([^\]]*)\]/i);
+        if (attemptedMatch) {
+            failedStatus.protocol_attempts = attemptedMatch[1].split(",").map(function (item) {
+                return item.trim();
+            }).filter(Boolean);
+            if (failedStatus.protocol_attempts.length) {
+                failedStatus.protocol = failedStatus.protocol_attempts[failedStatus.protocol_attempts.length - 1];
+            }
+        }
+        statusStore[modelId] = failedStatus;
         toast(modelLabel(modelId) + " 测试失败：" + error.message, "error");
     } finally {
         setSettingsBusy("");

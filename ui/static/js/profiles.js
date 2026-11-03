@@ -40,6 +40,11 @@ function modelsForProvider(provider) {
     return state.models.filter(function (model) { return model.provider === provider; });
 }
 
+function runtimeProfile(profileId) {
+    var profiles = (state.runtime && state.runtime.profiles) || [];
+    return profiles.find(function (profile) { return profile.id === profileId; }) || null;
+}
+
 function fillModelSelect(select, models, selected, allowEmpty) {
     select.innerHTML = "";
     if (allowEmpty) {
@@ -60,7 +65,7 @@ function fillModelSelect(select, models, selected, allowEmpty) {
         var provider = model.provider || "other";
         if (!groups[provider]) {
             groups[provider] = document.createElement("optgroup");
-            groups[provider].label = provider === "api" ? "联网 API（配置列表）" : "本地 Ollama（实时）";
+            groups[provider].label = provider === "api" ? activeApiProviderName() : "本地 Ollama（实时）";
             select.appendChild(groups[provider]);
         }
         var option = document.createElement("option");
@@ -76,7 +81,9 @@ function populateModelSelectors() {
     var primary = el("model-select");
     var apiModels = modelsForProvider("api");
     var localModels = modelsForProvider("ollama");
-    var current = primary.value || localStorage.getItem("lgt.selectedModel") || (state.runtime && state.runtime.default_model) || "";
+    var current = state.profile === "quality_first"
+        ? selectedModel()
+        : primary.value || localStorage.getItem("lgt.selectedModel") || (state.runtime && state.runtime.default_model) || "";
     var visible = state.profile === "local" ? localModels : apiModels;
     var visibleIds = visible.map(function (model) { return model.id || model.name; });
     if (!visibleIds.includes(current)) {
@@ -95,7 +102,10 @@ function populateModelSelectors() {
 }
 
 function selectedModel() {
-    if (state.profile === "quality_first") return "api:qwen3.7-plus";
+    if (state.profile === "quality_first") {
+        var profile = runtimeProfile("quality_first");
+        return profile && profile.primary_model || "api:qwen3.7-plus";
+    }
     return el("model-select").value;
 }
 
@@ -134,19 +144,26 @@ function renderProfile() {
     var quality = state.profile === "quality_first";
     primary.disabled = quality;
     if (quality) {
-        fillModelSelect(primary, [{ id: "api:qwen3.7-plus", name: "api:qwen3.7-plus", provider: "api", display_name: "qwen3.7-plus（固定主模型）" }], "api:qwen3.7-plus", false);
+        var qualityModel = selectedModel();
+        fillModelSelect(primary, [{
+            id: qualityModel,
+            name: qualityModel,
+            provider: qualityModel.split(":", 1)[0],
+            display_name: modelLabel(qualityModel) + "（当前默认）",
+        }], qualityModel, false);
     }
     el("advanced-config").style.display = state.profile === "custom" ? "block" : "none";
     if (state.profile === "custom") el("advanced-config").open = true;
     var descriptions = {
-        quality_first: "质量优先方案使用固定的已验证路由。",
+        quality_first: "使用当前提供商可用的模型或已应用的测试策略。",
         single_model: "整个任务只使用这个 API 模型。",
         local: "整个任务只使用这个本地 Ollama 模型。",
         custom: "此模型用于普通文本；其他模型在高级配置中选择。",
     };
-    el("model-help").textContent = descriptions[state.profile] || "";
-    var profiles = (state.runtime && state.runtime.profiles) || [];
-    var profile = profiles.find(function (item) { return item.id === state.profile; });
+    var profile = runtimeProfile(state.profile);
+    el("model-help").textContent = quality && profile && profile.description
+        ? profile.description
+        : descriptions[state.profile] || "";
     el("profile-step-state").textContent = profile ? profile.name : state.profile;
     renderRouteMap();
     invalidatePreflight();
@@ -155,12 +172,9 @@ function renderProfile() {
 function effectiveRoutes() {
     var primary = selectedModel();
     if (state.profile === "quality_first") {
-        return [
-            { role: "短标签", model: "api:minimax-m3" },
-            { role: "普通文本", model: "api:qwen3.7-plus" },
-            { role: "敏感文本", model: "api:minimax-m3" },
-            { role: "质量修复", model: "api:qwen3.7-plus" },
-        ];
+        var qualityProfile = runtimeProfile("quality_first");
+        if (qualityProfile && Array.isArray(qualityProfile.routes)) return qualityProfile.routes;
+        return [{ role: "普通文本", model: primary }];
     }
     if (state.profile === "custom") {
         var options = profileOptions();
@@ -178,22 +192,22 @@ function renderRouteMap() {
     el("route-map").innerHTML = routes.map(function (route) {
         return '<span class="route-chip"><b>' + escapeHtml(route.role) + '</b><span>' + escapeHtml(modelLabel(route.model) || "未选择") + "</span></span>";
     }).join("");
-    var profileName = { quality_first: "联网 · 质量优先", single_model: "联网 · 单模型", local: "本地 · Ollama", custom: "高级 · 自定义路由" }[state.profile];
+    var profileName = { quality_first: "默认设置", single_model: "指定联网模型", local: "本地 Ollama", custom: "自定义设置" }[state.profile];
     var isLocal = state.profile === "local";
     var privacy = isLocal ? "local" : "online";
     el("privacy-badge").className = "privacy-badge " + privacy;
     el("privacy-badge").textContent = privacy === "local" ? "仅本机" : privacy === "hybrid" ? "混合" : "联网";
     el("privacy-copy").textContent = privacy === "local"
         ? "文本只发送到本机 Ollama 服务。"
-        : "文本会通过已配置的 OpenCode Go API 发送给路由模型。";
+        : "文本会通过 " + activeApiProviderName() + " 发送给所选模型。";
     el("summary-profile").textContent = profileName;
     el("summary-model").textContent = modelLabel(selectedModel()) || "未选择";
     var options = profileOptions();
     var concurrency = state.profile === "quality_first" ? 10 : state.profile === "custom" ? options.api_concurrency : state.profile === "local" ? 1 : 10;
     var batch = state.profile === "quality_first" ? 40 : state.profile === "custom" ? options.json_batch_size : 40;
     el("summary-batch").textContent = concurrency + " / " + batch;
-    el("top-provider").textContent = privacy === "local" ? "Ollama · 本地" : privacy === "hybrid" ? "本地 + API" : "OpenCode Go · 联网";
-    el("btn-start").textContent = state.profile === "quality_first" ? "开始质量优先翻译" : "开始翻译";
+    el("top-provider").textContent = privacy === "local" ? "Ollama · 本地" : privacy === "hybrid" ? "本地 + API" : activeApiProviderName() + " · 联网";
+    el("btn-start").textContent = state.startPreparing ? "正在准备…" : "开始翻译";
 }
 
 function invalidatePreflight() {

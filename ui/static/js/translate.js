@@ -1,21 +1,16 @@
 "use strict";
 
 async function ensureCanReplaceFile() {
+    if (state.exportBusy) { toast("正在导出，请稍候再切换项目"); return false; }
     if (!state.filePath) return true;
-    if (["running", "paused", "stopping", "finalizing"].includes(state.taskStatus)) {
+    if (["starting", "running", "paused", "stopping", "finalizing"].includes(state.taskStatus) || aiReviewIsActive()) {
         toast("任务仍在运行，请先停止并等待写盘", "error");
         return false;
     }
-    var dirty = state.hasUnexportedResult;
-    try {
-        var result = await API.get("/translation/dirty-state?file_path=" + encodeURIComponent(state.filePath));
-        dirty = dirty || result.dirty;
-    } catch (error) {
-        // 本地状态仍足够用于确认。
-    }
-    if (!dirty) return true;
-    if (!window.confirm("当前任务有未导出的翻译或断点。切换文件会清理该临时结果，是否继续？")) return false;
-    await API.post("/translation/cleanup", { file_path: state.filePath, task_id: state.taskId || null });
+    if (typeof flushReviewDraft === "function" && !(await flushReviewDraft())) return false;
+    if (typeof confirmGlossaryLeave === "function" && !confirmGlossaryLeave()) return false;
+    if (typeof closeGlossaryDetail === "function") closeGlossaryDetail(true);
+    // Switching projects keeps the working copy and checkpoint in project history.
     return true;
 }
 async function applyImportedFile(result, fallbackSize) {
@@ -118,7 +113,7 @@ function resetFile() {
     state.hasUnexportedResult = false;
     state.exportReady = false;
     state.review = {
-        stats: null, filter: "required", offset: 0, limit: 30, total: 0,
+        stats: null, filter: "all", query: "", searchScope: "both", offset: 0, limit: 30, total: 0,
         items: [], selectedRow: null, selectedRows: new Set(), selectedItems: new Map(), selectionFilePath: "",
         loadRequestId: 0, listRequestId: 0, listController: null,
         aiTaskId: "", aiTaskStatus: "idle", aiPollingTimer: null,
@@ -136,12 +131,13 @@ function lockFileControls(locked) {
     el("btn-remove-file").disabled = locked;
 }
 
-async function runPreflight() {
-    if (!state.filePath) return;
+async function runPreflight(options) {
+    options = options || {};
+    if (!state.filePath || (state.startPreparing && !options.silent)) return null;
     el("btn-preflight").disabled = true;
     el("btn-preflight").textContent = "正在分析…";
     try {
-        var payload = await API.post("/preflight", {
+        var payload = await API.post("/preflight", options.request || {
             file_path: state.filePath,
             model: selectedModel(),
             provider: selectedModel().startsWith("ollama:") ? "ollama" : "api",
@@ -150,13 +146,18 @@ async function runPreflight() {
         });
         state.preflight = payload;
         renderPreflight();
-        toast(payload.ok ? "预检完成，可以启动翻译" : "预检发现阻塞问题", payload.ok ? "success" : "error");
+        if (!options.silent || !payload.ok) toast(payload.ok ? "文件检查通过" : "暂时无法开始，请查看文件检查详情", payload.ok ? "success" : "error");
+        if (!payload.ok) el("preflight-panel").open = true;
+        return payload;
     } catch (error) {
         state.preflight = null;
         toast(error.message, "error");
+        el("preflight-panel").open = true;
+        el("preflight-empty").textContent = error.message;
+        return null;
     } finally {
         el("btn-preflight").disabled = false;
-        el("btn-preflight").textContent = "重新预检";
+        el("btn-preflight").textContent = "重新检查文件";
         updateActionStates();
     }
 }
@@ -186,17 +187,33 @@ function renderPreflight() {
 }
 
 async function startTranslation() {
-    if (!state.preflight || !state.preflight.ok || !state.filePath) return;
+    if (!state.filePath || state.startPreparing || ["starting", "running", "paused", "stopping", "finalizing"].includes(state.taskStatus) || aiReviewIsActive()) return;
+    var request = {
+        file_path: state.filePath,
+        model: selectedModel(),
+        provider: selectedModel().startsWith("ollama:") ? "ollama" : "api",
+        prompt_style: "professional",
+        execution_profile: state.profile,
+        profile_options: profileOptions(),
+    };
+    state.startPreparing = true;
+    state.taskStatus = "starting";
     updateTaskStatus("starting");
+    el("btn-start").textContent = "正在准备…";
+    updateActionStates();
     try {
-        var result = await API.post("/translate/start", {
-            file_path: state.filePath,
-            model: selectedModel(),
-            provider: selectedModel().startsWith("ollama:") ? "ollama" : "api",
-            prompt_style: "professional",
-            execution_profile: state.profile,
-            profile_options: profileOptions(),
-        });
+        if (typeof flushReviewDraft === "function" && !(await flushReviewDraft())) {
+            state.taskStatus = "idle";
+            updateTaskStatus("idle", "译文尚未保存，请先处理保存错误。");
+            return;
+        }
+        var prepared = await runPreflight({ silent: true, request: request });
+        if (!prepared || !prepared.ok) {
+            state.taskStatus = "idle";
+            updateTaskStatus("idle", "暂时无法开始，请按文件检查详情修复后重试。");
+            return;
+        }
+        var result = await API.post("/translate/start", request);
         state.taskId = result.task_id;
         state.taskStatus = "running";
         state.hasUnexportedResult = true;
@@ -209,6 +226,10 @@ async function startTranslation() {
         state.taskStatus = "error";
         updateTaskStatus("error", error.message);
         toast(error.message, "error");
+    } finally {
+        state.startPreparing = false;
+        el("btn-start").textContent = "开始翻译";
+        updateActionStates();
     }
 }
 
@@ -239,10 +260,12 @@ async function pollProgress(generation) {
         state.pollingFailures = 0;
         state.taskStatus = progress.status;
         renderProgress(progress);
+        refreshVisibleWorkspaceDuringTranslation(progress);
         if (["completed", "cancelled", "error"].includes(progress.status)) {
             stopPolling();
             state.hasUnexportedResult = Boolean(progress.snapshot_ready);
             state.exportReady = Boolean(progress.snapshot_ready);
+            updateActionStates(progress);
             await refreshReviewCount();
             return;
         }
@@ -302,8 +325,8 @@ function updatePhases(phase) {
 
 function updateTaskStatus(status, error) {
     var labels = {
-        idle: "未开始", starting: "正在启动", running: "处理中", paused: "已暂停新请求",
-        stopping: "停止并写盘中", finalizing: "正在完成校验", completed: "处理完成", cancelled: "已停止并写盘", error: "任务异常",
+        idle: "未开始", starting: "正在准备", running: "翻译中", paused: "已暂停",
+        stopping: "正在保存进度", finalizing: "正在检查结果", completed: "翻译完成", cancelled: "已停止，进度已保存", error: "任务异常",
     };
     var classes = {
         idle: "neutral", starting: "running", running: "running", paused: "warning",
@@ -312,7 +335,8 @@ function updateTaskStatus(status, error) {
     el("task-status-badge").className = "status-badge " + (classes[status] || "neutral");
     el("task-status-badge").textContent = labels[status] || status;
     el("task-subtitle").textContent = error || ({
-        idle: "预检通过后即可启动",
+        idle: "选好文件后，点击开始即可",
+        starting: "正在检查文件和当前设置，通过后自动开始翻译",
         running: "总进度包含规则保留、断点恢复、模型翻译与合成条目",
         paused: "不会派发新请求，已发出的请求可能仍在返回",
         stopping: "正在等待已发出的请求结束并刷新输出文件",
@@ -348,15 +372,30 @@ function renderResult(progress) {
 function updateActionStates(progress) {
     var status = state.taskStatus;
     var active = ["running", "paused", "stopping", "finalizing", "starting"].includes(status);
-    el("btn-start").disabled = active || !state.preflight || !state.preflight.ok;
+    el("btn-start").disabled = active || state.startPreparing || !state.filePath || aiReviewIsActive();
     el("btn-pause").disabled = status !== "running";
     el("btn-resume").disabled = status !== "paused";
     el("btn-stop").disabled = !["running", "paused"].includes(status);
+    el("btn-pause").hidden = status !== "running";
+    el("btn-resume").hidden = status !== "paused";
+    el("btn-stop").hidden = !["running", "paused", "stopping"].includes(status);
+    el("btn-preflight").disabled = active || !state.filePath;
+    all("input, select, button", el("profile-panel")).forEach(function (node) {
+        if (active) {
+            if (!node.hasAttribute("data-task-disabled")) node.dataset.taskDisabled = node.disabled ? "1" : "0";
+            node.disabled = true;
+        } else if (node.hasAttribute("data-task-disabled")) {
+            node.disabled = node.dataset.taskDisabled === "1";
+            delete node.dataset.taskDisabled;
+        }
+    });
     if (progress && progress.snapshot_ready) state.exportReady = true;
-    var canExport = state.exportReady && !active && !aiReviewIsActive();
+    var canExport = state.exportReady && !state.exportBusy && !active && !aiReviewIsActive();
     el("btn-export").disabled = !canExport;
     el("btn-review-export").disabled = !canExport;
-    lockFileControls(active);
+    el("btn-export-original").disabled = !canExport;
+    el("export-more").hidden = !state.originalFilePath || !(window.pywebview && window.pywebview.api);
+    lockFileControls(active || state.exportBusy);
 }
 
 async function pauseTranslation() {
@@ -376,7 +415,6 @@ async function resumeTranslation() {
     } catch (error) { toast(error.message, "error"); }
 }
 async function stopTranslation() {
-    if (!window.confirm("停止后会等待已发出的请求结束，并将当前结果写入检查点。是否继续？")) return;
     try {
         var result = await API.post("/translate/" + state.taskId + "/cancel");
         state.taskStatus = result.status;
@@ -395,4 +433,30 @@ function resetTaskDisplay() {
     updateTaskStatus("idle");
     updatePhases("analysis");
     updateActionStates();
+}
+
+async function refreshVisibleWorkspaceDuringTranslation(progress) {
+    if (!["review", "glossary"].includes(state.page) || !activeFilePath()) return;
+    var key = activeFilePath() + ":" + progress.workspace_revision + ":" + progress.status + ":" + state.page;
+    if (state.workspaceRefreshBusy || key === state.workspaceRefreshKey) return;
+    if (Date.now() - state.workspaceRefreshAt < 5000) return;
+    state.workspaceRefreshBusy = true;
+    state.workspaceRefreshAt = Date.now();
+    try {
+        if (state.page === "review") {
+            var stats = await API.get("/review/stats?file_path=" + encodeURIComponent(activeFilePath()));
+            state.review.stats = stats;
+            renderReviewStats(stats);
+            var selected = state.review.items.find(function (item) { return item.row === state.review.selectedRow; });
+            var editorDirty = selected && el("editor-target").value !== String(reviewColumn(selected).translated || "");
+            if (!editorDirty && !reviewActionIsBusy()) await loadReviewList(state.review.offset);
+        } else {
+            await loadGlossary();
+        }
+        state.workspaceRefreshKey = key;
+    } catch (error) {
+        // The next progress update retries; keep the current page usable.
+    } finally {
+        state.workspaceRefreshBusy = false;
+    }
 }
