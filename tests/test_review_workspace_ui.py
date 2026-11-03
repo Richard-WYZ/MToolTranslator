@@ -1,0 +1,204 @@
+from __future__ import annotations
+
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+HARNESS = r'''
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+const html = fs.readFileSync("ui/templates/index.html", "utf8");
+const nodes = {};
+for (const [, id] of html.matchAll(/\bid="([^"]+)"/g)) {
+    nodes[id] = { value: "", innerHTML: "", textContent: "", hidden: false, disabled: false,
+        checked: false, readOnly: false, dataset: {}, style: {},
+        classList: {add() {}, remove() {}, toggle() {}}, setAttribute() {}, hasAttribute() { return false; },
+        addEventListener() {}, closest() { return null; } };
+}
+const storage = new Map(), posts = [], gets = [];
+let filePath = "fixture.json", failWrites = false, customPost = null, customGet = null;
+const backendItems = [
+    {row: 0, columns: [{original: "原文甲", translated: "译文甲", status: "translated", manual_confirmed: false}], neighbors: []},
+    {row: 1, columns: [{original: "原文乙", translated: "译文乙", status: "translated_needs_review", manual_confirmed: false}], neighbors: []},
+];
+const context = {
+    state: {page: "review", hasUnexportedResult: false, exportReady: true, models: [], review: {
+        filter: "all", query: "", searchScope: "both", offset: 0, limit: 30, total: 2, items: [],
+        selectedRow: null, selectedRows: new Set(), selectedItems: new Map(), listRequestId: 0,
+        loadRequestId: 0, aiTaskStatus: "idle", aiPollingGeneration: 0,
+    }},
+    el: id => { assert.ok(nodes[id], "Missing DOM node: " + id); return nodes[id]; }, all: () => [],
+    activeFilePath: () => filePath,
+    escapeHtml: value => String(value == null ? "" : value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;"),
+    modelLabel: value => value || "", formatDate: () => "", formatDuration: () => "", toast: () => {},
+    localStorage: {getItem: () => null, setItem() {}},
+    sessionStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) },
+    setTimeout, clearTimeout, AbortController,
+    navigate: page => {context.state.page = page;},
+    document: {addEventListener() {}}, window: {addEventListener() {}, confirm: () => true},
+    API: {
+        get: async url => {
+            gets.push(url);
+            if (customGet) return customGet(url);
+            if (url.startsWith("/review/stats")) return {total: 2};
+            if (url.startsWith("/review/list")) {
+                const params = new URL(url, "https://local.example").searchParams;
+                return {items: structuredClone(backendItems), matched_total: 2, offset: Number(params.get("offset"))};
+            }
+            return {};
+        },
+        post: async (url, body) => {
+            posts.push({url, body});
+            if (customPost) return customPost(url, body);
+            if (failWrites) throw new Error("disk unavailable");
+            const column = backendItems[body.row].columns[0];
+            column.translated = body.text;
+            column.status = body.action === "accept" ? "translated" : "translated_needs_review";
+            column.manual_confirmed = body.action === "accept";
+            return {text: body.text, violations: [], status: body.action};
+        },
+    },
+};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync("ui/static/js/review.js", "utf8"), context);
+vm.runInContext(fs.readFileSync("ui/static/js/ai-review.js", "utf8"), context);
+function seed() {
+    context.state.review.items = structuredClone(backendItems);
+    context.state.review.selectedRow = 0;
+    context.renderReviewEditor(context.state.review.items[0]);
+}
+'''
+
+
+def run_ui(script: str) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for the review workspace behavior checks")
+    result = subprocess.run(
+        [node, "-"],
+        cwd=ROOT,
+        input=HARNESS + "\n(async () => {\n" + script + "\n})().catch(error => { console.error(error); process.exitCode = 1; });\n",
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_draft_autosave_never_confirms_and_failure_keeps_the_editor():
+    run_ui(r'''
+seed();
+nodes["editor-target"].value = "修改后的草稿";
+context.captureReviewDraft();
+assert.ok(storage.get("lgt.reviewDrafts").includes("修改后的草稿"));
+failWrites = true;
+await context.selectReviewRow(1);
+assert.equal(context.state.review.selectedRow, 0, "A failed save must not navigate away");
+assert.equal(nodes["editor-target"].value, "修改后的草稿");
+assert.match(nodes["editor-save-note"].textContent, /保存失败/);
+assert.equal(posts[0].body.action, "draft");
+assert.equal(backendItems[0].columns[0].manual_confirmed, false);
+failWrites = false;
+await context.selectReviewRow(1);
+assert.equal(context.state.review.selectedRow, 1);
+assert.equal(backendItems[0].columns[0].translated, "修改后的草稿");
+assert.equal(backendItems[0].columns[0].status, "translated_needs_review");
+assert.equal(storage.get("lgt.reviewDrafts"), "[]");
+assert.equal(backendItems[0].columns[0].original, "原文甲");
+''')
+
+
+def test_edits_made_during_autosave_are_drained_in_order():
+    run_ui(r'''
+seed();
+let release;
+customPost = async (url, body) => {
+    if (posts.length === 1) await new Promise(resolve => { release = resolve; });
+    return {text: body.text};
+};
+nodes["editor-target"].value = "第一版";
+const saving = context.flushReviewDraft();
+await new Promise(resolve => setImmediate(resolve));
+nodes["editor-target"].value = "第二版";
+context.captureReviewDraft();
+release();
+assert.equal(await saving, true);
+assert.deepEqual(posts.map(post => post.body.text), ["第一版", "第二版"]);
+assert.ok(posts.every(post => post.body.action === "draft"));
+assert.equal(context.state.review.editorSavedText, "第二版");
+assert.equal(nodes["editor-target"].value, "第二版");
+assert.equal(storage.get("lgt.reviewDrafts"), "[]");
+''')
+
+
+def test_search_and_jump_share_full_file_query_and_highlights_escape_markup():
+    run_ui(r'''
+seed();
+context.state.review.query = "<tag>";
+context.state.review.searchScope = "source";
+assert.equal(context.reviewHighlighted("前<tag>后", "source"), "前<mark>&lt;tag&gt;</mark>后");
+assert.equal(context.reviewHighlighted("前<tag>后", "target"), "前&lt;tag&gt;后");
+context.state.review.query = "译文";
+context.state.review.searchScope = "target";
+customGet = async url => {
+    if (url.startsWith("/review/jump")) return {found: true, offset: 30};
+    return {items: structuredClone(backendItems), matched_total: 62, offset: url.includes("offset=30") ? 30 : 0};
+};
+await context.loadReviewList(0);
+assert.equal(context.state.review.total, 62);
+assert.match(nodes["review-search-count"].textContent, /62/);
+assert.ok(gets[0].includes("query=" + encodeURIComponent("译文")));
+assert.ok(gets[0].includes("scope=target"));
+await context.jumpToReviewRow(1);
+assert.ok(gets.find(url => url.startsWith("/review/jump")).includes("scope=target"));
+assert.equal(context.state.review.offset, 30);
+assert.match(nodes["editor-target-matches"].innerHTML, /<mark>译文<\/mark>/);
+''')
+
+
+def test_stale_search_results_cannot_replace_the_current_query():
+    run_ui(r'''
+seed();
+let release;
+customGet = async url => {
+    if (url.includes("query=old")) return new Promise(resolve => {release = resolve;});
+    return {items: [structuredClone(backendItems[1])], matched_total: 1, offset: 0};
+};
+context.state.review.query = "old";
+const oldRequest = context.loadReviewList(0);
+await new Promise(resolve => setImmediate(resolve));
+context.state.review.query = "new";
+await context.loadReviewList(0);
+release({items: [structuredClone(backendItems[0])], matched_total: 99, offset: 0});
+await oldRequest;
+assert.equal(context.state.review.total, 1);
+assert.equal(context.state.review.items[0].row, 1);
+''')
+
+
+def test_manual_confirmation_advances_and_ai_search_range_is_separate():
+    run_ui(r'''
+seed();
+await context.saveReview("accept");
+assert.equal(posts[0].body.action, "accept");
+assert.equal(backendItems[0].columns[0].manual_confirmed, true);
+assert.equal(context.state.review.selectedRow, 1);
+await context.selectReviewRow(0);
+assert.equal(nodes["editor-status"].textContent, "人工已确认");
+context.state.review.query = "原文";
+context.state.review.searchScope = "source";
+const request = context.aiReviewRequest("filter", []);
+assert.equal(request.scope, "filter");
+assert.equal(request.search_scope, "source");
+assert.equal(request.query, "原文");
+nodes["editor-target"].value = "";
+assert.equal(await context.flushReviewDraft(), false, "An empty editor must remain a local draft");
+assert.equal(posts.length, 1);
+''')

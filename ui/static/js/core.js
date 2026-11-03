@@ -44,9 +44,9 @@ var API = {
 
 var PAGE_META = {
     translate: ["TRANSLATION WORKSPACE", "翻译任务"],
-    review: ["QUALITY REVIEW", "质量复核"],
+    review: ["TRANSLATION EDITOR", "原文与译文"],
     glossary: ["DYNAMIC TERMINOLOGY", "术语库"],
-    history: ["TASK CONTINUITY", "历史与恢复"],
+    history: ["PROJECTS", "项目历史"],
     settings: ["RUNTIME CONFIGURATION", "设置"],
 };
 
@@ -66,6 +66,7 @@ var state = {
     preflight: null,
     taskId: "",
     taskStatus: "idle",
+    startPreparing: false,
     pollingTimer: null,
     pollingGeneration: 0,
     pollingFailures: 0,
@@ -74,6 +75,7 @@ var state = {
     workspaceRefreshBusy: false,
     hasUnexportedResult: false,
     exportReady: false,
+    exportBusy: false,
     history: {
         loading: false,
         clearingAll: false,
@@ -82,7 +84,9 @@ var state = {
     },
     review: {
         stats: null,
-        filter: "required",
+        filter: "all",
+        query: "",
+        searchScope: "both",
         offset: 0,
         limit: 30,
         total: 0,
@@ -174,6 +178,10 @@ function navigate(page) {
 
 function showPage(page) {
     if (!PAGE_META[page]) page = "translate";
+    if (state.page === "glossary" && page !== "glossary" && typeof confirmGlossaryLeave === "function") {
+        if (!confirmGlossaryLeave()) { location.hash = "#glossary"; return; }
+        closeGlossaryDetail(true);
+    }
     state.page = page;
     all(".page").forEach(function (node) { node.classList.toggle("active", node.id === "page-" + page); });
     all(".nav-list a").forEach(function (node) { node.classList.toggle("active", node.dataset.page === page); });

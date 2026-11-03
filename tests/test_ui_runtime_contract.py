@@ -239,8 +239,8 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     script = "\n".join(path.read_text(encoding="utf-8") for path in scripts)
 
     assert 'id="prompt-select"' not in html
-    assert "暂停新请求" in html
-    assert "停止并写盘" in html
+    assert 'id="btn-pause"' in html
+    assert "停止并保存进度" in html
     assert "导出完整结果" in html
     for page in ("translate", "review", "glossary", "history", "settings"):
         assert f'id="page-{page}"' in html
@@ -251,7 +251,8 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert 'profile && profile.primary_model || "api:qwen3.7-plus"' in profile_script
     assert "qualityProfile && Array.isArray(qualityProfile.routes)" in profile_script
     assert "qualityProfile.routes" in profile_script
-    assert "（质量优先主路由）" in profile_script
+    assert "（当前默认）" in profile_script
+    assert "经过完整文件验证" not in html
     assert 'id="settings-api-key"' in html
     assert 'id="settings-form"' in html
     assert "<title>MTool 汉化工具</title>" in html
@@ -286,8 +287,8 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert 'id="ai-auto-retry" type="checkbox" checked' in html
     assert 'id="btn-ai-review-start"' in html
     assert 'id="btn-ai-review-resume"' in html
-    assert '<option value="required" selected>仅必须复核</option>' in html
-    assert 'data-filter="required" class="active"' in html
+    assert '<option value="required" selected>' in html
+    assert 'data-filter="all" class="active"' in html
     assert 'data-filter="advisory"' in html
     assert 'data-filter="preserved"' in html
     assert 'id="review-select-page"' in html
@@ -306,9 +307,10 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert "/rollback" in script
     assert "/export/status" in script
     assert "/history/session?file_path=" in script
-    assert 'id="btn-clear-history"' in html
+    assert 'id="btn-clear-history"' not in html
+    assert 'id="history-search"' in html
+    assert 'id="history-status-filter"' in html
     assert 'id="history-busy-status"' in html
-    assert "/history/clear" in script
     assert "cleanup_token" in script
     assert "/export/finalize" in script
     assert "/history/session/name" in script
@@ -335,7 +337,8 @@ def test_ui_v2_removes_misleading_controls_and_exposes_workspaces():
     assert 'test_kind: testKind' in script
     assert "state.settingsConnectionDirty" in script
     assert len(scripts) == 12
-    assert len(styles) == 4
+    assert {path.name for path in styles} >= {"base.css", "review-workspace.css", "simple-workflow.css"}
+    assert all(f'/static/css/{path.name}' in html for path in styles)
     assert "/static/app.js" not in html
     assert "/static/style.css" not in html
     desktop_script = (root / "app" / "desktop.py").read_text(encoding="utf-8")

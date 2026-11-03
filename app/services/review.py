@@ -217,6 +217,15 @@ def _translation_for_row(cp_entry: dict, output_text: str) -> str:
     return output_text
 
 
+def _manual_confirmation_matches(cp_entry: dict, status: str, source: str, translation: str) -> bool:
+    evidence = cp_entry.get("manual_review")
+    return bool(
+        status == "translated" and isinstance(evidence, dict)
+        and evidence.get("action") == "accept"
+        and evidence.get("source") == source and evidence.get("translation") == translation
+    )
+
+
 def _build_review_context(file_path: str, signature: tuple[Any, ...]) -> dict:
     from translation import checkpoint
     from translation.input import is_mtool_items, load_json_items
@@ -303,6 +312,7 @@ def _build_review_context(file_path: str, signature: tuple[Any, ...]) -> dict:
                 "review_reasons": cp_entry.get("review_reasons", []),
                 "updated_at": cp_entry.get("updated_at", ""),
                 "ai_review": ai_metadata,
+                "manual_confirmed": _manual_confirmation_matches(cp_entry, status, original_text, translated_text),
             })
             stats["total"] += 1
             if status in _ACTIONABLE_STATUSES and not derived_review:
@@ -344,6 +354,9 @@ def _build_review_context(file_path: str, signature: tuple[Any, ...]) -> dict:
         "glossary_terms": glossary.terms,
         "source_texts": source_texts,
         "translated_texts": translated_texts,
+        "search_sources": [text.casefold() for text in source_texts],
+        "search_targets": [text.casefold() for text in translated_texts],
+        "search_results": {},
         "columns_by_row": columns_by_row,
         "rows_by_filter": rows_by_filter,
         "stats": stats,
@@ -391,6 +404,32 @@ def build_review_row(ctx: dict, row: int) -> dict:
     }
 
 
-def matching_review_rows(ctx: dict, filter_name: str) -> list[int]:
+def matching_review_rows(
+    ctx: dict, filter_name: str, query: str = "", scope: str = "both",
+) -> list[int]:
+    """Search the whole current snapshot before pagination, keeping source text intact."""
     normalized_filter = filter_name if filter_name in ctx["rows_by_filter"] else "all"
-    return ctx["rows_by_filter"][normalized_filter]
+    if scope not in {"both", "source", "target"}:
+        raise HTTPException(status_code=400, detail="Search scope must be both, source, or target")
+    rows = ctx["rows_by_filter"][normalized_filter]
+    needle = query.casefold()
+    if not needle:
+        return rows
+    cache = ctx.setdefault("search_results", {})
+    cache_key = (normalized_filter, scope, needle)
+    with _REVIEW_CACHE_LOCK:
+        if cache_key in cache:
+            return cache[cache_key]
+    sources = ctx.get("search_sources") or [text.casefold() for text in ctx["source_texts"]]
+    targets = ctx.get("search_targets") or [text.casefold() for text in ctx["translated_texts"]]
+    matched = [
+        row for row in rows
+        if (scope != "target" and needle in sources[row])
+        or (scope != "source" and needle in targets[row])
+    ]
+    with _REVIEW_CACHE_LOCK:
+        # Bound interactive query caches so long editing sessions cannot grow them forever.
+        if len(cache) >= 32:
+            cache.pop(next(iter(cache)))
+        cache[cache_key] = matched
+    return matched

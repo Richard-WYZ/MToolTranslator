@@ -74,6 +74,9 @@ function renderSettings() {
     el("settings-key-state").textContent = api.api_key_configured
         ? "已配置（来源：" + keySourceLabel(api.api_key_source) + "）"
         : "尚未配置";
+    el("settings-connect-note").textContent = api.api_key_configured && (api.models || []).length
+        ? "连接已保存。可以刷新目录，或直接使用默认模型。"
+        : "只读取模型目录，不会发送翻译或模型测试请求。";
     el("settings-file-state").className = "settings-file-state" + (file.writable ? "" : " error");
     el("settings-file-state").textContent = "配置文件：" + (file.path || "未知")
         + " · " + (file.exists ? "已存在" : "保存时创建")
@@ -113,7 +116,7 @@ function renderProviderPicker() {
 function renderActiveProviderNote() {
     var creating = state.settingsApiProfileId !== (state.settings || {}).active_api_profile;
     el("settings-active-provider").textContent = "当前启用：" + activeApiProviderName()
-        + (creating ? " · 正在新建配置，保存后启用" : " · 选择其他配置后点击“启用此配置”切换");
+        + (creating ? " · 正在添加新连接" : " · 选择已保存配置即可切换");
 }
 
 function updateApiProtocolOptions() {
@@ -165,7 +168,7 @@ function applyProviderPreset(creating) {
 }
 
 async function activateApiProvider() {
-    if (state.settingsDirty || state.settingsBusy) return;
+    if (state.settingsDirty || state.settingsBusy || settingsTaskIsActive() || benchmarkIsActive()) return;
     var selected = el("settings-api-profile").value;
     if (!selected || selected === (state.settings || {}).active_api_profile) return;
     setSettingsBusy("switching");
@@ -184,6 +187,7 @@ async function activateApiProvider() {
         invalidatePreflight();
         toast("已启用 " + activeApiProviderName(), "success");
     } catch (error) {
+        el("settings-api-profile").value = (state.settings || {}).active_api_profile || "";
         toast(error.message, "error");
     } finally {
         setSettingsBusy("");
@@ -220,7 +224,7 @@ function renderSettingsModelPicker() {
     renderModelPickerMetadata();
     el("settings-model-list").innerHTML = visible.length
         ? visible.map(renderModelRow).join("")
-        : '<div class="model-empty">当前没有模型。保存连接配置后点击“获取模型”。</div>';
+        : '<div class="model-empty">点击“连接并获取模型”读取目录；也可以手动添加模型 ID。</div>';
 }
 
 function renderModelPickerMetadata() {
@@ -324,16 +328,16 @@ function renderSettingsStatus() {
     }).join("");
 }
 
-function settingsValidationMessage() {
+function settingsValidationMessage(connectionOnly) {
     if (!state.settings) return "设置尚未加载";
     var provider = currentSettingsProvider();
     var defaultModel = el("settings-default-model").value.trim();
     var emptyApiCatalog = provider === "api" && !currentModelCatalog().length && !defaultModel;
-    if (!emptyApiCatalog && !defaultModel.startsWith(provider + ":")) return "默认模型必须匹配当前提供方";
+    if (!connectionOnly && !emptyApiCatalog && !defaultModel.startsWith(provider + ":")) return "请选择当前提供商的默认模型";
     var selected = currentModelCatalog().find(function (item) {
         return item.id === defaultModel && item.enabled;
     });
-    if (!selected && !emptyApiCatalog) return "默认模型必须在上方列表中保持勾选";
+    if (!connectionOnly && !selected && !emptyApiCatalog) return "请选择一个已启用的默认模型";
     if (provider === "api") {
         if (!el("settings-profile-name").value.trim()) return "请填写提供商配置名称";
         var editingActive = state.settingsApiProfileId === state.settings.active_api_profile;
@@ -355,17 +359,16 @@ function updateSettingsControls() {
     el("settings-dirty-badge").className = "status-badge "
         + (busy ? "running" : state.settingsDirty ? "warning" : "neutral");
     el("settings-dirty-badge").textContent = busy
-        ? { loading: "正在加载", saving: "正在保存", discovering: "正在获取模型", testing: "正在测试模型", switching: "正在切换提供商" }[state.settingsBusy]
+        ? { loading: "正在加载", saving: "正在保存", connecting: "正在连接并读取模型", discovering: "正在获取模型", testing: "正在测试模型", switching: "正在切换提供商" }[state.settingsBusy]
         : state.settingsDirty ? "有未保存修改" : "尚未修改";
     el("btn-settings-refresh").disabled = busy;
     el("settings-api-profile").disabled = operationsBlocked || busy || state.settingsDirty;
     el("btn-provider-new").disabled = operationsBlocked || busy || state.settingsDirty;
-    el("btn-provider-activate").disabled = operationsBlocked || busy || state.settingsDirty
-        || !el("settings-api-profile").value || el("settings-api-profile").value === (state.settings || {}).active_api_profile;
-    el("btn-settings-save").disabled = operationsBlocked || busy || !writable || !state.settingsDirty || Boolean(validation);
-    el("btn-settings-discover").disabled = operationsBlocked || busy || state.settingsConnectionDirty
-        || (currentSettingsProvider() === "api"
-            && !(state.settings && state.settings.api && state.settings.api.api_key_configured));
+    var connectionValidation = settingsValidationMessage(true);
+    el("btn-settings-connect").disabled = operationsBlocked || busy || !writable || Boolean(connectionValidation);
+    el("btn-settings-discover").disabled = el("btn-settings-connect").disabled;
+    var hasDefault = Boolean(el("settings-default-model").value);
+    el("btn-settings-save").disabled = operationsBlocked || busy || !writable || !hasDefault || Boolean(validation);
     var noEnabledModels = !currentModelCatalog().some(function (item) { return item.enabled; });
     el("btn-test-enabled-models").disabled = operationsBlocked || busy || state.settingsConnectionDirty || noEnabledModels;
     el("btn-test-enabled-nsfw").disabled = operationsBlocked || busy || state.settingsConnectionDirty || noEnabledModels;
@@ -377,10 +380,10 @@ function updateSettingsControls() {
         : busy ? "请等待当前设置操作完成。"
         : !writable ? "配置目录不可写；请把软件移动到可写目录。"
         : validation || (state.settingsConnectionDirty
-            ? "连接参数已修改：请先保存，再获取或测试模型。"
+            ? "点击“连接并获取模型”，会保存连接并读取模型目录。"
             : state.settingsDirty
-                ? "协议选择可直接用于测试；所有设置只有点击“保存设置”后才会保存。"
-                : "模型可用性测试可能消耗少量 Token；不会自动执行。");
+                ? "选好默认模型后，点击“完成并使用”保存选择。"
+                : "连接已就绪。可直接使用，或展开下方可选测试。");
 }
 
 function markSettingsDirty(connectionChanged) {
@@ -435,7 +438,8 @@ async function saveSettings(event) {
         await loadModelBenchmark();
         renderSettings();
         invalidatePreflight();
-        toast("设置已保存；翻译页只会显示已勾选模型", "success");
+        toast("模型已就绪，可以开始翻译", "success");
+        if (typeof navigate === "function") navigate("translate");
     } catch (error) {
         toast(error.message, "error");
     } finally {
@@ -443,29 +447,60 @@ async function saveSettings(event) {
     }
 }
 
-async function discoverSettingsModels() {
-    if (state.settingsConnectionDirty) {
-        toast("请先保存连接参数，再获取模型", "error");
-        return;
-    }
-    var provider = currentSettingsProvider();
-    var existing = new Map(currentModelCatalog().map(function (item) {
-        return [item.id, item.enabled];
-    }));
-    setSettingsBusy("discovering");
+async function connectSettingsProvider() {
+    if (state.settingsBusy || settingsTaskIsActive() || benchmarkIsActive()) return;
+    var validation = settingsValidationMessage(true);
+    if (validation) { toast(validation, "error"); return; }
+    setSettingsBusy("connecting");
     try {
+        var previousDefault = el("settings-default-model").value;
+        var provider = currentSettingsProvider();
+        // Save the connection first so discovery uses the exact entered key,
+        // endpoint and protocol. Model selection remains the final user step.
+        if (state.settingsConnectionDirty || provider !== (state.settings || {}).provider) {
+            var payload = settingsPayload();
+            if (provider === "api") {
+                payload.api_models = [];
+                payload.disabled_api_models = [];
+                payload.api_model_protocols = {};
+                payload.default_model = "";
+            } else {
+                payload.default_model = previousDefault || "ollama:";
+            }
+            var saved = await API.put("/settings", payload);
+            state.settings = saved.settings;
+            state.settingsApiProfileId = state.settings.active_api_profile || "";
+            state.settingsDirty = false;
+            state.settingsConnectionDirty = false;
+            loadPersistedModelStatuses();
+            initializeModelCatalog();
+            renderSettings();
+        }
         var result = await API.post("/settings/models/discover", { provider: provider });
+        var previous = new Map(currentModelCatalog().map(function (item) { return [item.id, item]; }));
         state.modelCatalog[provider] = (result.models || []).map(function (item) {
-            var previous = currentModelCatalog().find(function (entry) { return entry.id === item.id; });
-            return modelCatalogEntry(provider, item.name,
-                existing.has(item.id) ? existing.get(item.id) : true, previous ? previous.protocol : "");
+            var old = previous.get(item.id);
+            return modelCatalogEntry(provider, item.name, old ? old.enabled : true, old ? old.protocol : "");
         });
-        if (provider === "api") markSettingsDirty(false);
+        state.settingsDirty = true;
         renderSettingsModelPicker();
-        if (result.ok) toast("已获取 " + result.models.length + " 个模型；未发送推理请求", "success");
-        else toast(result.warning || "实时获取失败，已保留配置目录", "error");
+        if (currentModelCatalog().some(function (item) { return item.id === previousDefault && item.enabled; })) {
+            el("settings-default-model").value = previousDefault;
+        }
+        state.modelBenchmark = null;
+        await loadModels(false);
+        await loadModelBenchmark();
+        invalidatePreflight();
+        el("settings-connect-note").textContent = result.ok
+            ? "已读取 " + result.models.length + " 个模型。选择默认模型后点击“完成并使用”。"
+            : "实时目录暂不可用，已保留原有模型；也可以手动添加模型 ID。";
+        toast(result.ok ? "连接成功，请选择默认模型" : result.warning || "模型目录读取失败", result.ok ? "success" : "error");
     } catch (error) {
         toast(error.message, "error");
+        el("settings-connect-note").textContent = "连接尚未完成：" + error.message + "。可重试或展开模型管理手动添加模型。";
+        state.modelBenchmark = null;
+        await loadModels(false);
+        await loadModelBenchmark();
     } finally {
         setSettingsBusy("");
     }
@@ -495,8 +530,7 @@ function addSettingsModel() {
 function bindSettingsEvents() {
     bindModelBenchmarkEvents();
     el("settings-form").addEventListener("submit", saveSettings);
-    el("settings-api-profile").addEventListener("change", updateSettingsControls);
-    el("btn-provider-activate").addEventListener("click", activateApiProvider);
+    el("settings-api-profile").addEventListener("change", activateApiProvider);
     el("btn-provider-new").addEventListener("click", newApiProvider);
     el("settings-api-preset").addEventListener("change", function () { applyProviderPreset(false); });
     el("settings-profile-name").addEventListener("input", function () { markSettingsDirty(false); });
@@ -505,7 +539,8 @@ function bindSettingsEvents() {
         if (event.key === "Enter") { event.preventDefault(); addSettingsModel(); }
     });
     el("btn-settings-refresh").addEventListener("click", function () { loadSettings(true); });
-    el("btn-settings-discover").addEventListener("click", discoverSettingsModels);
+    el("btn-settings-connect").addEventListener("click", connectSettingsProvider);
+    el("btn-settings-discover").addEventListener("click", connectSettingsProvider);
     el("btn-test-enabled-models").addEventListener("click", function () {
         testEnabledModels("basic");
     });

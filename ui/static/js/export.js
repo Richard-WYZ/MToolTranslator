@@ -9,24 +9,28 @@ async function chooseDesktopExportPath(defaultFilename) {
     return { isDesktop: true, path: selectedPath || "" };
 }
 
-async function exportResult() {
+async function exportResult(overwriteRequested) {
+    if (state.exportBusy) return;
     if (!state.sessionId || !state.filePath) {
         toast("当前任务不是可直接导出的上传会话", "error");
         return;
     }
+    state.exportBusy = true;
+    var project = { sessionId: state.sessionId, filePath: state.filePath, fileName: state.fileName, originalFilePath: state.originalFilePath };
+    if (typeof setReviewActionBusy === "function") setReviewActionBusy("export");
+    updateActionStates();
     try {
         var bridge = window.pywebview && window.pywebview.api;
         var isDesktop = Boolean(bridge && typeof bridge.save_file_dialog === "function");
-        var overwriteOriginal = false;
+        if (typeof flushReviewDraft === "function" && !(await flushReviewDraft())) return;
+        var overwriteOriginal = overwriteRequested === true && isDesktop && Boolean(project.originalFilePath);
         var destination = { isDesktop: isDesktop, path: "" };
-        if (isDesktop && state.originalFilePath) {
-            overwriteOriginal = window.confirm(
-                "是否用当前翻译结果覆盖源文件？\n\n" + state.originalFilePath
+        if (overwriteOriginal && !window.confirm(
+                "是否用当前翻译结果覆盖源文件？\n\n" + project.originalFilePath
                 + "\n\n首次覆盖会在源文件旁保留 .bak 备份。"
-            );
-        }
+            )) return;
         if (!overwriteOriginal && isDesktop) {
-            destination = await chooseDesktopExportPath(state.fileName || "ManualTransFile.json");
+            destination = await chooseDesktopExportPath(project.fileName || "ManualTransFile.json");
             if (!destination.path) {
                 toast("已取消导出");
                 return;
@@ -35,7 +39,7 @@ async function exportResult() {
         el("btn-export").disabled = true;
         el("btn-review-export").disabled = true;
         var payload = {
-            session_id: state.sessionId, file_path: state.filePath, file_type: "json",
+            session_id: project.sessionId, file_path: project.filePath, file_type: "json",
             column_mappings: [], output_path: destination.path || null,
             overwrite_original: overwriteOriginal,
         };
@@ -45,7 +49,7 @@ async function exportResult() {
         } catch (error) {
             if (!overwriteOriginal || !isDesktop) throw error;
             toast(error.message + "；请选择其他保存位置", "error");
-            destination = await chooseDesktopExportPath(state.fileName || "ManualTransFile.json");
+            destination = await chooseDesktopExportPath(project.fileName || "ManualTransFile.json");
             if (!destination.path) {
                 toast("已取消导出");
                 return;
@@ -55,17 +59,14 @@ async function exportResult() {
             result = await API.post("/export", payload);
             overwriteOriginal = false;
         }
-        state.hasUnexportedResult = false;
-        state.exportReady = true;
+        if (state.filePath === project.filePath) {
+            state.hasUnexportedResult = false;
+            state.exportReady = true;
+        }
         var finalization = result.finalization || {};
         var finalizeResult = null;
         var cleanupConfirmed = false;
         if (finalization.confirmation_required && finalization.cleanup_token) {
-            cleanupConfirmed = window.confirm(
-                (finalization.pending_download ? "译文已生成，即将开始下载。" : "导出成功。")
-                + "\n\n当前项目已完成全部复核，是否清理项目数据？"
-                + "\n\n清理将删除内部工作副本、检查点和复核记录；外部原始文件、导出文件和备份不会删除。"
-            );
             try {
                 finalizeResult = await API.post("/export/finalize", {
                     cleanup_token: finalization.cleanup_token,
@@ -83,10 +84,10 @@ async function exportResult() {
         } else {
             var link = document.createElement("a");
             link.href = "/api/download?path=" + encodeURIComponent(result.export_path)
-                + "&filename=" + encodeURIComponent(result.filename || state.fileName)
+                + "&filename=" + encodeURIComponent(result.filename || project.fileName)
                 + (cleanupConfirmed && finalization.pending_download
                     ? "&cleanup_token=" + encodeURIComponent(finalization.cleanup_token) : "");
-            link.download = result.filename || state.fileName;
+            link.download = result.filename || project.fileName;
             document.body.appendChild(link);
             link.click();
             link.remove();
@@ -108,6 +109,8 @@ async function exportResult() {
     } catch (error) {
         toast(error.message, "error");
     } finally {
+        state.exportBusy = false;
+        if (typeof setReviewActionBusy === "function") setReviewActionBusy();
         updateActionStates();
     }
 }

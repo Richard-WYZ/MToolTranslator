@@ -18,8 +18,6 @@ function syncHistoryActionState() {
         : (state.history.deletingPaths.size ? "正在删除历史记录，请稍候…" : "正在加载历史记录…");
     el("page-history").setAttribute("aria-busy", busy ? "true" : "false");
     el("btn-refresh-history").disabled = busy;
-    el("btn-clear-history").disabled = busy || state.history.candidatePaths.size === 0;
-    el("btn-clear-history").classList.toggle("is-loading", state.history.clearingAll);
     all("[data-delete-history-path], [data-resume-path], [data-open-path], [data-rename-history-path]").forEach(function (button) {
         var path = button.dataset.deleteHistoryPath || button.dataset.resumePath || button.dataset.openPath || button.dataset.renameHistoryPath || "";
         var deletingThis = Array.from(state.history.deletingPaths).some(function (item) { return sameHistoryPath(item, path); });
@@ -56,8 +54,8 @@ async function loadHistory() {
             recovery.concat(history).map(function (item) { return item.file_path; })
                 .concat(tasks.map(function (item) { return item.file_path; })).filter(Boolean)
         );
-        renderRecovery(recovery);
-        renderHistory(history, tasks);
+        state.history.projects = mergeHistoryProjects(recovery, history, tasks);
+        renderHistoryProjects();
     } catch (error) {
         toast(error.message, "error");
     } finally {
@@ -66,101 +64,148 @@ async function loadHistory() {
     }
 }
 
-function renderRecovery(sessions) {
-    el("recovery-count").textContent = sessions.length;
-    if (!sessions.length) {
-        el("recovery-list").innerHTML = '<div class="empty-state compact">没有未完成的断点任务</div>';
-        return;
+function mergeHistoryProjects(recovery, checkpoints, tasks) {
+    var byPath = new Map();
+    function add(item, recoverable) {
+        if (!item.file_path) return;
+        var key = String(item.file_path).replace(/\\/g, "/").toLowerCase();
+        var previous = byPath.get(key) || {};
+        byPath.set(key, Object.assign({}, previous, item, {
+            recoverable: Boolean(previous.recoverable || recoverable),
+        }));
     }
-    el("recovery-list").innerHTML = sessions.map(function (session) {
-        var percent = session.total ? Math.round(session.completed * 100 / session.total) : 0;
-        var sourceHint = session.original_path || ("本地会话 " + (session.session_id || "未知"));
-        return '<div class="history-item"><div class="history-main"><strong title="' + escapeHtml(sourceHint) + '">' + escapeHtml(session.project_display_name || "未命名项目") + "</strong><span>"
-            + escapeHtml(session.file_name || "ManualTransFile.json") + " · " + escapeHtml(modelLabel(session.model)) + " · " + escapeHtml(formatDate(session.updated_at)) + '</span><span class="history-source" title="' + escapeHtml(sourceHint) + '">' + escapeHtml(sourceHint) + '</span><div class="history-progress"><div class="mini-progress"><i style="width:' + percent + '%"></i></div><span>' + session.completed + " / " + session.total + "</span></div></div>"
-            + '<div class="history-actions"><button class="btn btn-ghost btn-sm" data-rename-history-path="' + escapeHtml(session.file_path) + '" data-project-name="' + escapeHtml(session.project_name || "") + '" data-project-display-name="' + escapeHtml(session.project_display_name || "") + '">命名</button><button class="btn btn-primary btn-sm" data-resume-path="' + escapeHtml(session.file_path) + '" data-path-unavailable="' + (session.file_exists ? "false" : "true") + '"' + (session.file_exists ? "" : " disabled") + '>继续</button><button class="btn btn-danger-ghost btn-sm" data-delete-history-path="' + escapeHtml(session.file_path) + '">删除</button></div></div>';
-    }).join("");
-}
-
-function renderHistory(checkpoints, tasks) {
-    var taskByPath = {};
-    tasks.forEach(function (task) { taskByPath[task.file_path] = task; });
-    if (!checkpoints.length && !tasks.length) {
-        el("history-list").innerHTML = '<div class="empty-state compact">还没有翻译历史</div>';
-        return;
-    }
-    var known = new Set();
-    var rows = checkpoints.map(function (session) {
-        known.add(session.file_path);
-        var task = taskByPath[session.file_path];
-        return {
-            file_path: session.file_path,
-            file_name: session.file_name,
-            project_name: session.project_name,
-            project_display_name: session.project_display_name,
-            original_path: session.original_path,
-            session_id: session.session_id,
-            model: session.model,
-            status: task ? task.status : session.status,
-            completed: session.completed,
-            total: session.total,
-            updated_at: task && task.finished_at ? task.finished_at : session.updated_at,
-            review_queue_size: session.review_queue_size
-                || Number(session.review_required || 0) + Number(session.translated_needs_review || 0),
-            file_exists: session.file_exists,
-        };
-    });
+    checkpoints.forEach(function (item) { add(item, false); });
+    recovery.forEach(function (item) { add(item, true); });
     tasks.forEach(function (task) {
-        if (!known.has(task.file_path)) rows.push({
-            file_path: task.file_path, file_name: task.file_name, model: task.model, status: task.status,
-            project_name: "", project_display_name: "", original_path: "", session_id: "",
-            completed: Math.round((task.percentage || 0)), total: 100, updated_at: task.finished_at || task.started_at,
-            review_queue_size: Number((task.review_summary || {}).review_required || 0)
-                + Number((task.review_summary || {}).translated_needs_review || 0),
-            file_exists: true,
-        });
+        var key = String(task.file_path || "").replace(/\\/g, "/").toLowerCase();
+        var previous = byPath.get(key) || {};
+        add(Object.assign({}, previous, {
+            file_path: task.file_path, file_name: task.file_name || previous.file_name,
+            model: task.model || previous.model, status: task.status || previous.status,
+            task_id: task.task_id || task.id || "",
+            updated_at: task.finished_at || task.started_at || previous.updated_at,
+            completed: previous.completed == null ? Number(task.percentage || 0) : previous.completed,
+            total: previous.total == null ? 100 : previous.total,
+            review_queue_size: previous.review_queue_size == null
+                ? Number((task.review_summary || {}).review_required || 0) + Number((task.review_summary || {}).translated_needs_review || 0)
+                : previous.review_queue_size,
+            file_exists: previous.file_exists !== false,
+        }), false);
     });
-    el("history-list").innerHTML = rows.map(function (item) {
-        var percent = item.total ? Math.round(item.completed * 100 / item.total) : 0;
-        var sourceHint = item.original_path || ("本地会话 " + (item.session_id || "未知"));
-        return '<div class="history-item"><div class="history-main"><strong title="' + escapeHtml(sourceHint) + '">' + escapeHtml(item.project_display_name || "未命名项目") + "</strong><span>"
-            + escapeHtml(item.file_name || "ManualTransFile.json") + " · " + escapeHtml(modelLabel(item.model)) + " · " + escapeHtml(statusLabel(item.status)) + " · " + escapeHtml(formatDate(item.updated_at)) + '</span><span class="history-source" title="' + escapeHtml(sourceHint) + '">' + escapeHtml(sourceHint) + '</span><div class="history-progress"><div class="mini-progress"><i style="width:' + percent + '%"></i></div><span>' + percent + "% · 待复核 " + item.review_queue_size + "</span></div></div>"
-            + '<div class="history-actions"><button class="btn btn-ghost btn-sm" data-rename-history-path="' + escapeHtml(item.file_path) + '" data-project-name="' + escapeHtml(item.project_name || "") + '" data-project-display-name="' + escapeHtml(item.project_display_name || "") + '">命名</button><button class="btn btn-secondary btn-sm" data-open-path="' + escapeHtml(item.file_path) + '" data-path-unavailable="' + (item.file_exists === false ? "true" : "false") + '"' + (item.file_exists === false ? " disabled" : "") + '>打开复核</button><button class="btn btn-danger-ghost btn-sm" data-delete-history-path="' + escapeHtml(item.file_path) + '">删除</button></div></div>';
-    }).join("");
+    return Array.from(byPath.values()).map(function (item) {
+        item.review_queue_size = Number(item.review_queue_size || 0)
+            || Number(item.review_required || 0) + Number(item.translated_needs_review || 0);
+        item.active = ["starting", "running", "paused", "stopping", "finalizing"].includes(item.status);
+        item.recoverable = !item.active && Boolean(item.recoverable)
+            && !["completed", "done", "exported"].includes(item.status);
+        item.finished = ["completed", "done", "exported"].includes(item.status)
+            || Boolean(item.total && item.completed >= item.total);
+        return item;
+    }).sort(function (left, right) {
+        if (left.active !== right.active) return left.active ? -1 : 1;
+        function timestamp(value) { return typeof value === "number" ? value * 1000 : Date.parse(value) || 0; }
+        return timestamp(right.updated_at) - timestamp(left.updated_at);
+    });
 }
 
-async function adoptHistoryFile(path) {
-    stopAIReviewPolling();
-    state.review.aiTaskId = "";
-    state.review.aiTaskStatus = "idle";
-    state.review.aiProgress = null;
-    state.filePath = path;
-    state.sourceFilePath = path;
-    state.originalFilePath = "";
-    state.fileName = path.split(/[\\/]/).pop();
-    state.sessionId = path.split(/[\\/]/).slice(-2, -1)[0] || "";
+function renderHistoryProjects() {
+    var query = el("history-search").value.trim().toLowerCase();
+    var filter = el("history-status-filter").value || "all";
+    var projects = state.history.projects || [];
+    var rows = projects.filter(function (item) {
+        var text = [item.project_display_name, item.project_name, item.file_name, item.original_path].join(" ").toLowerCase();
+        if (query && !text.includes(query)) return false;
+        if (filter === "unfinished") return !item.finished;
+        if (filter === "review") return item.review_queue_size > 0;
+        if (filter === "completed") return item.finished;
+        return true;
+    });
+    el("history-count").textContent = rows.length + " / " + projects.length;
+    if (!rows.length) {
+        el("history-list").innerHTML = '<div class="empty-state compact">'
+            + (projects.length ? "没有符合筛选条件的项目" : "还没有项目。导入文件后，进度会保存在这里。") + '</div>';
+        return;
+    }
+    el("history-list").innerHTML = rows.map(function (item) {
+        var percent = item.total ? Math.min(100, Math.round(item.completed * 100 / item.total)) : 0;
+        var sourceHint = item.original_path || ("本地项目 " + (item.session_id || "未知"));
+        var unavailable = item.file_exists === false;
+        var status = item.active ? "翻译进行中" : item.recoverable ? "可继续翻译" : item.review_queue_size ? "有待检查项" : item.finished ? "翻译已完成" : "翻译未完成";
+        var primaryAttribute = item.recoverable ? "data-resume-path" : "data-open-path";
+        var primaryLabel = item.recoverable ? "继续翻译" : item.active ? "查看进度" : "查看结果";
+        return '<article class="history-item"><div class="history-main"><strong title="' + escapeHtml(sourceHint) + '">'
+            + escapeHtml(item.project_display_name || item.project_name || "未命名项目") + '</strong><span>'
+            + escapeHtml(item.file_name || "ManualTransFile.json") + " · " + status + " · " + escapeHtml(formatDate(item.updated_at))
+            + '</span><div class="history-progress"><div class="mini-progress"><i style="width:' + percent + '%"></i></div><span>'
+            + percent + "%" + (item.review_queue_size ? " · 待检查 " + item.review_queue_size : "")
+            + (unavailable ? " · 工作文件不可用" : "") + '</span></div></div><div class="history-actions">'
+            + '<button class="btn btn-primary btn-sm" ' + primaryAttribute + '="' + escapeHtml(item.file_path)
+            + '" data-path-unavailable="' + unavailable + '"' + (unavailable ? " disabled" : "") + '>' + primaryLabel + '</button>'
+            + '<details class="history-more"><summary>更多</summary><div class="button-row">'
+            + '<button class="btn btn-ghost btn-sm" data-rename-history-path="' + escapeHtml(item.file_path)
+            + '" data-project-name="' + escapeHtml(item.project_name || "") + '" data-project-display-name="' + escapeHtml(item.project_display_name || "") + '">重命名</button>'
+            + '<button class="btn btn-danger-ghost btn-sm" data-delete-history-path="' + escapeHtml(item.file_path) + '">删除记录</button></div>'
+            + '<small class="history-source">' + escapeHtml(sourceHint) + " · " + escapeHtml(modelLabel(item.model)) + '</small></details></div></article>';
+    }).join("");
+    syncHistoryActionState();
+}
+
+function initHistoryWorkspace() {
+    el("btn-refresh-history").addEventListener("click", loadHistory);
+    el("history-search").addEventListener("input", renderHistoryProjects);
+    el("history-status-filter").addEventListener("change", renderHistoryProjects);
+    el("history-list").addEventListener("click", function (event) {
+        var remove = event.target.closest("[data-delete-history-path]");
+        var resume = event.target.closest("[data-resume-path]");
+        var open = event.target.closest("[data-open-path]");
+        var rename = event.target.closest("[data-rename-history-path]");
+        if (remove) deleteHistory(remove.dataset.deleteHistoryPath);
+        else if (resume) resumeHistory(resume.dataset.resumePath);
+        else if (open) adoptHistoryFile(open.dataset.openPath);
+        else if (rename) renameHistoryProject(rename.dataset.renameHistoryPath, rename.dataset.projectName, rename.dataset.projectDisplayName);
+    });
+}
+
+async function adoptHistoryFile(path, options) {
+    options = options || {};
+    if (activeFilePath() && sameHistoryPath(activeFilePath(), path)) {
+        if (options.navigate !== false) navigate(["starting", "running", "paused", "stopping", "finalizing"].includes(state.taskStatus) ? "translate" : "review");
+        return true;
+    }
+    if (!(await ensureCanReplaceFile())) return false;
     try {
-        await loadPreview();
+        // Check readability before changing the current workspace. The current
+        // project's saved working copy and checkpoint remain in history.
+        var preview = await API.get("/preview?path=" + encodeURIComponent(path) + "&limit=10");
+        var item = (state.history.projects || []).find(function (project) { return sameHistoryPath(project.file_path, path); }) || {};
+        resetFile();
+        state.filePath = path;
+        state.sourceFilePath = path;
+        state.originalFilePath = item.original_path || "";
+        state.fileName = item.file_name || path.split(/[\\/]/).pop();
+        state.sessionId = item.session_id || path.split(/[\\/]/).slice(-2, -1)[0] || "";
+        state.preview = preview;
+        state.totalRows = preview.total_rows || 0;
+        state.hasUnexportedResult = Number(item.completed || 0) > 0;
         renderFile();
         await refreshExportState();
         await refreshReviewCount();
-        navigate("review");
-    } catch (error) { toast(error.message, "error"); }
+        if (options.navigate !== false) navigate("review");
+        return true;
+    } catch (error) { toast(error.message, "error"); return false; }
 }
 
 async function resumeHistory(path) {
-    if (["running", "paused", "stopping", "finalizing"].includes(state.taskStatus)) {
-        toast("已有任务正在运行", "error");
-        return;
-    }
+    if (settingsTaskIsActive()) { toast("请先等待当前任务结束", "error"); return; }
     try {
-        await adoptHistoryFile(path);
+        if (!(await adoptHistoryFile(path, { navigate: false }))) return;
         var result = await API.post("/recovery/resume", { file_path: path, prompt_style: "professional" });
         state.taskId = result.task_id;
         state.taskStatus = "running";
         state.hasUnexportedResult = true;
         navigate("translate");
         startPolling();
-        toast("已按检查点配置恢复任务", "success");
+        toast("已从上次进度继续翻译", "success");
     } catch (error) { toast(error.message, "error"); }
 }
 
@@ -204,35 +249,5 @@ async function renameHistoryProject(path, currentName, displayName) {
     } finally {
         state.history.loading = false;
         await loadHistory();
-    }
-}
-
-async function clearAllHistory() {
-    if (historyActionIsBusy() || state.history.candidatePaths.size === 0) return;
-    var count = state.history.candidatePaths.size;
-    var confirmed = window.confirm(
-        "确定清除全部 " + count + " 项历史记录吗？\n\n"
-        + "将清除未运行任务的检查点、翻译快照和复核数据；正在运行的任务会跳过。"
-        + "已导出的文件与外部原始文件不会删除。此操作无法撤销。"
-    );
-    if (!confirmed) return;
-    state.history.clearingAll = true;
-    syncHistoryActionState();
-    try {
-        var result = await API.post("/history/clear", {});
-        var activePath = activeFilePath();
-        if (activePath && (result.deleted_paths || []).some(function (path) { return sameHistoryPath(path, activePath); })) {
-            resetFile();
-        }
-        await Promise.all([loadHistory(), loadRecoveryBanner()]);
-        var message = "已清除 " + result.deleted + " 项历史";
-        if (result.skipped) message += "，跳过 " + result.skipped + " 项运行中任务";
-        if (result.failed) message += "，" + result.failed + " 项失败";
-        toast(message, result.failed ? "error" : "success");
-    } catch (error) {
-        toast(error.message, "error");
-    } finally {
-        state.history.clearingAll = false;
-        syncHistoryActionState();
     }
 }

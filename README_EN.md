@@ -54,13 +54,16 @@ development takes place on `dev`; `master` is reserved for stable releases.
 2. Extract it to any writable directory. Installation is not required.
 3. Run `MToolTranslator.exe`.
 4. Add a provider profile in Settings, choose OpenDesign Go or another preset,
-   enter the API key and save. Fetch and enable models, select a default, and save again.
+   enter the API key, and click Connect and fetch models. Select a default model
+   and finish setup. Connection and NSFW tests remain available as optional actions.
 5. Run the per-model basic and NSFW checks first. Tests send requests and may
    consume tokens.
 6. Export `ManualTransFile.json` from MTool.
-7. Import the JSON on the Translation page and start a translation profile.
-8. Review progress and flagged entries. You can prioritize required-review
-   items or run AI review with separately selected review and verifier models.
+7. Import the JSON and click Start translation. File checks and preparation run
+   automatically; translation modes and advanced parameters remain optional.
+8. Search the entire file by source or translation in the source/translation
+   workspace. Edits autosave as drafts; confirm-and-next records human approval.
+   AI review remains available with separately selected review and verifier models.
 9. Once translation has finished and the output is structurally complete, you
    may export the current snapshot before clearing the review queue, continue
    reviewing, and export again before loading it through MTool.
@@ -73,6 +76,12 @@ Runtime files beside the executable include:
 
 ### Review and export
 
+- Full-file source, translation, and combined searches work alongside status
+  filters, with highlighted results and links to neighboring entries and term occurrences.
+- Project history merges resumable and completed projects, with search and status
+  filters. Switching projects keeps working copies and checkpoints.
+- Export defaults to Save As and keeps project data. Explicit source overwrite
+  remains under additional export options, with the original backup behavior.
 - The review workspace separates required review, advisory review, system-
   preserved content, and confirmed translations, so numbers and symbols do not
   crowd the actionable queue.
@@ -216,7 +225,7 @@ send one short request per model and may consume tokens.
 
 Each provider profile retains its own name, endpoint, key, model catalog,
 enablement, protocol, and default model in the local `.env`. Select a saved
-profile and click Activate to switch. Unsaved edits or active tasks block switching.
+profile to switch immediately. Unsaved edits or active tasks block switching.
 New profiles start with empty credentials and catalogs. The settings API never
 returns saved keys. Legacy single-provider settings remain supported.
 

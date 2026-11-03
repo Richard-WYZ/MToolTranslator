@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from app.schemas import DynamicGlossaryRequest, GlossaryTermRequest, PromoteGlossaryRequest
 from app.services.glossary import (
     apply_term_edit_to_outputs,
+    glossary_occurrences,
     pause_and_flush_for_edit,
     resume_after_edit,
     sync_task_glossary,
@@ -80,6 +81,13 @@ def create_router(
             sync_task_glossary(tasks, file_path, g)
         return g.as_payload()
 
+    @router.get("/api/glossary/occurrences")
+    def get_term_occurrences(
+        file_path: str = Query(...), source: str = Query(...),
+        offset: int = Query(0), limit: int = Query(20), target: str | None = Query(None),
+    ):
+        return glossary_occurrences(file_path, source, offset=offset, limit=limit, target=target)
+
     @router.put("/api/glossary/dynamic/{term}")
     def update_dynamic_glossary(term: str, req: DynamicGlossaryRequest):
         ensure_ai_review_idle(req.file_path)
@@ -119,6 +127,8 @@ def create_router(
             g.remove(term)
             g.save()
             sync_task_glossary(tasks, file_path, g)
+            from app.services.review import invalidate_review_cache
+            invalidate_review_cache(file_path)
             return {"ok": True, "terms": g.terms, "candidates": g.candidates}
         finally:
             resume_after_edit(task, was_running)

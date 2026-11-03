@@ -157,6 +157,8 @@ class AIReviewRequest(BaseModel):
     scope: Literal["required", "all", "selected", "filter"] = "required"
     rows: List[int] = Field(default_factory=list)
     filter: str = "issues"
+    query: str = ""
+    search_scope: Literal["both", "source", "target"] = "both"
     review_model: Optional[str] = "auto"
     verifier_model: Optional[str] = "auto"
     sensitive_model: Optional[str] = "auto"

@@ -149,7 +149,7 @@ function renderProfile() {
             id: qualityModel,
             name: qualityModel,
             provider: qualityModel.split(":", 1)[0],
-            display_name: modelLabel(qualityModel) + "（质量优先主路由）",
+            display_name: modelLabel(qualityModel) + "（当前默认）",
         }], qualityModel, false);
     }
     el("advanced-config").style.display = state.profile === "custom" ? "block" : "none";
@@ -192,7 +192,7 @@ function renderRouteMap() {
     el("route-map").innerHTML = routes.map(function (route) {
         return '<span class="route-chip"><b>' + escapeHtml(route.role) + '</b><span>' + escapeHtml(modelLabel(route.model) || "未选择") + "</span></span>";
     }).join("");
-    var profileName = { quality_first: "联网 · 质量优先", single_model: "联网 · 单模型", local: "本地 · Ollama", custom: "高级 · 自定义路由" }[state.profile];
+    var profileName = { quality_first: "默认设置", single_model: "指定联网模型", local: "本地 Ollama", custom: "自定义设置" }[state.profile];
     var isLocal = state.profile === "local";
     var privacy = isLocal ? "local" : "online";
     el("privacy-badge").className = "privacy-badge " + privacy;
@@ -207,7 +207,7 @@ function renderRouteMap() {
     var batch = state.profile === "quality_first" ? 40 : state.profile === "custom" ? options.json_batch_size : 40;
     el("summary-batch").textContent = concurrency + " / " + batch;
     el("top-provider").textContent = privacy === "local" ? "Ollama · 本地" : privacy === "hybrid" ? "本地 + API" : activeApiProviderName() + " · 联网";
-    el("btn-start").textContent = state.profile === "quality_first" ? "开始质量优先翻译" : "开始翻译";
+    el("btn-start").textContent = state.startPreparing ? "正在准备…" : "开始翻译";
 }
 
 function invalidatePreflight() {
