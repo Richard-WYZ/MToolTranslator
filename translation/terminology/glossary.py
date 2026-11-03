@@ -8,6 +8,7 @@ from typing import Any
 from translation.pollution import glossary_term_pollution_issues
 from translation.terminology.candidate_policy import (
     KATAKANA_NAME_RE,
+    GENERIC_PERSON_ROLE_TARGETS,
     build_aliases,
     classify_term,
     extract_terms,
@@ -86,7 +87,7 @@ class Glossary:
         self._frozen_mappings = []
         self._mapping_dirty = True
 
-    def add(self, japanese: str, chinese: str, term_type: str = "proper_noun") -> None:
+    def add(self, japanese: str, chinese: str, term_type: str = "proper_noun", *, manual: bool = False) -> None:
         if self._frozen:
             raise RuntimeError("cannot change enforced glossary terms while frozen")
         japanese = (japanese or "").strip()
@@ -97,7 +98,11 @@ class Glossary:
         info = self.candidates.setdefault(japanese, {})
         info["status"] = "confirmed"
         info["target"] = chinese
-        info["type"] = info.get("type") or term_type
+        info["type"] = term_type if term_type == "person" else (info.get("type") or term_type)
+        if manual:
+            evidence = info.setdefault("evidence", [])
+            if "manual_confirmed" not in evidence:
+                evidence.append("manual_confirmed")
         info["aliases"] = self._build_aliases(japanese, chinese, info["type"])
         self._prompt_dirty = True
         self._mapping_dirty = True
@@ -112,14 +117,14 @@ class Glossary:
         self._prompt_dirty = True
         self._mapping_dirty = True
 
-    def promote(self, japanese: str, chinese: str | None = None) -> bool:
+    def promote(self, japanese: str, chinese: str | None = None, *, manual: bool = False) -> bool:
         candidate = self.candidates.get(japanese)
         target = (chinese or (candidate or {}).get("target") or "").strip()
         if not candidate or not target:
             return False
         if not self._passes_term_review(japanese, target, candidate.get("type", "proper_noun")):
             return False
-        self.add(japanese, target, candidate.get("type", "proper_noun"))
+        self.add(japanese, target, candidate.get("type", "proper_noun"), manual=manual)
         return True
 
     def lookup(self, text: str) -> str:
@@ -127,7 +132,7 @@ class Glossary:
             return text
         result = text
         for src, tgt, _owner, _typ in self.iter_mappings():
-            result = result.replace(src, tgt)
+            result = self._term_pattern(src).sub(tgt, result)
         return result
 
     def iter_mappings(self) -> list[tuple[str, str, str, str]]:
@@ -159,7 +164,7 @@ class Glossary:
         if not text:
             return hits
         for src, tgt, owner, typ in self.iter_mappings():
-            if src in text and (src, tgt) not in seen:
+            if self.contains_term(text, src) and (src, tgt) not in seen:
                 hits.append({"source": src, "target": tgt, "owner": owner, "type": typ})
                 seen.add((src, tgt))
         return hits
@@ -170,13 +175,35 @@ class Glossary:
         protected = text
         tokens: list[tuple[str, str, str]] = []
         for src, tgt, _owner, typ in self.iter_mappings():
-            if src not in protected:
+            if not self.contains_term(protected, src):
                 continue
             token_type = "PERSON" if typ == "person" else "TERM"
-            token = f"__{token_type}_{len(tokens)}__"
-            protected = protected.replace(src, token)
-            tokens.append((token, src, tgt))
+            def replace(match: re.Match[str]) -> str:
+                token = f"__{token_type}_{len(tokens)}__"
+                tokens.append((token, src, tgt))
+                return token
+            protected = self._term_pattern(src).sub(replace, protected)
         return protected, tokens
+
+    @staticmethod
+    def _term_pattern(source: str) -> re.Pattern[str]:
+        escaped = re.escape(source)
+        if KATAKANA_NAME_RE.fullmatch(source):
+            return re.compile(rf"(?<![\u30a1-\u30fa\u30fc]){escaped}(?![\u30a1-\u30fa\u30fc])")
+        return re.compile(escaped)
+
+    @classmethod
+    def contains_term(cls, text: str, source: str) -> bool:
+        return bool(text and source and cls._term_pattern(source).search(text))
+
+    def unresolved_person_hits(self, text: str) -> list[str]:
+        return [
+            source for source, info in self.candidates.items()
+            if isinstance(info, dict)
+            and info.get("status") == "needs_review"
+            and "preflight_name_conflict" in (info.get("evidence", []) or [])
+            and self.contains_term(text, source)
+        ]
 
     @staticmethod
     def restore_terms(translated: str, tokens: list[tuple[str, str, str]]) -> str:
@@ -238,11 +265,8 @@ class Glossary:
             return translated
         result = translated
         for src, tgt, _owner, _typ in self.iter_mappings():
-            if src in original and tgt not in result:
-                aliases = self._candidate_targets(src)
-                for alias in sorted((a for a in aliases if a and a != tgt), key=len, reverse=True):
-                    result = result.replace(alias, tgt)
-                result = result.replace(src, tgt)
+            if self.contains_term(original, src) and self.contains_term(result, src):
+                result = self._term_pattern(src).sub(tgt, result)
         return result
 
     def auto_extract(self, original: str, translated: str) -> list[dict[str, Any]]:
@@ -304,6 +328,36 @@ class Glossary:
                 ):
                     info["status"] = "rejected"
                     info["reject_reason"] = "automatic_review_failed"
+        return confirmed
+
+    def confirm_ready_candidates(self) -> list[dict[str, Any]]:
+        """Confirm evidence-backed candidates after a frozen translation pass.
+
+        Batch workers intentionally share one stable set of enforced mappings.
+        Once they have all stopped, candidates may be evaluated with the same
+        thresholds as incremental extraction and safely backfilled.
+        """
+        if self._frozen:
+            raise RuntimeError("cannot confirm glossary terms while mappings are frozen")
+        confirmed: list[dict[str, Any]] = []
+        for source, info in list(self.candidates.items()):
+            if source in self.terms or not isinstance(info, dict):
+                continue
+            if info.get("status") in ("confirmed", "official", "rejected"):
+                continue
+            target = str(info.get("target") or "").strip()
+            if not target:
+                continue
+            if self._should_auto_confirm(source, target, info):
+                term_type = str(info.get("type") or "proper_noun")
+                aliases = list(self._candidate_targets(source))
+                aliases.extend((info.get("aliases", {}) or {}).values())
+                self.add(source, target, term_type)
+                confirmed.append({
+                    "source": source,
+                    "target": target,
+                    "aliases": list(dict.fromkeys(str(alias) for alias in aliases if alias)),
+                })
         return confirmed
 
     def preseed_from_sources(self, sources: list[str], min_count: int = 2) -> int:
@@ -432,6 +486,8 @@ class Glossary:
         if not stripped or re.search("[\u3040-\u30ff]", stripped):
             return False
         info = self.candidates.get(stripped, {}) or {}
+        if info.get("status") == "rejected":
+            return False
         evidence = {str(item) for item in info.get("evidence", []) or []}
         return str(info.get("type") or "") == "person" and bool(
             {"speaker_position", "standalone_line"} <= evidence
@@ -451,6 +507,8 @@ class Glossary:
             source = stripped[:-suffix_length]
             info = self.candidates.get(source, {}) or {}
             if not isinstance(info, dict) or str(info.get("type") or "") != "person":
+                continue
+            if info.get("status") == "rejected":
                 continue
             proposed_target = str(info.get("target") or "").strip()
             if proposed_target and not self._source_target_compatible(source, proposed_target, "person"):
@@ -505,6 +563,8 @@ class Glossary:
         return removed
 
     def _passes_term_review(self, source: str, target: str, term_type: str) -> bool:
+        if term_type == "person" and target in GENERIC_PERSON_ROLE_TARGETS:
+            return False
         if self._is_ignored_term(source) or not self._is_valid_target(target, source):
             return False
         if glossary_term_pollution_issues(source, target, term_type):
@@ -516,9 +576,13 @@ class Glossary:
         return True
 
     def _should_auto_confirm(self, source: str, target: str, info: dict[str, Any]) -> bool:
+        if "preflight_name_conflict" in (info.get("evidence", []) or []):
+            return False
         count = int(info.get("count", 0))
         score = float(info.get("score", 0.0))
         term_type = str(info.get("type") or "proper_noun")
+        if term_type == "person" and target in GENERIC_PERSON_ROLE_TARGETS:
+            return False
         target_counts = {
             str(candidate): int(count)
             for candidate, count in (info.get("targets", {}) or {}).items()

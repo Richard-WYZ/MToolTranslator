@@ -7,6 +7,7 @@ function aiReviewIsActive() {
 function aiReviewRequest(scope, rows) {
     return {
         file_path: activeFilePath(), scope: scope, rows: rows || [], filter: state.review.filter,
+        query: state.review.query || "", search_scope: state.review.searchScope || "both",
         review_model: el("ai-review-model").value || "auto",
         verifier_model: el("ai-verifier-model").value || "auto",
         sensitive_model: el("ai-sensitive-model").value || "auto", auto_apply: true,
@@ -16,6 +17,7 @@ function aiReviewRequest(scope, rows) {
 
 async function startAIReview(scope) {
     if (!activeFilePath() || aiReviewIsActive() || reviewActionIsBusy()) return;
+    if (!await flushReviewDraft()) return;
     var requestFilePath = activeFilePath();
     var requestGeneration = state.review.aiPollingGeneration;
     var requestedScope = scope;
@@ -125,7 +127,7 @@ function renderAIReviewProgress(task) {
     el("ai-review-summary").innerHTML = [
         '<span class="good">系统校正 ' + Number(counts.reclassified || 0) + "</span>",
         '<span class="good">已修复 ' + Number(counts.fixed || 0) + "</span>",
-        '<span class="good">确认原译文 ' + Number(counts.confirmed || 0) + "</span>",
+        '<span class="good">机器检查通过 ' + Number(counts.confirmed || 0) + "</span>",
         '<span class="warn">仍无法确认 ' + Number(counts.unresolved || 0) + "</span>",
         "<span>已应用 " + Number(counts.applied || 0) + "</span>",
         "<span>Token " + Number(usage.total_tokens || 0).toLocaleString("zh-CN") + "</span>",
@@ -142,7 +144,7 @@ function renderAIReviewProgress(task) {
     el("btn-ai-review-stop").hidden = !active || task.status === "stopping";
     el("btn-ai-review-resume").hidden = !task.can_resume;
     el("btn-ai-review-rollback").hidden = !task.can_rollback;
-    ["ai-review-scope", "ai-review-model", "ai-verifier-model", "ai-sensitive-model", "ai-auto-retry"].forEach(function (id) { el(id).disabled = locked; });
+    ["ai-review-scope", "ai-review-model", "ai-verifier-model", "ai-sensitive-model", "ai-auto-retry", "btn-ai-sensitive-test"].forEach(function (id) { el(id).disabled = locked; });
     ["btn-review-accept", "btn-review-draft", "btn-review-preserve", "btn-accept-selected"].forEach(function (id) { el(id).disabled = locked || (id === "btn-accept-selected" && state.review.selectedRows.size === 0); });
     el("editor-target").readOnly = locked;
     all("[data-review-check]").forEach(function (node) {
@@ -163,6 +165,7 @@ async function stopAIReview() {
 
 async function resumeAIReview() {
     if (!state.review.aiTaskId || aiReviewIsActive() || reviewActionIsBusy()) return;
+    if (!await flushReviewDraft()) return;
     setReviewActionBusy("ai_resume", "btn-ai-review-resume");
     try {
         var task = await API.post("/review/ai/" + encodeURIComponent(state.review.aiTaskId) + "/resume", { file_path: activeFilePath() });
@@ -173,6 +176,7 @@ async function resumeAIReview() {
 
 async function rollbackAIReview() {
     if (reviewActionIsBusy()) return;
+    if (!await flushReviewDraft()) return;
     if (!state.review.aiTaskId || !window.confirm("撤销本次 AI 复核已自动应用的译文？之后手动修改过的条目不会被覆盖。")) return;
     setReviewActionBusy("ai_rollback", "btn-ai-review-rollback");
     try {
@@ -183,4 +187,26 @@ async function rollbackAIReview() {
         await refreshReviewAfterEdit(); await loadCurrentAIReview();
     } catch (error) { toast(error.message, "error"); }
     finally { setReviewActionBusy(); }
+}
+
+async function testAIReviewSensitiveModel() {
+    if (aiReviewIsActive() || reviewActionIsBusy()) return;
+    if (!await flushReviewDraft()) return;
+    var model = el("ai-sensitive-model").value;
+    if (!model || model === "auto") {
+        el("ai-sensitive-test-note").textContent = "请先选择要测试的具体模型。";
+        return;
+    }
+    setReviewActionBusy("ai_test", "btn-ai-sensitive-test");
+    el("ai-sensitive-test-note").textContent = "正在测试，可能产生少量模型用量…";
+    try {
+        var result = await API.post("/settings/connection-test", {
+            provider: model.startsWith("ollama:") ? "ollama" : "api", model: model, test_kind: "adult", protocol: "auto",
+        });
+        el("ai-sensitive-test-note").textContent = result.nsfw_supported
+            ? "本次成人内容测试通过；实际文本仍可能受提供商限制。"
+            : "本次成人内容测试未通过，可选择其他模型。";
+    } catch (error) {
+        el("ai-sensitive-test-note").textContent = "测试失败：" + error.message;
+    } finally { setReviewActionBusy(); }
 }

@@ -67,6 +67,7 @@ def apply_confirmed_terms_to_outputs(pipeline: TranslationPipeline, file_path: s
         confirmed_terms,
         update_output_cell=pipeline.update_output_cell,
         glossary_mappings=pipeline._glossary_mappings_for_quality(),
+        glossary_version=pipeline.glossary.version(),
     )
 
 

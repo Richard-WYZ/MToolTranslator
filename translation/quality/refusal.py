@@ -129,7 +129,29 @@ def assess_model_output(text: str, original: str = "") -> ModelOutputAssessment:
     # Small tsu can be removed deterministically when a model has otherwise
     # localized the text. Do not reject that repairable raw response before
     # restoration and source-conditioned output normalization run.
+    from translation.protection.runtime import is_runtime_angle_block
+
+    if text == original and is_runtime_angle_block(original):
+        return ModelOutputAssessment()
     japanese_candidate = SMALL_TSU_RE.sub("", stripped)
+    if original:
+        from collections import Counter
+        from translation.protection.runtime import ANGLE_FRAGMENT_RE, is_runtime_angle_fragment
+
+        source_tags = Counter(
+            match.group(0)
+            for match in ANGLE_FRAGMENT_RE.finditer(original)
+            if is_runtime_angle_fragment(match.group(0))
+        )
+
+        def strip_source_tag(match: re.Match[str]) -> str:
+            tag = match.group(0)
+            if source_tags[tag]:
+                source_tags[tag] -= 1
+                return ""
+            return tag
+
+        japanese_candidate = ANGLE_FRAGMENT_RE.sub(strip_source_tag, japanese_candidate)
     if has_japanese(japanese_candidate, original=original):
         return ModelOutputAssessment(
             issue_type="untranslated_japanese",

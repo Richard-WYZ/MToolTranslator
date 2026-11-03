@@ -53,14 +53,17 @@ development takes place on `dev`; `master` is reserved for stable releases.
 1. Download `MToolTranslator-vX.Y.Z-windows-x64.zip` from GitHub Releases.
 2. Extract it to any writable directory. Installation is not required.
 3. Run `MToolTranslator.exe`.
-4. Enter an OpenCode Go API key in Settings, fetch the model catalog, and
-   enable the models that may be used for translation.
+4. Add a provider profile in Settings, choose OpenDesign Go or another preset,
+   enter the API key, and click Connect and fetch models. Select a default model
+   and finish setup. Connection and NSFW tests remain available as optional actions.
 5. Run the per-model basic and NSFW checks first. Tests send requests and may
    consume tokens.
 6. Export `ManualTransFile.json` from MTool.
-7. Import the JSON on the Translation page and start a translation profile.
-8. Review progress and flagged entries. You can prioritize required-review
-   items or run AI review with separately selected review and verifier models.
+7. Import the JSON and click Start translation. File checks and preparation run
+   automatically; translation modes and advanced parameters remain optional.
+8. Search the entire file by source or translation in the source/translation
+   workspace. Edits autosave as drafts; confirm-and-next records human approval.
+   AI review remains available with separately selected review and verifier models.
 9. Once translation has finished and the output is structurally complete, you
    may export the current snapshot before clearing the review queue, continue
    reviewing, and export again before loading it through MTool.
@@ -73,6 +76,12 @@ Runtime files beside the executable include:
 
 ### Review and export
 
+- Full-file source, translation, and combined searches work alongside status
+  filters, with highlighted results and links to neighboring entries and term occurrences.
+- Project history merges resumable and completed projects, with search and status
+  filters. Switching projects keeps working copies and checkpoints.
+- Export defaults to Save As and keeps project data. Explicit source overwrite
+  remains under additional export options, with the original backup behavior.
 - The review workspace separates required review, advisory review, system-
   preserved content, and confirmed translations, so numbers and symbols do not
   crowd the actionable queue.
@@ -132,8 +141,10 @@ never overwritten or cleaned automatically.
 
 ## Current status
 
-- Only the **OpenCode Go** integration path has received practical validation.
-- A model appearing in the OpenCode Go catalog does not mean that its quality,
+- **OpenDesign Go** has passed model discovery and a small ordinary Japanese
+  batch translation check. Adult content, full-file quality, and speed remain
+  unverified. OpenCode Go compatibility and earlier validation are retained.
+- A model appearing in a provider catalog does not mean that its quality,
   NSFW behavior, or full-file reliability has been validated. Use the built-in
   basic and NSFW tests.
 - Ollama, OpenAI-compatible APIs, and Anthropic Messages transports remain
@@ -205,14 +216,23 @@ classification, terminology, and quality policy stay provider-neutral. See
 
 ## Models and configuration
 
-Copy `.env.example` to `.env`, or edit settings in the UI. Known endpoints are
-filled automatically, while advanced connection fields stay collapsed by
-default. Catalog discovery does not run inference. Basic and NSFW availability
-tests send one short request per model and may consume tokens.
+Copy `.env.example` to `.env`, or edit settings in the UI. Select or add a provider
+profile before choosing models. Presets fill the endpoint and default protocol;
+advanced connection fields remain editable. OpenDesign Go defaults to Chat
+Completions and does not inherit OpenCode Go session headers or model routing.
+Catalog discovery does not run inference. Basic and NSFW availability tests
+send one short request per model and may consume tokens.
 
-Test status is persisted by model ID. Newly discovered models start enabled and
+Each provider profile retains its own name, endpoint, key, model catalog,
+enablement, protocol, and default model in the local `.env`. Select a saved
+profile to switch immediately. Unsaved edits or active tasks block switching.
+New profiles start with empty credentials and catalogs. The settings API never
+returns saved keys. Legacy single-provider settings remain supported.
+
+Test status is persisted by connection context and model ID. Newly discovered models start enabled and
 untested; existing models retain history; changes to protocol, endpoint, key,
-or Ollama host mark older results as stale references.
+or Ollama host mark older results as stale references. Returning to an earlier
+connection restores that connection's test history.
 
 ## References and acknowledgements
 
@@ -222,7 +242,9 @@ services. This does not imply affiliation or direct code copying:
 - [MTool](https://mtool.app/) for game-text export/import and runtime loading;
 - [GalTransl](https://github.com/GalTransl/GalTransl) for batch visual-novel translation workflows;
 - [SakuraLLM](https://github.com/SakuraLLM/SakuraLLM) for Japanese-to-Chinese game/novel translation research;
-- [OpenCode Go](https://opencode.ai/docs/providers#opencode-go), the only third-party API path validated so far;
+- [OpenDesign Cloud API](https://open-design.ai/help/cloud-api/) for connection and protocol guidance;
+- [CCSwitch](https://github.com/farion1231/cc-switch) and [Magpie](https://github.com/yetone/magpie) for provider presets and separate provider/model selection;
+- [OpenCode Go](https://opencode.ai/docs/providers#opencode-go) for the retained compatible API path;
 - [Ollama](https://ollama.com/) for the experimental local-model transport.
 
 Their licenses and service terms apply independently.

@@ -336,6 +336,55 @@ def test_model_availability_test_is_explicit_and_reports_usage(monkeypatch, tmp_
     assert "usage_warning" in result
 
 
+def test_manual_protocol_connection_test_uses_unsaved_one_call_override(monkeypatch, tmp_path):
+    import translation.models
+
+    monkeypatch.setattr(
+        model_status, "runtime_model_status_path", lambda: tmp_path / ".model-status.json"
+    )
+    calls = []
+    monkeypatch.setattr(
+        translation.models,
+        "translate_once",
+        lambda model, text, **kwargs: calls.append((model, kwargs)) or "你好",
+    )
+
+    result = settings_service.test_connection(
+        "api", "api:test-model", {}, protocol="responses"
+    )
+
+    assert result["protocol"] == "responses"
+    assert calls[0][1]["protocol_override"] == "responses"
+    assert calls[0][1]["probe_all_protocols"] is False
+    assert model_status.model_protocol("api:test-model") == ""
+    assert model_status.public_model_statuses()["api:test-model"]["basic"]["protocol"] == "responses"
+
+
+def test_auto_protocol_test_records_failure_and_attempted_protocols(monkeypatch, tmp_path):
+    import translation.models
+
+    monkeypatch.setattr(
+        model_status, "runtime_model_status_path", lambda: tmp_path / ".model-status.json"
+    )
+
+    class FailedProbe(RuntimeError):
+        protocol_attempts = ("chat_completions", "messages", "responses")
+
+    monkeypatch.setattr(
+        translation.models,
+        "translate_once",
+        lambda model, text, **kwargs: (_ for _ in ()).throw(FailedProbe("all failed")),
+    )
+
+    with pytest.raises(HTTPException, match="chat_completions, messages, responses"):
+        settings_service.test_connection("api", "api:test-model", {}, protocol="auto")
+
+    record = model_status.public_model_statuses()["api:test-model"]["basic"]
+    assert record["status"] == "unavailable"
+    assert record["protocol"] == "responses"
+    assert record["protocol_attempts"] == ["chat_completions", "messages", "responses"]
+
+
 @pytest.mark.parametrize(
     ("translation_output", "supported"),
     [

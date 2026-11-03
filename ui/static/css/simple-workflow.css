@@ -1,0 +1,28 @@
+.eyebrow { display: none; }
+.simple-details > summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 600; padding: 9px 0; }
+.simple-details[open] > summary { margin-bottom: 12px; }
+#profile-panel .model-config { border-top: 0; margin-top: 0; padding-top: 0; }
+#translation-options { margin-top: 12px; border-top: 1px solid var(--line); }
+#preflight-panel { padding-top: 8px; padding-bottom: 8px; }
+#preflight-panel .panel-heading { margin-top: 14px; }
+#task-panel .control-bar { position: sticky; bottom: 12px; background: white; z-index: 2; padding: 12px 0; }
+#task-panel .task-metrics { font-variant-numeric: tabular-nums; }
+details > summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 4px; }
+.history-tools { display: flex; flex-wrap: wrap; gap: 10px; padding: 14px 20px; }
+.history-tools input { flex: 1; min-width: 180px; }
+.history-tools select { width: auto; }
+.history-item details { font-size: 12px; }
+.history-more summary { cursor: pointer; color: var(--muted); padding: 6px 0; }
+.history-more small { display: block; color: var(--muted); margin-top: 6px; }
+.glossary-detail { padding: 20px; margin-top: 16px; border-top: 1px solid var(--line); }
+.glossary-occurrences { display: grid; gap: 12px; margin: 14px 0; }
+.glossary-example { padding: 13px; border: 1px solid var(--line); border-radius: 10px; }
+.glossary-example-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.glossary-example-pair p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 5px 0; }
+.glossary-example-pair small { color: var(--muted); }
+@media (max-width: 850px) {
+    .workspace-grid { grid-template-columns: minmax(0, 1fr); }
+    .workspace-aside { display: none; }
+    #task-panel .control-bar { bottom: 0; }
+    .glossary-example-pair { grid-template-columns: minmax(0, 1fr); }
+}

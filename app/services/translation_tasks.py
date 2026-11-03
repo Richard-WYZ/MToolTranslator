@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from pathlib import Path
@@ -65,6 +66,7 @@ class TranslationTask:
 
     def get_progress(self) -> Dict[str, Any]:
         from translation.output import default_output_path
+        from translation import checkpoint
 
         with self._lock:
             progress = dict(self.progress)
@@ -89,6 +91,19 @@ class TranslationTask:
         remaining = max(0, total - completed)
         progress["status"] = task_status
         progress["token_usage"] = token_usage
+        revision_paths = (
+            checkpoint.get_checkpoint_path(self.file_path),
+            checkpoint.get_checkpoint_journal_path(self.file_path),
+            checkpoint.get_glossary_path(self.file_path),
+        )
+        def file_revision(path: str) -> str:
+            try:
+                stat = os.stat(path)
+            except OSError:
+                return "0"
+            return f"{stat.st_mtime_ns}-{stat.st_size}"
+
+        progress["workspace_revision"] = ":".join(map(file_revision, revision_paths))
         progress["elapsed_seconds"] = round(elapsed, 1)
         progress["entries_per_minute"] = round(rate * 60, 1)
         progress["eta_seconds"] = round(remaining / rate, 1) if rate > 0 and task_status == "running" else None

@@ -21,6 +21,8 @@ _BASE_DEFAULT_CONFIG = {
         "api_key_env": "THIRD_PARTY_API_KEY",
         "api_key": "",
         "style": "openai",
+        "preset": "openai",
+        "profile_id": "legacy",
         "anthropic_version": "2023-06-01",
         "disable_thinking": True,
         "models": [],
@@ -57,6 +59,7 @@ _BASE_DEFAULT_CONFIG = {
         "api_concurrency_increase_every": 8,
         "api_concurrency_decrease_factor": 0.5,
         "glossary_freeze_during_translation": True,
+        "name_preflight_enabled": True,
         "api_live_output_snapshots_enabled": False,
         "api_max_retries": 2,
         "api_retry_backoff_seconds": [2, 5, 15],
@@ -87,6 +90,7 @@ _BASE_DEFAULT_CONFIG = {
             "length_expansion",
             "short_label_expansion",
             "marker_lost",
+            "duplicated_clause",
             "version_marker_lost",
         ],
         "api_fast_categories": ["short_label"],
@@ -111,6 +115,7 @@ _BASE_DEFAULT_CONFIG = {
             "short_label_expansion",
             "version_marker_lost",
             "marker_lost",
+            "duplicated_clause",
         ],
         "api_quality_recursive_repair_enabled": True,
         "api_quality_recursive_max_depth": 6,
@@ -136,6 +141,7 @@ _BASE_DEFAULT_CONFIG = {
             "short_label_expansion",
             "version_marker_lost",
             "marker_lost",
+            "duplicated_clause",
         ],
         "quality_num_predict": 4096,
         "line_for_short_only": True,
@@ -312,6 +318,8 @@ def _apply_dotenv(
         "DEFAULT_MODEL": (target_config, "model"),
         "OLLAMA_HOST": (target_config, "ollama_host"),
         "THIRD_PARTY_API_STYLE": (api_config, "style"),
+        "THIRD_PARTY_API_PRESET": (api_config, "preset"),
+        "THIRD_PARTY_API_ACTIVE_PROFILE": (api_config, "profile_id"),
     }
     for env_name, (target, key) in scalar_values.items():
         if env.get(env_name):
@@ -321,6 +329,11 @@ def _apply_dotenv(
         api_config["disable_thinking"] = _enabled(env["THIRD_PARTY_API_DISABLE_THINKING"])
     if env.get("OPENCODE_GO") and _enabled(env["OPENCODE_GO"]):
         api_config["style"] = "opencode_go"
+    if not env.get("THIRD_PARTY_API_PRESET"):
+        api_config["preset"] = api_config["style"]
+    if api_config["style"] == "opendesign_go":
+        api_config["style"] = "openai"
+        api_config["preset"] = "opendesign_go"
 
     base_url = env.get("THIRD_PARTY_API_BASE_URL") or env.get("OPENCODE_GO_BASE_URL")
     api_key = env.get("THIRD_PARTY_API_KEY") or env.get("OPENCODE_GO_API_KEY")

@@ -2661,7 +2661,7 @@ def test_term_alias_contract_is_shared_by_terminology_and_pipeline():
 
     assert apply_term_aliases("触手姦", "触手奸", confirmed) == "触手奸"
     assert TranslationPipeline._apply_term_aliases("触手姦", "触手奸", confirmed) == "触手奸"
-    assert apply_term_aliases("触手姦", "触手姦を使う", confirmed) == "触手奸を使う"
+    assert apply_term_aliases("触手姦", "触手姦を使う", confirmed) == "触手姦を使う"
     assert apply_term_aliases("別の語", "触手姦", confirmed) == "触手姦"
 
 
@@ -2683,7 +2683,7 @@ def test_translation_terminology_owns_glossary_implementation(tmp_path):
     assert glossary.find_hits("\u30d5\u30a3\u30fc\u30cd\u306f\u6765\u305f")[0]["target"] == "\u83f2\u59ae"
 
 
-def test_confirmed_term_backfill_updates_checkpoint_and_output(tmp_path):
+def test_confirmed_term_backfill_marks_sentence_for_source_aware_repair(tmp_path):
     import translation.checkpoint as checkpoint
     import translator.checkpoint as legacy_checkpoint
     from translation.terminology import backfill_confirmed_terms_to_outputs
@@ -2714,11 +2714,12 @@ def test_confirmed_term_backfill_updates_checkpoint_and_output(tmp_path):
 
         entry = checkpoint.get_entry(file_path, 2, 0)
         assert changed == 1
-        assert entry["translated"] == "菲妮来了"
-        assert entry["output_translation"] == "菲妮来了"
-        assert entry["status"] == "translated"
-        assert entry["issues"] == []
-        assert updates == [(2, 0, "菲妮来了")]
+        assert entry["translated"] == "菲内来了"
+        assert entry["output_translation"] == "菲内来了"
+        assert entry["status"] == "translated_needs_review"
+        assert entry["glossary_pending_sources"] == ["フィーネ"]
+        assert any(issue["type"] == "glossary_update_pending" for issue in entry["issues"])
+        assert updates == []
     finally:
         checkpoint.CHECKPOINT_DIR = old_dir
         legacy_checkpoint.CHECKPOINT_DIR = old_legacy_dir
@@ -2730,12 +2731,13 @@ def test_pipeline_confirmed_term_backfill_delegates_to_terminology(monkeypatch):
 
     calls = []
 
-    def fake_backfill(file_path, confirmed_terms, *, update_output_cell=None, glossary_mappings=None):
+    def fake_backfill(file_path, confirmed_terms, *, update_output_cell=None, glossary_mappings=None, glossary_version=None):
         calls.append({
             "file_path": file_path,
             "confirmed_terms": confirmed_terms,
             "update_output_cell": update_output_cell,
             "glossary_mappings": glossary_mappings,
+            "glossary_version": glossary_version,
         })
         return 0
 
@@ -3097,6 +3099,142 @@ def test_opencode_go_probes_protocol_only_for_explicit_format_mismatch(monkeypat
         config.DEFAULT_CONFIG["third_party_api"] = old_cfg
 
 
+def test_opencode_go_retries_model_protocol_unsupported_response(monkeypatch):
+    from translation.models import api_client
+
+    attempted = []
+    persisted = []
+
+    class ProtocolUnsupported(RuntimeError):
+        response_body = (
+            '{"type":"error","error":{"type":"ModelProtocolUnsupported",'
+            '"message":"Model does not support this protocol."}}'
+        )
+        status_code = 400
+
+    def fake_translate(protocol, *args, **kwargs):
+        attempted.append(protocol)
+        if protocol == "messages":
+            raise ProtocolUnsupported("400 Bad Request")
+        return "译文"
+
+    monkeypatch.setattr(api_client, "_api_config", lambda: {
+        "base_url": "https://provider.invalid/v1", "api_key": "test-key", "style": "opencode_go",
+    })
+    monkeypatch.setattr(api_client, "model_protocol", lambda cfg, model: "messages")
+    monkeypatch.setattr(api_client, "_stored_thinking_mode", lambda model: "")
+    monkeypatch.setattr(api_client, "_translate_with_protocol", fake_translate)
+    monkeypatch.setattr(api_client, "_persist_model_protocol", lambda model, protocol: persisted.append(protocol))
+
+    assert api_client.translate_once("glm-5.2", "テスト") == "译文"
+    assert attempted == ["messages", "chat_completions"]
+    assert persisted == ["chat_completions"]
+
+
+def test_opencode_go_switches_protocol_for_unavailable_endpoint(monkeypatch):
+    import config
+    from translator import api_client
+
+    attempted = []
+    persisted = []
+
+    class EndpointUnavailable(RuntimeError):
+        response_body = '{"error":{"message":"Endpoint is unavailable."}}'
+
+    def fake_translate(protocol, *args, **kwargs):
+        attempted.append(protocol)
+        if protocol != "responses":
+            raise EndpointUnavailable("503 endpoint unavailable")
+        return "译文"
+
+    old_cfg = dict(config.DEFAULT_CONFIG.get("third_party_api", {}))
+    config.DEFAULT_CONFIG["third_party_api"] = {
+        "base_url": "https://provider.invalid/v1",
+        "api_key": "test-key",
+        "style": "opencode_go",
+        "models": [],
+    }
+    monkeypatch.delenv("THIRD_PARTY_API_BASE_URL", raising=False)
+    monkeypatch.delenv("THIRD_PARTY_API_KEY", raising=False)
+    monkeypatch.setattr(api_client, "_stored_thinking_mode", lambda model: "")
+    monkeypatch.setattr(api_client, "_translate_with_protocol", fake_translate)
+    monkeypatch.setattr(api_client, "_persist_model_protocol", lambda model, protocol: persisted.append(protocol))
+    try:
+        assert api_client.translate_once("new-model", "テスト") == "译文"
+        assert attempted == ["chat_completions", "messages", "responses"]
+        assert persisted == ["responses"]
+    finally:
+        config.DEFAULT_CONFIG["third_party_api"] = old_cfg
+
+
+def test_opencode_go_auto_probe_records_all_protocols_when_every_protocol_fails(monkeypatch):
+    import config
+    from translator import api_client
+
+    attempted = []
+    persisted = []
+
+    def fake_translate(protocol, *args, **kwargs):
+        attempted.append(protocol)
+        raise RuntimeError(f"failure on {protocol}")
+
+    old_cfg = dict(config.DEFAULT_CONFIG.get("third_party_api", {}))
+    config.DEFAULT_CONFIG["third_party_api"] = {
+        "base_url": "https://provider.invalid/v1",
+        "api_key": "test-key",
+        "style": "opencode_go",
+        "models": [],
+    }
+    monkeypatch.delenv("THIRD_PARTY_API_BASE_URL", raising=False)
+    monkeypatch.delenv("THIRD_PARTY_API_KEY", raising=False)
+    monkeypatch.setattr(api_client, "_stored_thinking_mode", lambda model: "")
+    monkeypatch.setattr(api_client, "_translate_with_protocol", fake_translate)
+    monkeypatch.setattr(api_client, "_persist_model_protocol", lambda model, protocol: persisted.append(protocol))
+    try:
+        with pytest.raises(RuntimeError, match="failure on responses") as raised:
+            api_client.translate_once(
+                "new-model", "テスト", protocol_override="auto", probe_all_protocols=True
+            )
+        assert set(attempted) == set(api_client.SUPPORTED_PROTOCOLS)
+        assert raised.value.protocol_attempts == api_client.SUPPORTED_PROTOCOLS
+        assert persisted == []
+    finally:
+        config.DEFAULT_CONFIG["third_party_api"] = old_cfg
+
+
+def test_manual_protocol_override_is_one_shot_and_does_not_learn_protocol(monkeypatch):
+    import config
+    from translator import api_client
+
+    attempted = []
+    persisted = []
+
+    def fake_translate(protocol, *args, **kwargs):
+        attempted.append(protocol)
+        return "译文"
+
+    old_cfg = dict(config.DEFAULT_CONFIG.get("third_party_api", {}))
+    config.DEFAULT_CONFIG["third_party_api"] = {
+        "base_url": "https://provider.invalid/v1",
+        "api_key": "test-key",
+        "style": "opencode_go",
+        "models": [],
+        "model_protocols": {"new-model": "chat_completions"},
+    }
+    monkeypatch.delenv("THIRD_PARTY_API_BASE_URL", raising=False)
+    monkeypatch.delenv("THIRD_PARTY_API_KEY", raising=False)
+    monkeypatch.setattr(api_client, "_translate_with_protocol", fake_translate)
+    monkeypatch.setattr(api_client, "_persist_model_protocol", lambda model, protocol: persisted.append(protocol))
+    try:
+        assert api_client.translate_once(
+            "new-model", "テスト", protocol_override="responses", probe_all_protocols=True
+        ) == "译文"
+        assert attempted == ["responses"]
+        assert persisted == []
+    finally:
+        config.DEFAULT_CONFIG["third_party_api"] = old_cfg
+
+
 def test_opencode_go_retries_once_then_enables_low_thinking(monkeypatch):
     import config
     from translator import api_client
@@ -3282,6 +3420,36 @@ def test_pollution_validator_flags_unsupported_proper_name_in_translation():
         "unsupported_proper_name",
         "contextual_term_pollution",
     }
+
+
+def test_quality_rules_block_corrupt_replacement_characters_and_repeated_short_fragments():
+    from translation.quality import status_for_output, translation_issues
+    from translation.review.ai import NON_WAIVABLE_ISSUE_TYPES
+
+    corrupt = translation_issues("退魔師キサキ", "退魔师\ufffd的\ufffd")
+    assert "replacement_character_corruption" in {issue["type"] for issue in corrupt}
+    assert "replacement_character_corruption" in NON_WAIVABLE_ISSUE_TYPES
+    assert status_for_output("退魔師キサキ", "退魔师\ufffd的\ufffd", corrupt) == "review_required"
+
+    invented = translation_issues("れぢゅ", "要、要去了")
+    assert "short_fragment_repetition" in {issue["type"] for issue in invented}
+    assert "short_fragment_repetition" in NON_WAIVABLE_ISSUE_TYPES
+    assert status_for_output("れぢゅ", "要、要去了", invented) == "review_required"
+
+    for source, target in (
+        ("ララタ", "拉拉塔"),
+        ("ゆらゆら", "摇摇晃晃"),
+        ("ぽかぽか", "暖洋洋"),
+        ("あああ", "啊啊啊"),
+        ("スンスン", "嗅嗅"),
+        ("ウヒヒ", "呜嘿嘿"),
+        ("クンクン", "嗅嗅"),
+        ("チンピラ", "小混混"),
+        ("ちゃんと", "好好地"),
+    ):
+        assert "short_fragment_repetition" not in {
+            issue["type"] for issue in translation_issues(source, target)
+        }
 
 
 def test_pollution_validator_accepts_honorific_names_supported_by_source():
@@ -4357,6 +4525,34 @@ def test_glossary_preseed_enables_high_confidence_name_confirmation():
         assert glossary.terms["\u30d5\u30a3\u30fc\u30cd"] == "\u83f2\u59ae"
 
 
+def test_frozen_glossary_confirms_repeated_high_confidence_names_after_translation():
+    from translator.glossary import Glossary
+    from translation.workflow.glossary_finalize import finalize_glossary_evidence
+
+    with tempfile.TemporaryDirectory(prefix="frozen_glossary_finalize_") as tmpdir:
+        glossary = Glossary(file_path=os.path.join(tmpdir, "glossary.json"))
+        sources = ["\u30d5\u30a3\u30fc\u30cd\uff1a\u6765\u305f", "\u30d5\u30a3\u30fc\u30cd\uff1a\u7b11\u3063\u305f"]
+        glossary.preseed_from_sources(sources)
+        glossary.freeze()
+        assert glossary.auto_extract(sources[0], "\u83f2\u59ae\uff1a\u6765\u4e86") == []
+        assert glossary.auto_extract(sources[1], "\u83f2\u59ae\uff1a\u7b11\u4e86") == []
+        assert not glossary.terms
+
+        applied = []
+        class Pipeline:
+            def __init__(self):
+                self.glossary = glossary
+
+            def _apply_confirmed_terms_to_outputs(self, file_path, terms):
+                applied.extend(terms)
+
+        confirmed = finalize_glossary_evidence(Pipeline(), os.path.join(tmpdir, "source.json"), {})
+        assert not glossary.frozen
+        assert glossary.terms["\u30d5\u30a3\u30fc\u30cd"] == "\u83f2\u59ae"
+        assert confirmed == applied
+        assert len(confirmed) == 1
+
+
 def test_offline_dictionary_yomitan_exact_chinese_matches_are_optional():
     import zipfile
     from translation.terminology import YomitanDictionary, summarize_yomitan_matches
@@ -4458,3 +4654,89 @@ def test_frozen_glossary_does_not_change_later_json_batch_prompts(monkeypatch):
             config.DEFAULT_CONFIG["batch_translation"]["json_batch_size"] = old_batch_size
             config.DEFAULT_CONFIG["batch_translation"]["max_batch_chars"] = old_batch_chars
             config.DEFAULT_CONFIG["batch_translation"]["api_parallel_enabled"] = old_parallel
+def test_runtime_angle_blocks_and_embedded_tags_are_preserved_without_false_japanese_residue():
+    from translation.quality import exact_nonlinguistic_translation, translation_issues
+    from translation.review.ai import _validate_translation
+
+    tags = "<ステート追加: 162>\n<CC確率加算:100>"
+    assert exact_nonlinguistic_translation(tags) == tags
+    assert _validate_translation(tags, tags, [], short_label=False) == []
+    mixed_tags = "<道具封印スイッチ>\n<反撃拡張:ツインエッジ>"
+    assert exact_nonlinguistic_translation(mixed_tags) == mixed_tags
+    source = "毒ガスを蓄えた魔物\n<反撃拡張:破裂カウンター>"
+    translated = "储存毒气的魔物\n<反撃拡張:破裂カウンター>"
+    assert not any(issue["type"] == "untranslated_japanese" for issue in translation_issues(source, translated))
+    assert not any(issue["type"] == "untranslated_japanese" for issue in _validate_translation(source, translated, [], short_label=False))
+    broken = "储存毒气的魔物\n<反撃拡張:破裂计数器>"
+    assert any(issue["type"] == "runtime_token_preservation" for issue in translation_issues(source, broken))
+
+
+def test_generic_master_title_does_not_trigger_unsupported_glossary_name():
+    from translation.pollution import translation_pollution_issues
+
+    issues = translation_pollution_issues(
+        "ご主人さま、だ～いすき♥",
+        "主人大人，最——喜欢了♥",
+        glossary_mappings=[{"source": "ミカリン", "target": "主人", "type": "person"}],
+    )
+    assert not any(issue["type"] == "unsupported_glossary_name" for issue in issues)
+
+
+def test_unsupported_glossary_name_reports_one_issue_per_confirmed_target():
+    from translation.pollution import translation_pollution_issues
+
+    mappings = [
+        {"source": "ミジちゃん", "target": "米吉", "owner": "ミジ", "type": "person"},
+        {"source": "ミジさん", "target": "米吉", "owner": "ミジ", "type": "person"},
+        {"source": "ミジ", "target": "米吉", "owner": "ミジ", "type": "person"},
+    ]
+    issues = translation_pollution_issues("やった！", "米吉大人！", glossary_mappings=mappings)
+
+    assert [issue["message"] for issue in issues if issue["type"] == "unsupported_glossary_name"] == [
+        "Target contains confirmed term '米吉', but source does not contain 'ミジ'.",
+    ]
+    assert not any(
+        issue["type"] == "unsupported_glossary_name"
+        for issue in translation_pollution_issues("ミジさん、やった！", "米吉大人，成功了！", glossary_mappings=mappings)
+    )
+
+
+def test_generic_person_role_target_cannot_be_auto_confirmed_as_a_name():
+    from translation.terminology import Glossary
+
+    glossary = Glossary.in_memory()
+    evidence = {
+        "type": "person",
+        "count": 55,
+        "score": 0.85,
+        "targets": {"主人": 5},
+        "evidence": ["katakana_name", "person_like", "speaker_position", "standalone_line"],
+    }
+    assert not glossary._should_auto_confirm("ヌシ", "主人", evidence)
+    evidence["targets"] = {"米吉": 5}
+    assert not glossary._should_auto_confirm("ミジ", "米吉", evidence)
+    evidence["evidence"].append("preflight_verified_person")
+    assert glossary._should_auto_confirm("ミジ", "米吉", evidence)
+
+
+def test_frequent_common_words_cannot_be_confirmed_as_people_from_layout_alone():
+    from translation.terminology import Glossary
+
+    glossary = Glossary.in_memory()
+    for source, target, count in (("使用", "使用", 17), ("シーン", "场景", 346)):
+        evidence = {
+            "type": "person",
+            "count": count,
+            "score": 0.85,
+            "targets": {target: 3},
+            "evidence": ["person_like", "speaker_position", "standalone_line", "whole_file_preseed"],
+        }
+        assert not glossary._should_auto_confirm(source, target, evidence)
+        glossary.terms[source] = target
+        glossary.candidates[source] = evidence
+    assert glossary.prune_invalid_terms() == 2
+    assert not glossary.terms
+    assert not glossary.is_identified_person_name("使用")
+    assert not glossary.is_identified_person_name("使用する")
+    assert not any("使用" in source for source, _target, _owner, _type in glossary.iter_mappings())
+    assert glossary.find_hits("戦闘中に使用すると敗北する。") == []

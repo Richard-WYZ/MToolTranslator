@@ -1891,6 +1891,23 @@ def test_batch_prompts_preserve_honorific_meaning_and_kanji_names():
     assert "keeping every original line" in repair_prompt
 
 
+def test_translation_prompts_do_not_guess_gender_from_adjacent_entries_or_names():
+    from translation.batching import (
+        build_batch_system_prompt,
+        build_line_batch_system_prompt,
+        build_parent_batch_system_prompt,
+    )
+    from translation.quality import quality_prompt_rules
+
+    context_prompt = build_batch_system_prompt(include_context=True)
+    assert "do not infer a pronoun referent or gender" in context_prompt
+    assert "neighboring JSON entry" in context_prompt
+    assert "omit the pronoun" in context_prompt
+    assert "gender" in build_line_batch_system_prompt()
+    assert "gender" in build_parent_batch_system_prompt()
+    assert "subjectless or neutral Chinese expression" in quality_prompt_rules()
+
+
 def test_runtime_protection_covers_numbers_line_breaks_and_validates_order():
     from translation.protection import (
         protect_runtime_tokens,

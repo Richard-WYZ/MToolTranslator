@@ -690,7 +690,7 @@ def test_person_aliases_match_given_name_with_honorific():
     glossary = Glossary(file_path=os.path.join(tempfile.mkdtemp(), "g.json"))
     glossary.add("\u767d\u5cf0\u9e97\u83ef", "\u767d\u5cf0\u4e3d\u534e", term_type="person")
     hits = glossary.find_hits("\u9e97\u83ef\u3061\u3083\u3093\u304c\u6765\u305f")
-    assert {"source": "\u9e97\u83ef\u3061\u3083\u3093", "target": "\u4e3d\u534e", "owner": "\u767d\u5cf0\u9e97\u83ef", "type": "person"} in hits
+    assert {"source": "\u9e97\u83ef", "target": "\u4e3d\u534e", "owner": "\u767d\u5cf0\u9e97\u83ef", "type": "person"} in hits
 
 
 def test_fast_cleanup_does_not_spawn_background_cleanup(monkeypatch):

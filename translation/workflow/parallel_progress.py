@@ -6,6 +6,7 @@ from typing import Any, Callable, TYPE_CHECKING
 from translation import checkpoint
 from translation.batching import apply_batch_translation_results
 from translation.workflow.composition import finalize_mtool_compositions
+from translation.workflow.glossary_finalize import finalize_glossary_evidence
 
 if TYPE_CHECKING:
     from translation.workflow.pipeline import TranslationPipeline
@@ -64,9 +65,7 @@ def finalize_parallel_run(
         collection_records.clear()
         checkpoint.save_progress_many(file_path, result_records)
         result_records.clear()
-        if deferred_confirmed_terms:
-            pipeline._apply_confirmed_terms_to_outputs(file_path, list(deferred_confirmed_terms.values()))
-            pipeline.glossary.save()
+        finalize_glossary_evidence(pipeline, file_path, deferred_confirmed_terms, translated_items)
         processed_targets = finalize_mtool_compositions(
             pipeline, file_path=file_path, translated_items=translated_items,
             processed_targets=processed_targets, total_targets=total_targets,

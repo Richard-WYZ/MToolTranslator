@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+
+import pytest
 
 from fastapi.testclient import TestClient
 from fastapi import FastAPI, HTTPException
@@ -90,6 +93,61 @@ def test_export_can_save_to_an_exact_user_selected_path(tmp_path):
     assert json.loads(destination.read_text(encoding="utf-8")) == {"こんにちは": "你好"}
     assert json.loads(source.read_text(encoding="utf-8")) == {"こんにちは": "こんにちは"}
     assert output.is_file()
+
+
+@pytest.mark.parametrize("protected_target", ["working", "original"])
+@pytest.mark.parametrize("destination_argument", ["output_path", "output_dir"])
+def test_save_as_cannot_overwrite_working_source_or_bypass_original_backup(
+    tmp_path, protected_target, destination_argument,
+):
+    original = tmp_path / "game" / "ManualTransFile.json"
+    original.parent.mkdir()
+    content = json.dumps({"こんにちは": "こんにちは"}, ensure_ascii=False).encode("utf-8")
+    original.write_bytes(content)
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    imported = save_mtool_upload(uploads, original.name, content, original_path=str(original))
+    working = Path(imported["saved_path"])
+    output = Path(default_output_path(str(working)))
+    output.write_text(json.dumps({"こんにちは": "你好"}, ensure_ascii=False), encoding="utf-8")
+    metadata_before = load_session_metadata(working)
+    protected = working if protected_target == "working" else original
+    destination = protected if destination_argument == "output_path" else protected.parent
+
+    with pytest.raises(HTTPException) as error:
+        export_mtool_json(working.parent, str(working), **{destination_argument: str(destination)})
+
+    assert error.value.status_code == 409
+    assert working.read_bytes() == content
+    assert original.read_bytes() == content
+    assert load_session_metadata(working) == metadata_before
+    assert not Path(f"{original}.bak").exists()
+    assert json.loads(output.read_text(encoding="utf-8")) == {"こんにちは": "你好"}
+
+
+def test_save_as_rejects_an_existing_alias_of_the_working_source(tmp_path):
+    source, output = _write_translation_pair(tmp_path)
+    alias = tmp_path / "source-alias.json"
+    os.link(source, alias)
+    source_before = source.read_bytes()
+
+    with pytest.raises(HTTPException) as error:
+        export_mtool_json(source.parent, str(source), output_path=str(alias))
+
+    assert error.value.status_code == 409
+    assert source.read_bytes() == alias.read_bytes() == source_before
+    assert output.is_file()
+
+
+def test_export_to_default_translated_output_path_remains_allowed(tmp_path):
+    source, output = _write_translation_pair(tmp_path)
+    source_before, output_before = source.read_bytes(), output.read_bytes()
+
+    result = export_mtool_json(source.parent, str(source), output_path=str(output))
+
+    assert result["export_path"] == str(output)
+    assert source.read_bytes() == source_before
+    assert output.read_bytes() == output_before
 
 
 def test_export_overwrites_real_original_with_backup_and_keeps_working_copy(tmp_path):
@@ -590,3 +648,59 @@ def test_desktop_close_uses_native_confirmation_and_shutdown():
     cancelled_window = _Window(confirmed=False)
     assert build_close_handler(cancelled_window, cancelled_client)() is False
     assert cancelled_client.posts == []
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_desktop_close_confirms_pending_review_drafts_before_shutdown(confirmed):
+    class DraftWindow(_Window):
+        def evaluate_js(self, script):
+            assert script == "Boolean(window.LGT && window.LGT.hasPendingReviewDraft && window.LGT.hasPendingReviewDraft())"
+            return True
+
+    client = _RequestClient(dirty=False)
+    window = DraftWindow(confirmed)
+
+    assert build_close_handler(window, client)() is confirmed
+    assert window.dialogs == [("确认退出", "存在尚未保存的译文草稿，退出会放弃这些修改，是否退出？")]
+    assert client.posts == (["http://127.0.0.1:8000/api/desktop/shutdown"] if confirmed else [])
+
+
+def test_desktop_close_does_not_confirm_saved_results_without_pending_drafts():
+    class SavedWindow(_Window):
+        def evaluate_js(self, _script):
+            return False
+
+    client = _RequestClient(dirty=False)
+    window = SavedWindow(confirmed=False)
+
+    assert build_close_handler(window, client)() is True
+    assert window.dialogs == []
+    assert client.posts == ["http://127.0.0.1:8000/api/desktop/shutdown"]
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_desktop_close_falls_back_to_backend_guard_when_webview_evaluation_fails(active):
+    class UnavailableWindow(_Window):
+        def evaluate_js(self, _script):
+            raise RuntimeError("WebView is closing")
+
+    client = _RequestClient(dirty=active)
+    window = UnavailableWindow(confirmed=False)
+
+    assert build_close_handler(window, client)() is not active
+    assert len(window.dialogs) == int(active)
+    assert client.posts == ([] if active else ["http://127.0.0.1:8000/api/desktop/shutdown"])
+
+
+def test_desktop_close_combines_active_work_and_draft_warning_in_one_native_dialog():
+    class DraftWindow(_Window):
+        def evaluate_js(self, _script):
+            return True
+
+    client = _RequestClient(dirty=True)
+    window = DraftWindow(confirmed=True)
+
+    assert build_close_handler(window, client)() is True
+    assert len(window.dialogs) == 1
+    assert "尚未保存的译文草稿" in window.dialogs[0][1]
+    assert "当前翻译或 AI 复核也会停止" in window.dialogs[0][1]

@@ -56,6 +56,15 @@ def finish_batch_translation(
     restored = apply_fixed_translations(restored)
     restored = apply_source_conditioned_fixes(source_text, restored)
     issues.extend(new_issues(issues, translation_issues(source_text, restored, short_label=candidate["short_label"])))
+    unresolved_names = (
+        glossary.unresolved_person_hits(source_text)
+        if hasattr(glossary, "unresolved_person_hits") else []
+    )
+    if unresolved_names:
+        issues.append({
+            "type": "uncertain_person_name",
+            "message": "A character-name transliteration needs confirmation: " + ", ".join(unresolved_names[:5]),
+        })
     issues.extend(new_issues(issues, pollution_issues_func(source_text, restored)))
 
     max_chars, max_lines = output_constraints()

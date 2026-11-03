@@ -19,9 +19,11 @@ RECOMPUTED_FINAL_ISSUE_TYPES = {
     "composed_dependency_needs_review",
     "composed_dependency_review_required",
     "context_contamination",
+    "contextual_term_pollution",
     "empty_translation",
     "english_residue",
     "glossary_pollution",
+    "glossary_update_pending",
     "glossary_proper_name_pollution",
     "honorific_rendering_review",
     "identical_japanese_source",
@@ -33,11 +35,13 @@ RECOMPUTED_FINAL_ISSUE_TYPES = {
     "model_refusal",
     "numeric_preservation",
     "resource_identifier_preservation",
+    "runtime_token_preservation",
     "short_label_expansion",
     "suspicious_artifact",
     "symbol_preservation",
     "term_placeholder_leak",
     "term_preservation",
+    "unsupported_glossary_name",
     "unsupported_context_expansion",
     "unsupported_proper_name",
     "untranslated_japanese",
@@ -96,6 +100,10 @@ def reconcile_final_artifact(
             if isinstance(issue, dict)
             and str(issue.get("type", "")) not in (
                 previous_artifact_issue_types | RECOMPUTED_FINAL_ISSUE_TYPES
+            )
+            and not (
+                issue.get("type") == "uncertain_person_name"
+                and str(issue.get("message", "")).rsplit(":", 1)[-1].strip() in glossary.terms
             )
         ]
         explicitly_preserved = (

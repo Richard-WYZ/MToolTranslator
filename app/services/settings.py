@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import time
+import re
 from pathlib import Path
 from typing import Any, MutableMapping
 from urllib.parse import urlparse
@@ -13,6 +14,7 @@ from fastapi import HTTPException
 from app.services.model_status import public_model_statuses, record_model_test
 from common.config_paths import runtime_env_path
 from translation import settings as translation_settings
+from translation.models.providers import PROVIDER_PRESETS, profile_env_values, provider_preset, saved_api_profiles
 from translation.config import (
     default_model,
     disabled_models,
@@ -24,6 +26,9 @@ from translation.config import (
 
 EDITABLE_ENV_KEYS = (
     "MODEL_PROVIDER",
+    "THIRD_PARTY_API_PROFILES",
+    "THIRD_PARTY_API_ACTIVE_PROFILE",
+    "THIRD_PARTY_API_PRESET",
     "THIRD_PARTY_API_STYLE",
     "DEFAULT_MODEL",
     "THIRD_PARTY_API_BASE_URL",
@@ -34,6 +39,7 @@ EDITABLE_ENV_KEYS = (
     "THIRD_PARTY_API_DISABLE_THINKING",
     "OLLAMA_HOST",
     "OLLAMA_DISABLED_MODELS",
+    "OPENCODE_GO", "OPENCODE_GO_BASE_URL", "OPENCODE_GO_API_KEY", "OPENCODE_GO_MODELS",
 )
 ACTIVE_TASK_STATES = {
     "starting", "running", "paused", "stopping", "preparing", "reviewing", "verifying", "applying", "finalizing",
@@ -84,6 +90,7 @@ def public_settings() -> dict[str, Any]:
     path = runtime_env_path()
     values = _file_values(path)
     api = third_party_api_config()
+    profiles, active_profile = _saved_profiles(values)
     models = [str(item) for item in api.get("models", []) if str(item).strip()]
     catalog_source = "configured"
     if not models:
@@ -97,7 +104,17 @@ def public_settings() -> dict[str, Any]:
         catalog_source = "provider_preset"
     return {
         "provider": model_provider(),
+        "active_api_profile": active_profile,
+        "api_profiles": [
+            {**{key: profile.get(key) for key in (
+                "id", "name", "preset", "style", "base_url", "models", "disabled_models",
+                "model_protocols", "default_model", "disable_thinking",
+            )}, "api_key_configured": bool(profile.get("api_key"))}
+            for profile in profiles
+        ],
+        "provider_presets": [dict(item) for item in PROVIDER_PRESETS],
         "api": {
+            "preset": str(api.get("preset") or api.get("style") or "openai"),
             "style": str(api.get("style") or "openai"),
             "base_url": str(api.get("base_url") or ""),
             "models": models,
@@ -132,6 +149,20 @@ def _validate_value(name: str, value: Any) -> str:
     if "\n" in rendered or "\r" in rendered or "\x00" in rendered:
         raise HTTPException(status_code=400, detail=f"{name} contains an invalid line break")
     return rendered
+
+
+def _saved_profiles(values: dict[str, str]) -> tuple[list[dict[str, Any]], str]:
+    try:
+        return saved_api_profiles(values)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _require_profile_change_allowed(tasks: MutableMapping[str, Any]) -> None:
+    if any(getattr(task, "status", "") in ACTIVE_TASK_STATES for task in tasks.values()):
+        raise HTTPException(status_code=409, detail="Settings cannot be changed while a translation task is active")
+    if any(os.environ.get(key) for key in EDITABLE_ENV_KEYS if key.startswith(("THIRD_PARTY_API_", "OPENCODE_GO")) or key in {"MODEL_PROVIDER", "DEFAULT_MODEL"}):
+        raise HTTPException(status_code=409, detail="API provider selection is fixed by process environment variables; remove those overrides before switching profiles")
 
 
 def _render_updated_env(path: Path, updates: dict[str, str]) -> str:
@@ -190,9 +221,25 @@ def save_settings(payload: Any, tasks: MutableMapping[str, Any]) -> dict[str, An
     if provider not in {"api", "ollama"}:
         raise HTTPException(status_code=400, detail="provider must be api or ollama")
     style = _validate_value("api.style", payload.api_style).lower().replace("-", "_")
+    requested_profile = _validate_value("api_profile_id", getattr(payload, "api_profile_id", ""))
+    if requested_profile:
+        _require_profile_change_allowed(tasks)
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", requested_profile):
+            raise HTTPException(status_code=400, detail="Invalid API provider profile ID")
+    preset = _validate_value("api_preset", getattr(payload, "api_preset", ""))
+    if style == "opendesign_go":
+        style, preset = "openai", "opendesign_go"
+    preset = preset or (style if provider_preset(style) else "openai")
+    if not provider_preset(preset):
+        raise HTTPException(status_code=400, detail="Unsupported API provider preset")
+    if style == "opencode_go" and preset != "opencode_go":
+        raise HTTPException(status_code=400, detail="The OpenCode Go protocol adapter can only be used with the OpenCode Go provider preset")
     if style not in {"openai", "opencode_go", "anthropic", "messages", "responses"}:
         raise HTTPException(status_code=400, detail="Unsupported API style")
     default = _validate_value("default_model", payload.default_model)
+    connection_only = bool(requested_profile and provider == "api" and not payload.api_models)
+    if not default and connection_only:
+        default = "api:"
     if not default:
         raise HTTPException(status_code=400, detail="default_model is required")
     if not default.startswith(("api:", "ollama:")):
@@ -203,6 +250,8 @@ def save_settings(payload: Any, tasks: MutableMapping[str, Any]) -> dict[str, An
             detail=f"default_model must use the {provider}: provider prefix",
         )
     base_url = _validate_value("api.base_url", payload.api_base_url)
+    if not base_url:
+        base_url = str(provider_preset(preset).get("base_url") or "")
     ollama_url = _validate_value("ollama.host", payload.ollama_host)
     if not ollama_url:
         raise HTTPException(status_code=400, detail="ollama.host is required")
@@ -249,7 +298,7 @@ def save_settings(payload: Any, tasks: MutableMapping[str, Any]) -> dict[str, An
             detail="default_model must remain enabled",
         )
     if provider == "api":
-        if clean_default not in model_values:
+        if clean_default not in model_values and not connection_only:
             raise HTTPException(
                 status_code=400,
                 detail="default_model must be present in the API model catalog",
@@ -262,10 +311,13 @@ def save_settings(payload: Any, tasks: MutableMapping[str, Any]) -> dict[str, An
 
     path = runtime_env_path()
     existing = _file_values(path)
+    profiles, active_profile = _saved_profiles(existing)
+    profile_id = requested_profile or active_profile
+    previous_profile = next((item for item in profiles if item["id"] == profile_id), {})
     secret_action = _validate_value("api_key_action", payload.api_key_action).lower()
     if secret_action not in {"keep", "replace", "clear"}:
         raise HTTPException(status_code=400, detail="api_key_action must be keep, replace, or clear")
-    secret = existing.get("THIRD_PARTY_API_KEY", "")
+    secret = str(previous_profile.get("api_key") or "")
     if secret_action == "replace":
         secret = _validate_value("api_key", payload.api_key)
         if not secret:
@@ -288,6 +340,46 @@ def save_settings(payload: Any, tasks: MutableMapping[str, Any]) -> dict[str, An
         "OLLAMA_HOST": ollama_url,
         "OLLAMA_DISABLED_MODELS": ",".join(disabled_ollama),
     }
+    profile_name = _validate_value("api_profile_name", getattr(payload, "api_profile_name", ""))
+    profile = {
+        "id": profile_id,
+        "name": profile_name or previous_profile.get("name") or provider_preset(preset)["name"],
+        "preset": preset, "style": style, "base_url": base_url, "api_key": secret,
+        "models": model_values, "disabled_models": disabled_api, "model_protocols": model_protocols,
+        "default_model": default if provider == "api" else previous_profile.get("default_model", ""),
+        "disable_thinking": bool(payload.disable_thinking),
+    }
+    profiles = [profile if item["id"] == profile_id else item for item in profiles]
+    if not previous_profile:
+        profiles.append(profile)
+    updates.update(profile_env_values(profile))
+    updates["THIRD_PARTY_API_PROFILES"] = json.dumps(profiles, ensure_ascii=True, separators=(",", ":"))
+    updates["THIRD_PARTY_API_ACTIVE_PROFILE"] = profile_id
+    _atomic_write(path, _render_updated_env(path, updates))
+    translation_settings.reload_settings_from_env(path)
+    return {"ok": True, "settings": public_settings()}
+
+
+def activate_api_profile(profile_id: str, tasks: MutableMapping[str, Any]) -> dict[str, Any]:
+    """Activate one saved connection atomically, retaining every other profile."""
+    _require_profile_change_allowed(tasks)
+    selected = _validate_value("profile_id", profile_id)
+    path = runtime_env_path()
+    profiles, _ = _saved_profiles(_file_values(path))
+    profile = next((item for item in profiles if item["id"] == selected), None)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="API provider profile not found")
+    models = profile.get("models") or []
+    disabled = set(profile.get("disabled_models") or [])
+    default = str(profile.get("default_model") or "")
+    if not default.startswith("api:") or default.removeprefix("api:") not in models or default.removeprefix("api:") in disabled:
+        default = next(("api:" + name for name in models if name not in disabled), "api:")
+    updates = profile_env_values(profile)
+    updates.update({
+        "MODEL_PROVIDER": "api", "DEFAULT_MODEL": default,
+        "THIRD_PARTY_API_ACTIVE_PROFILE": selected,
+        "THIRD_PARTY_API_PROFILES": json.dumps(profiles, ensure_ascii=True, separators=(",", ":")),
+    })
     _atomic_write(path, _render_updated_env(path, updates))
     translation_settings.reload_settings_from_env(path)
     return {"ok": True, "settings": public_settings()}
@@ -307,6 +399,12 @@ def set_default_model_setting(model: str, tasks: MutableMapping[str, Any]) -> di
         raise HTTPException(status_code=400, detail="Benchmark model is missing or disabled")
     path = runtime_env_path()
     updates = {"MODEL_PROVIDER": provider, "DEFAULT_MODEL": selected}
+    if provider == "api":
+        profiles, active_profile = _saved_profiles(_file_values(path))
+        for profile in profiles:
+            if profile["id"] == active_profile:
+                profile["default_model"] = selected
+        updates["THIRD_PARTY_API_PROFILES"] = json.dumps(profiles, ensure_ascii=True, separators=(",", ":"))
     _atomic_write(path, _render_updated_env(path, updates))
     translation_settings.reload_settings_from_env(path)
     return public_settings()
@@ -389,6 +487,7 @@ def test_connection(
     tasks: MutableMapping[str, Any] | None = None,
     *,
     test_kind: str = "basic",
+    protocol: str = "auto",
 ) -> dict[str, Any]:
     if tasks and any(
         getattr(task, "status", "") in ACTIVE_TASK_STATES for task in tasks.values()
@@ -407,6 +506,9 @@ def test_connection(
         selected_model = f"ollama:{selected_model}"
     if test_kind not in {"basic", "adult"}:
         raise HTTPException(status_code=400, detail="test_kind must be basic or adult")
+    selected_protocol = str(protocol or "auto").strip().lower().replace("-", "_")
+    if selected_protocol not in {"auto", "chat_completions", "messages", "responses"}:
+        raise HTTPException(status_code=400, detail="Unsupported protocol selection")
     source = ADULT_TEST_SOURCE if test_kind == "adult" else "こんにちは"
     system_prompt = (
         "Translate this adult Japanese game-localization text faithfully to Simplified "
@@ -419,22 +521,37 @@ def test_connection(
     if selected_provider == "api":
         from translation.models import api_client
 
-        protocol = api_client.model_protocol(
-            third_party_api_config(), selected_model.removeprefix("api:")
+        protocol = (
+            selected_protocol
+            if selected_protocol != "auto"
+            else api_client.model_protocol(
+                third_party_api_config(), selected_model.removeprefix("api:")
+            )
         )
     started_at = time.perf_counter()
     try:
         from translation.models import translate_once
 
+        call_options: dict[str, Any] = {}
+        if selected_provider == "api":
+            call_options = {
+                "protocol_override": selected_protocol,
+                "probe_all_protocols": selected_protocol == "auto",
+            }
         output = translate_once(
             selected_model,
             source,
             system_prompt=system_prompt,
             timeout=30,
             think=False,
+            **call_options,
         )
     except Exception as exc:
         latency_ms = round((time.perf_counter() - started_at) * 1000)
+        protocol_attempts = list(
+            getattr(exc, "protocol_attempts", ()) or (protocol,)
+        )
+        failed_protocol = protocol_attempts[-1] if protocol_attempts else protocol
         response_body = str(getattr(exc, "response_body", "") or "")
         provider_error_type = ""
         if response_body:
@@ -446,7 +563,8 @@ def test_connection(
             except (TypeError, ValueError):
                 pass
         details = {
-            "protocol": protocol,
+            "protocol": failed_protocol,
+            "protocol_attempts": protocol_attempts,
             "http_status": getattr(exc, "status_code", None),
             "provider_error_type": provider_error_type or type(exc).__name__,
             "error_summary": str(exc)[:500],
@@ -454,12 +572,17 @@ def test_connection(
         }
         failed_status = "error" if test_kind == "adult" else "unavailable"
         record_model_test(selected_model, test_kind, failed_status, details=details)
-        raise HTTPException(status_code=502, detail=f"Connection test failed: {exc}") from exc
+        attempted = ", ".join(protocol_attempts)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Connection test failed after protocols [{attempted}]: {exc}",
+        ) from exc
     latency_ms = round((time.perf_counter() - started_at) * 1000)
     if selected_provider == "api":
-        from app.services.model_status import model_protocol as stored_model_protocol
+        if selected_protocol == "auto":
+            from app.services.model_status import model_protocol as stored_model_protocol
 
-        protocol = stored_model_protocol(selected_model) or protocol
+            protocol = stored_model_protocol(selected_model) or protocol
     thinking_mode = ""
     if selected_provider == "api":
         from app.services.model_status import model_thinking_mode
@@ -497,6 +620,7 @@ def test_connection(
 
 
 __all__ = [
+    "activate_api_profile",
     "discover_provider_models",
     "public_settings",
     "save_settings",

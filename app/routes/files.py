@@ -53,7 +53,7 @@ def create_router(
             return {"cleaned": False, "error": str(exc)}
 
     def ensure_import_available() -> None:
-        if any(task.status in ("running", "paused", "stopping") for task in tasks.values()) or any(
+        if any(task.status in ("starting", "running", "paused", "stopping", "finalizing") for task in tasks.values()) or any(
             task.status in {"preparing", "reviewing", "verifying", "applying", "finalizing", "stopping"}
             for task in (ai_review_tasks or {}).values()
         ):
@@ -110,7 +110,7 @@ def create_router(
         source_path = req.file_path
 
         task = get_task_for_file(source_path)
-        if task and task.status in ("running", "paused", "stopping", "finalizing"):
+        if task and task.status in ("starting", "running", "paused", "stopping", "finalizing"):
             raise HTTPException(status_code=409, detail="Translation output is not finalized; stop or wait before exporting")
         if ai_review_tasks:
             from app.services.ai_review_tasks import active_ai_review_for_file
@@ -172,7 +172,7 @@ def create_router(
     @router.get("/api/export/status")
     def export_status(file_path: str = Query(...)):
         task = get_task_for_file(file_path)
-        translation_active = bool(task and task.status in ("running", "paused", "stopping", "finalizing"))
+        translation_active = bool(task and task.status in ("starting", "running", "paused", "stopping", "finalizing"))
         review_active = False
         if ai_review_tasks:
             from app.services.ai_review_tasks import active_ai_review_for_file
