@@ -50,60 +50,24 @@ development takes place on `dev`; `master` is reserved for stable releases.
 
 ### Portable Windows build
 
-1. Download `MToolTranslator-vX.Y.Z-windows-x64.zip` from GitHub Releases.
-2. Extract it to any writable directory. Installation is not required.
-3. Run `MToolTranslator.exe`.
-4. Select a provider in Settings and explicitly confirm API key changes. Fetch
-   models and choose a default. Other valid settings save automatically; connection
-   and NSFW tests remain available as optional actions.
-5. Run the per-model basic and NSFW checks first. Tests send requests and may
-   consume tokens.
-6. Export `ManualTransFile.json` from MTool.
-7. Import the JSON and click Start translation. File checks and preparation run
-   automatically; translation modes and advanced parameters remain optional.
-8. Search the entire file by source or translation in the source/translation
-   workspace. Edits autosave as drafts; confirm-and-next records human approval.
-   AI review remains available with separately selected review and verifier models.
-9. Once translation has finished and the output is structurally complete, you
-   may export the current snapshot before clearing the review queue, continue
-   reviewing, and export again before loading it through MTool.
-
-Runtime files beside the executable include:
-
-- `.env`: local connection settings and credentials; ignored by Git;
-- `.model-status.json`: model test status and timestamps, never model replies;
-- `.checkpoints/`: resumable translation state.
+1. Download the Windows x64 ZIP from [Releases](https://github.com/Richard-WYZ/MToolTranslator/releases).
+2. Extract it to a writable directory and open `MToolTranslator.exe`.
+3. In Settings, add a provider, enter its endpoint and API key, then confirm
+   the key. Fetch the model list and choose a default model.
+4. Export `ManualTransFile.json` from MTool, import it into MToolTranslator,
+   and start the translation.
+5. Review the translated text, then use **Save As** to export the JSON and
+   load it in MTool.
 
 ### Review and export
 
-- Full-file source, translation, and combined searches work alongside status
-  filters, with highlighted results and links to neighboring entries and term occurrences.
-- Project history merges resumable and completed projects, with search and status
-  filters. Switching projects keeps working copies and checkpoints.
-- Export defaults to Save As and keeps project data. Explicit source overwrite
-  remains under additional export options, with the original backup behavior.
-- The review workspace separates required review, advisory review, system-
-  preserved content, and confirmed translations, so numbers and symbols do not
-  crowd the actionable queue.
-- AI review supports separate primary, verifier, and sensitive-content models.
-  Only results that pass structural and quality validation are auto-applied.
-- Before model review, stale checkpoints receive a rollback-safe deterministic
-  correction pass. Code calls, resource identifiers, and character ranges stay
-  opaque; failed multiline repairs fall back to isolated source-line retries.
-- Refusal detection hard-blocks only explicit AI, policy, or inability-to-assist
-  meta responses. Ordinary narrative wording such as "unsuitable" or "refused
-  a request" is not rejected by keywords alone; ambiguous meta responses are
-  advisory review items.
-- AI review, single-entry saves, and batch confirmation lock conflicting
-  controls and show a busy indicator to prevent duplicate submissions.
-- Export is blocked while translation or AI review is writing. After the task
-  reaches a structurally complete snapshot, export remains available even if
-  review items remain.
-- Actions run directly without a second confirmation dialog. Overwriting the
-  original retains its first backup; export keeps the working copy for review.
-- Desktop exit stops background work and preserves checkpoints. Unapplied review
-  and glossary edits have local recovery copies, restored when the project is
-  reopened. Recovery does not mark translations approved or apply glossary terms.
+Search by source text or translation and use the status filters to find entries
+that need attention. Edits autosave as drafts. Confirm an entry once you have
+reviewed it. You can also run AI review before exporting.
+
+Project history lets you reopen a working copy and resume from a checkpoint.
+Once translation or AI review has finished and the output is structurally
+complete, you can export a copy, continue reviewing, and export again.
 
 ### Run from source
 
@@ -141,40 +105,6 @@ Release output is written to
 `MToolTranslator.exe`. Existing output directories and their runtime files are
 never overwritten or cleaned automatically.
 
-## Current status
-
-- **OpenDesign Go** has passed model discovery and a small ordinary Japanese
-  batch translation check. Adult content, full-file quality, and speed remain
-  unverified. OpenCode Go compatibility and earlier validation are retained.
-- A model appearing in a provider catalog does not mean that its quality,
-  NSFW behavior, or full-file reliability has been validated. Use the built-in
-  basic and NSFW tests.
-- Ollama, OpenAI-compatible APIs, and Anthropic Messages transports remain
-  experimental and are not currently supported as validated production paths.
-- Entries without Japanese text are preserved. English-to-Chinese and other
-  translation directions are not supported yet.
-- No API key is bundled. Credentials remain in the local `.env` file or are
-  written there through the settings UI.
-
-## Runtime and cost
-
-Quality currently takes priority over speed. The latest validated external
-fixture contained **14,655 entries**. Using **MiniMax M3 + Qwen 3.7 Plus**, its
-translation phase completed in **253.396 seconds (about 4.22 minutes)**, with
-about 4.48 minutes total wall time and **334,922 tokens**. Manual inspection
-still found semantic alignment risk in short-text batches, so meeting the speed
-target does not imply production quality.
-
-The larger **61,978-entry** benchmark most recently required
-**3476.365 seconds (about 57.94 minutes)** and **6,137,210 tokens**, still above
-the 30-minute hard limit. This version adds semantic batch guards, executable-
-code protection, context-contamination isolation, and an AI review workflow,
-but a new full-scale live run has not yet validated every fix end to end.
-
-In plain terms: this project is for people who do not mind waiting and have far
-more tokens than they know what to do with. Do not rely on it yet if you need a
-stable, fast, or inexpensive production tool.
-
 ## How it works
 
 ```text
@@ -196,8 +126,8 @@ MTool exports ManualTransFile.json
  checkpoints/review + MTool-compatible JSON
 ```
 
-The output preserves every source key, key order, and JSON shape. Only values
-may change. Each entry ends as `translated`, `preserved`,
+The output preserves every source key, key order, and JSON shape. Entries
+without Japanese text keep their original values. Each entry ends as `translated`, `preserved`,
 `translated_needs_review`, or `review_required`.
 
 ## Architecture
@@ -218,44 +148,18 @@ classification, terminology, and quality policy stay provider-neutral. See
 
 ## Models and configuration
 
-Copy `.env.example` to `.env`, or edit settings in the UI. Select or add a provider
-profile before choosing models. Presets fill the endpoint and default protocol;
-advanced connection fields remain editable. OpenDesign Go defaults to Chat
-Completions and does not inherit OpenCode Go session headers or model routing.
-Catalog discovery does not run inference. Basic and NSFW availability tests
-send one short request per model and may consume tokens.
+Use Settings to add or switch provider profiles. Each profile keeps its own
+endpoint, API key, model list, and default model. The app saves settings
+automatically and asks you to confirm when replacing or clearing a key.
 
-Each provider profile retains its own name, endpoint, key, model catalog,
-enablement, protocol, and default model in the local `.env`. Select a saved
-profile to switch immediately. Unsaved edits or active tasks block switching.
-New profiles start with empty credentials and catalogs. The settings API never
-returns saved keys. Legacy single-provider settings remain supported.
-
-Test status is persisted by connection context and model ID. Newly discovered models start enabled and
-untested; existing models retain history; changes to protocol, endpoint, key,
-or Ollama host mark older results as stale references. Returning to an earlier
-connection restores that connection's test history.
-
-Ordinary settings autosave with serialized writes and retry on failure. Pending
-API key replacement or removal is applied only after explicit confirmation.
-Protocols are automatic, using connection hints, advertised model endpoints,
-and successful calls cached for the current connection. Only explicit endpoint
-incompatibility triggers protocol fallback; authentication, quota, content and
-service failures do not. No separate paid protocol probes run in the background.
-Configured API models load before local discovery, Ollama discovery is cached,
-and project history loads when opened.
+Connection settings and credentials are stored in `.env`. For the portable
+build, keep this file next to `MToolTranslator.exe`. When running from source,
+keep it in the project root. You can reuse an existing `.env` or start from
+`.env.example`. Keep your configured `.env` private.
 
 ## References and acknowledgements
 
-The workflow and engineering ideas were informed by the following projects and
-services. This does not imply affiliation or direct code copying:
+- [MTool](https://mtool.app/) provides the game-text export, import, and runtime loading workflow.
+- [GalTransl](https://github.com/GalTransl/GalTransl) informed the batch translation and terminology workflows.
 
-- [MTool](https://mtool.app/) for game-text export/import and runtime loading;
-- [GalTransl](https://github.com/GalTransl/GalTransl) for batch visual-novel translation workflows;
-- [SakuraLLM](https://github.com/SakuraLLM/SakuraLLM) for Japanese-to-Chinese game/novel translation research;
-- [OpenDesign Cloud API](https://open-design.ai/help/cloud-api/) for connection and protocol guidance;
-- [CCSwitch](https://github.com/farion1231/cc-switch) and [Magpie](https://github.com/yetone/magpie) for provider presets and separate provider/model selection;
-- [OpenCode Go](https://opencode.ai/docs/providers#opencode-go) for the retained compatible API path;
-- [Ollama](https://ollama.com/) for the experimental local-model transport.
-
-Their licenses and service terms apply independently.
+Their licenses and terms apply independently.
